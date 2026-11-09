@@ -245,3 +245,110 @@ def test_extract_json_and_parse_reply_directly():
 def test_the_mode_counts_as_one_of_our_own_models_for_the_one_at_a_time_rule():
     assert "openai_compatible" in ai_email.OPEN_MODEL_MODES and "ollama" in ai_email.OPEN_MODEL_MODES
     assert "openai" not in ai_email.OPEN_MODEL_MODES
+
+
+def test_assistant_extra_body_is_added_to_model_calls_but_cannot_replace_the_model(monkeypatch):
+    from app import assistant, security
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.setenv("OPENAI_MODEL", "qwen3:8b")
+    monkeypatch.setenv("ASSISTANT_EXTRA_BODY", '{"think": false, "model": "evil"}')
+    monkeypatch.setattr(assistant, "tools_for", lambda me: [])
+    monkeypatch.setattr(assistant, "acting_user", lambda: None)
+    seen = {}
+
+    def fake_post(url, **kw):
+        seen.update(kw["json"])
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]},
+                              request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(assistant.httpx, "post", fake_post)
+    assert assistant.call_model([{"role": "user", "content": "hi"}])["content"] == "ok"
+    assert seen["think"] is False and seen["model"] == "qwen3:8b"
+    monkeypatch.setenv("ASSISTANT_EXTRA_BODY", "not json")
+    assert assistant.extra_body() == {}
+
+
+# ---------- the Assistant with models that never stop calling tools (open models behind Ollama / LiteLLM) ----------
+
+def _assistant_with(monkeypatch, steps):
+    """steps: what the model answers, in order. A string is words; a list is tool calls. Also records tools=False asks."""
+    from app import assistant
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    asked = []
+
+    def fake(messages, tools=True):
+        asked.append(tools)
+        step = steps.pop(0)
+        return {"role": "assistant", "content": step} if isinstance(step, str) else {"role": "assistant", "content": "", "tool_calls": step}
+
+    monkeypatch.setattr(assistant, "call_model", fake)
+    return asked
+
+
+def test_a_model_that_repeats_the_same_tool_call_is_made_to_answer_in_words(client, monkeypatch):
+    from test_assistant import call
+    asked = _assistant_with(monkeypatch, [[call("pipeline_summary")], [call("pipeline_summary")],
+                                          "You have 1 lead in total."])
+    res = client.post("/api/assistant/chat", json={"message": "How many leads do I have?"})
+    assert res.status_code == 200, res.text
+    assert res.json()["reply"] == "You have 1 lead in total."
+    assert asked == [True, True, False]  # the repeat was skipped and the answer asked for without tools
+    tool_messages = [m for m in res.json().get("messages", []) if m.get("role") == "tool"]
+    assert len(tool_messages) <= 1  # the tool ran once, not twice
+
+
+def test_a_different_second_tool_call_still_runs(client, monkeypatch):
+    from test_assistant import call
+    asked = _assistant_with(monkeypatch, [[call("pipeline_summary")], [call("list_users")], "Here you go."])
+    res = client.post("/api/assistant/chat", json={"message": "Summary and users please"})
+    assert res.status_code == 200, res.text
+    assert res.json()["reply"] == "Here you go."
+    assert asked == [True, True, True]  # nothing was skipped
+
+
+def test_call_key_ignores_argument_order_and_spacing():
+    from app import assistant
+    a = {"function": {"name": "list_leads", "arguments": '{"stage": "New", "search": "x"}'}}
+    b = {"function": {"name": "list_leads", "arguments": '{ "search":"x",  "stage":"New" }'}}
+    c = {"function": {"name": "list_leads", "arguments": '{"stage": "Demo"}'}}
+    assert assistant.call_key(a) == assistant.call_key(b) != assistant.call_key(c)
+    assert assistant.call_key({"function": {"name": "x", "arguments": "not json"}}) == ("x", "not json")
+
+
+# ---------- a thinking model that returns nothing: say what to change ----------
+
+def _thinking_answer(finish="stop", with_reasoning=True):
+    message = {"role": "assistant", "content": ""}
+    if with_reasoning:
+        message["reasoning_content"] = "Let me think about the email step by step ..." * 50
+    return {"choices": [{"index": 0, "finish_reason": finish, "message": message}]}
+
+
+@pytest.mark.parametrize("answer", [_thinking_answer(), _thinking_answer(finish="length", with_reasoning=False)])
+def test_an_empty_answer_from_a_thinking_model_says_how_to_fix_it_and_is_not_retried(client, record, server, answer):
+    seen, replies = server
+    replies[:] = [(200, answer)]
+    response = client.post("/api/emails/draft", json=draft_request(record))
+    assert response.status_code == 502
+    assert 'COMPAT_EXTRA_BODY={"think": false}' in response.json()["detail"]
+    assert "unusable draft" not in response.json()["detail"]
+    assert len(seen) == 1  # asking again would take as long and fail the same way
+
+
+def test_the_thinking_message_also_applies_to_campaign_drafts(client, server):
+    server[1][:] = [(200, _thinking_answer())]
+    response = client.post("/api/campaigns/draft", json={"instructions": "Invite them to a demo next week."})
+    assert response.status_code == 502 and "think" in response.json()["detail"]
+
+
+def test_a_short_unusable_answer_is_still_just_unusable_not_a_thinking_problem(client, record, server):
+    server[1][:] = [(200, {"choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "not json"}}]})]
+    response = client.post("/api/emails/draft", json=draft_request(record))
+    assert response.status_code == 502 and "unusable draft" in response.json()["detail"]
+
+
+def test_the_assistant_explains_an_empty_answer_instead_of_showing_nothing(client, monkeypatch):
+    _assistant_with(monkeypatch, [""])
+    res = client.post("/api/assistant/chat", json={"message": "How many leads do I have?"})
+    assert res.status_code == 200, res.text
+    assert 'ASSISTANT_EXTRA_BODY={"think": false}' in res.json()["reply"]

@@ -51,6 +51,7 @@ def settings() -> dict:
         "base_url": os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/"),
         # seconds to wait for each model call; raise it for a slow open model (ASSISTANT_TIMEOUT_SECONDS, 10-240)
         "timeout": timeout_seconds(),
+        "extra": extra_body(),
     }
 
 
@@ -59,6 +60,17 @@ def timeout_seconds() -> float:
         return min(max(float(os.getenv("ASSISTANT_TIMEOUT_SECONDS", "60")), 10.0), 240.0)
     except ValueError:
         return 60.0
+
+
+def extra_body() -> dict:
+    """ASSISTANT_EXTRA_BODY: JSON added to every model call, e.g. {"think": false} to switch off the hidden "thinking"
+    of models such as qwen3, which otherwise can use the whole answer budget and reply with nothing."""
+    try:
+        value = json.loads(os.getenv("ASSISTANT_EXTRA_BODY", "").strip() or "{}")
+    except ValueError:
+        log.warning("ASSISTANT_EXTRA_BODY is not valid JSON and is ignored")
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def enabled() -> bool:
@@ -694,13 +706,15 @@ def suggestions_for(model_items: list[str], tools_used: list[str], links: list[d
     return []
 
 
-def call_model(messages: list[dict]) -> dict:
-    """One Chat Completions call. Returns the assistant message (may contain tool_calls)."""
+def call_model(messages: list[dict], *, tools: bool = True) -> dict:
+    """One Chat Completions call. Returns the assistant message (may contain tool_calls).
+    tools=False: no tools are offered, so the model can only answer in words."""
     cfg = settings()
     try:
         res = httpx.post(f"{cfg['base_url']}/chat/completions", timeout=cfg["timeout"],
                          headers={"Authorization": f"Bearer {cfg['key']}"},
-                         json={"model": cfg["model"], "messages": messages, "tools": tools_for(acting_user()), "temperature": 0.1})
+                         json={**cfg["extra"], "model": cfg["model"], "messages": messages,
+                               **({"tools": tools_for(acting_user())} if tools else {}), "temperature": 0.1})
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"The AI service could not be reached: {exc}") from exc
     if res.status_code == 401:
@@ -714,21 +728,45 @@ def call_model(messages: list[dict]) -> dict:
     return res.json()["choices"][0]["message"]
 
 
+EMPTY_ANSWER = ("The AI model returned an empty answer. If it is a \"thinking\" model, ask your administrator to set "
+                "ASSISTANT_EXTRA_BODY={\"think\": false} and try again.")
+
+
+def call_key(call: dict) -> tuple[str, str]:
+    """A tool call as (name, arguments in a fixed order), to recognise the same call asked for twice."""
+    function = call.get("function") or {}
+    raw = function.get("arguments") or "{}"
+    try:
+        raw = json.dumps(json.loads(raw), sort_keys=True)
+    except (ValueError, TypeError):
+        pass
+    return str(function.get("name", "")), str(raw)
+
+
 def converse(db: Session, history: list[dict]) -> dict:
     """Runs the tool loop until the model answers in words, or an action needs the user's confirmation.
     history: the conversation so far in OpenAI format (without the system message)."""
     messages = list(history)
     links, done, used = [], [], []
+    ran: set[tuple[str, str]] = set()  # tool calls already made in this turn
     for _ in range(MAX_STEPS):
         reply = call_model([{"role": "system", "content": system_prompt()}, *messages])
-        msg = {"role": "assistant", "content": reply.get("content") or ""}
         calls = reply.get("tool_calls") or []
+        if calls and all(call_key(c) in ran for c in calls):
+            # The model asked again for exactly what it already has. Open models served through Ollama / LiteLLM often
+            # never stop calling tools; OpenAI's do. Skip the repeat and make the model answer in words (no tools).
+            answer = call_model([{"role": "system", "content": system_prompt()}, *messages], tools=False)
+            if (answer.get("content") or "").strip():
+                reply, calls = answer, []
+        msg = {"role": "assistant", "content": reply.get("content") or ""}
         if calls:
             msg["tool_calls"] = [{"id": c["id"], "type": "function",
                                   "function": {"name": c["function"]["name"], "arguments": c["function"]["arguments"]}}
                                  for c in calls]
         if not calls:
             msg["content"], items = split_suggestions(msg["content"])
+            if not msg["content"].strip():  # nothing came back, e.g. a thinking model that used up its answer budget
+                msg["content"] = EMPTY_ANSWER
             messages.append(msg)
             return {"messages": messages, "reply": msg["content"], "links": links, "done": done, "pending": None,
                     "suggestions": suggestions_for(items, used, links)}
@@ -763,6 +801,7 @@ def converse(db: Session, history: list[dict]) -> dict:
                     links.append(link)
                     done.append(name)
             messages.append({"role": "tool", "tool_call_id": c["id"], "content": json.dumps(result)[:MAX_TOOL_CHARS]})
+        ran.update(call_key(c) for c in calls)
         if pending:
             text, _ = split_suggestions(msg["content"])
             msg["content"] = text

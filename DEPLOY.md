@@ -38,8 +38,26 @@ Set at least these for a server:
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | the first Admin's login | Created on the first start; change the password after logging in |
 | `ALLOWED_EMAIL_DOMAINS` | `srsconsultinginc.com` | Only company emails can be users |
 | `COMPANY_NAME` | `SRS Consulting` | Used in emails |
-| `OPENAI_API_KEY` | `sk-...` | AI Assistant and AI email drafts (optional) |
+| `OPENAI_API_KEY` | `sk-...` | AI Assistant and AI email drafts (optional). Keep ONE line: a later `OPENAI_API_KEY` line overrides an earlier one |
 | `APOLLO_API_KEY` | | LinkedIn autofill on New Lead (optional) |
+
+**AI on your own models (optional).** To run the AI Assistant and email drafting on open models behind an
+OpenAI-compatible server (LiteLLM, vLLM), an example setup is `qwen3.5:9b` for both:
+
+```
+OPENAI_BASE_URL=https://<your-llm-server>/v1
+OPENAI_API_KEY=<the server's key>
+OPENAI_MODEL=qwen3.5:9b
+ASSISTANT_EXTRA_BODY={"think": false}
+ASSISTANT_TIMEOUT_SECONDS=120
+EMAIL_DRAFT_MODE=openai_compatible
+COMPAT_EMAIL_MODEL=qwen3.5:9b
+COMPAT_EXTRA_BODY={"think": false}
+```
+
+Both `think` lines are required for the Qwen3 family: with thinking left on, the model can use its whole answer budget
+on hidden reasoning and return an empty answer, so the drafts fail. All the AI settings are
+listed in `.env.example`. Run `docker compose up -d --build` after changing them.
 
 **Email (Outlook).** Pick one. Until it's set, every email goes to the private test inbox and nothing is sent.
 
@@ -105,4 +123,6 @@ the DNS name, forwarding to `http://127.0.0.1:<APP_PORT>`. Set `APP_URL` and `PU
 | Errors or emails not sending | `docker compose logs api --tail 200` (look for `crm.mail` / `crm.campaigns`) |
 | Campaign paused | The campaign page shows why (e.g. the mail login was refused); fix `.env`, restart, then Resume |
 | Unsubscribe link doesn't open for a lead | `PUBLIC_URL` must be the public `https://` address |
+| AI drafts or Assistant answers come back empty, or "unusable draft" | A thinking model with thinking on: set `COMPAT_EXTRA_BODY` and `ASSISTANT_EXTRA_BODY` to `{"think": false}`. `docker compose logs api \| grep draft_provider` shows the model and the time each draft took |
+| AI says "AI server rejected the API key" / "No connected db" | The key in `.env` is not the LiteLLM key: check for two `OPENAI_API_KEY` lines |
 | Start over with an empty database (deletes all data) | `docker compose down -v && docker compose up -d --build` |

@@ -435,6 +435,8 @@ JSON_REMINDER = (
     '\n\nAnswer with ONE JSON object only, exactly {"outcome": "draft" | "unsupported" | "needs_context", '
     '"subject": string, "body": string}. No markdown, no code fence, no text before or after it.'
 )
+THINKING_ERROR = ("The AI model used its whole answer on hidden reasoning and returned nothing. Ask your administrator to "
+                  "switch thinking off for this model (COMPAT_EXTRA_BODY={\"think\": false}). Your email is unchanged.")
 THINK_BLOCK = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 THINK_TAIL = re.compile(r"^.*?</think>", re.IGNORECASE | re.DOTALL)  # a template that leaves out the opening tag
 _json_mode_that_worked: dict[tuple[str, str], str] = {}
@@ -521,6 +523,16 @@ async def compat_reply(messages: list[dict], max_tokens: int = 1400) -> ModelRep
                 _json_mode_that_worked[cache_key] = json_mode
                 try:
                     choice = response.json()["choices"][0]
+                    message = choice["message"]
+                    if not (message.get("content") or "").strip() and (
+                            message.get("reasoning_content") or message.get("reasoning")
+                            or choice.get("finish_reason") == "length"):
+                        # A "thinking" model that used its whole answer budget on hidden reasoning: asking again would
+                        # take just as long and fail the same way, so say what to change.
+                        log.warning("draft_provider provider=%s model=%s: empty answer, the model's reasoning used the "
+                                    "whole token budget; set COMPAT_EXTRA_BODY to switch thinking off", COMPAT_MODE,
+                                    cfg["model"])
+                        raise HTTPException(502, THINKING_ERROR)
                     if choice.get("finish_reason") == "length":
                         raise ValueError("The answer was cut off")
                     if choice["message"].get("refusal"):

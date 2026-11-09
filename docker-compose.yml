@@ -57,6 +57,7 @@ services:
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
       ASSISTANT_TIMEOUT_SECONDS: ${ASSISTANT_TIMEOUT_SECONDS:-60}
+      ASSISTANT_EXTRA_BODY: ${ASSISTANT_EXTRA_BODY:-}
       # LinkedIn autofill on New Lead (Apollo People Enrichment; off until APOLLO_API_KEY is set in .env, backend only)
       APOLLO_API_KEY: ${APOLLO_API_KEY:-}
       # Login: the default Admin created on the first start, and the key that signs login tokens

@@ -410,7 +410,7 @@ front of Ollama, for example, reached through an ngrok or internal address).
 
 | Feature | Settings |
 | --- | --- |
-| **AI Assistant** | `OPENAI_BASE_URL` (the server's `/v1` address), `OPENAI_API_KEY`, `OPENAI_MODEL`. The model must support tool (function) calling. `ASSISTANT_TIMEOUT_SECONDS` (default 60) is the wait for each model call; raise it for a slow model |
+| **AI Assistant** | `OPENAI_BASE_URL` (the server's `/v1` address), `OPENAI_API_KEY`, `OPENAI_MODEL`. The model must support tool (function) calling. `ASSISTANT_TIMEOUT_SECONDS` (default 60) is the wait for each model call; raise it for a slow model. `ASSISTANT_EXTRA_BODY` is JSON added to every call, e.g. `{"think": false}` to switch off the hidden "thinking" of qwen3-style models, which can otherwise use the whole answer budget and reply with nothing |
 | **Email drafting** (lead emails and campaign drafts) | `EMAIL_DRAFT_MODE=openai_compatible`, plus `COMPAT_BASE_URL` and `COMPAT_EMAIL_MODEL` (they default to `OPENAI_BASE_URL` and `OPENAI_MODEL`, so one set of settings can serve both) |
 
 ```dotenv
