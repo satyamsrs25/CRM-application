@@ -161,7 +161,7 @@ async def draft_email(data: ai_email.DraftRequest, request: Request, db: Session
     if not data.recipient_is_record_contact:  # To was changed: don't greet the record's contact by name
         context = {key: value for key, value in context.items() if key not in ("first_name", "last_name")}
         context["recipient_is_record_contact"] = False
-    local = ai_email.mode() == "ollama"
+    local = ai_email.mode() in ai_email.OPEN_MODEL_MODES  # our own GPU: one draft at a time, longer wait
     with draft_execution.claim_draft(me.id, local):
         draft = await draft_execution.wait_for_draft(
             request, ai_email.generate_draft(data, context, me.full_name, me.email),

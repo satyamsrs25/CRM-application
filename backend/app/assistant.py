@@ -49,7 +49,16 @@ def settings() -> dict:
         "key": os.getenv("OPENAI_API_KEY", "").strip(),
         "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini",
         "base_url": os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/"),
+        # seconds to wait for each model call; raise it for a slow open model (ASSISTANT_TIMEOUT_SECONDS, 10-240)
+        "timeout": timeout_seconds(),
     }
+
+
+def timeout_seconds() -> float:
+    try:
+        return min(max(float(os.getenv("ASSISTANT_TIMEOUT_SECONDS", "60")), 10.0), 240.0)
+    except ValueError:
+        return 60.0
 
 
 def enabled() -> bool:
@@ -689,7 +698,7 @@ def call_model(messages: list[dict]) -> dict:
     """One Chat Completions call. Returns the assistant message (may contain tool_calls)."""
     cfg = settings()
     try:
-        res = httpx.post(f"{cfg['base_url']}/chat/completions", timeout=60,
+        res = httpx.post(f"{cfg['base_url']}/chat/completions", timeout=cfg["timeout"],
                          headers={"Authorization": f"Bearer {cfg['key']}"},
                          json={"model": cfg["model"], "messages": messages, "tools": tools_for(acting_user()), "temperature": 0.1})
     except httpx.HTTPError as exc:

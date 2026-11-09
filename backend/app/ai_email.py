@@ -61,7 +61,7 @@ class GeneratedDraft(EmailDraft):
 class DraftResponse(GeneratedDraft):
     stage: str | None
     record_stage: str | None = None
-    mode: Literal["sample", "openai", "ollama"]
+    mode: Literal["sample", "openai", "ollama", "openai_compatible"]
 
 
 class ModelReply(BaseModel):
@@ -416,7 +416,138 @@ def api_key() -> str:
 
 
 def configured() -> bool:
-    return mode() in {"sample", "ollama"} or (mode() == "openai" and bool(api_key()))
+    return mode() in {"sample", "ollama", COMPAT_MODE} or (mode() == "openai" and bool(api_key()))
+
+
+# ---------- open models behind an OpenAI-compatible server (LiteLLM, vLLM, LM Studio, Ollama's /v1 ...) ----------
+# EMAIL_DRAFT_MODE=openai_compatible sends the draft request to {COMPAT_BASE_URL}/chat/completions.
+#   COMPAT_BASE_URL        the server's /v1 address (default: OPENAI_BASE_URL, the one the AI Assistant uses)
+#   COMPAT_EMAIL_MODEL     the model name as the server lists it at /v1/models (default: OPENAI_MODEL)
+#   OPENAI_API_KEY         sent as the Bearer key when set (LiteLLM's key); no key = no Authorization header
+#   COMPAT_TIMEOUT_SECONDS how long to wait for a draft, 10-120 (default 120; GPU models can be slow)
+#   COMPAT_JSON_MODE       json_schema (default) | json_object | none: how the server is asked for JSON. A server that
+#                          refuses one is retried with the next, and the one that worked is remembered.
+#   COMPAT_EXTRA_BODY      JSON added to every request, e.g. {"think": false} to switch off a model's thinking
+COMPAT_MODE = "openai_compatible"
+OPEN_MODEL_MODES = {"ollama", COMPAT_MODE}  # models we host ourselves: same prompts, no OpenAI key, one at a time
+JSON_MODES = ("json_schema", "json_object", "none")
+JSON_REMINDER = (
+    '\n\nAnswer with ONE JSON object only, exactly {"outcome": "draft" | "unsupported" | "needs_context", '
+    '"subject": string, "body": string}. No markdown, no code fence, no text before or after it.'
+)
+THINK_BLOCK = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
+THINK_TAIL = re.compile(r"^.*?</think>", re.IGNORECASE | re.DOTALL)  # a template that leaves out the opening tag
+_json_mode_that_worked: dict[tuple[str, str], str] = {}
+
+
+def compat_settings() -> dict:
+    try:
+        timeout = min(max(float(os.getenv("COMPAT_TIMEOUT_SECONDS", "120")), 10.0), 120.0)
+    except ValueError:
+        timeout = 120.0
+    wanted = os.getenv("COMPAT_JSON_MODE", "json_schema").strip().lower()
+    extra = {}
+    try:
+        parsed = json.loads(os.getenv("COMPAT_EXTRA_BODY", "").strip() or "{}")
+        extra = parsed if isinstance(parsed, dict) else {}
+    except ValueError:
+        log.warning("COMPAT_EXTRA_BODY is not valid JSON and is ignored")
+    return {
+        "base_url": (os.getenv("COMPAT_BASE_URL", "").strip() or os.getenv("OPENAI_BASE_URL", "").strip()
+                     or "https://api.openai.com/v1").rstrip("/"),
+        "model": os.getenv("COMPAT_EMAIL_MODEL", "").strip() or os.getenv("OPENAI_MODEL", "").strip() or "gpt-4o-mini",
+        "timeout": timeout,
+        "json_mode": wanted if wanted in JSON_MODES else "json_schema",
+        "extra": extra,
+    }
+
+
+def extract_json(text: str) -> str:
+    """The JSON object in a model's answer. Open models sometimes add thinking text or a code fence around it."""
+    text = THINK_TAIL.sub("", THINK_BLOCK.sub("", text or ""))
+    start, end = text.find("{"), text.rfind("}")
+    return text[start:end + 1] if 0 <= start < end else text.strip()
+
+
+def parse_reply(text: str) -> ModelReply:
+    """Reads a model's answer leniently (other keys ignored, outcome in any case) but still validates every field."""
+    data = json.loads(extract_json(text))
+    if not isinstance(data, dict):
+        raise ValueError("The answer is not a JSON object")
+    outcome = str(data.get("outcome") or "draft").strip().lower()
+    return ModelReply(outcome=outcome, subject=str(data.get("subject") or "").strip(), body=str(data.get("body") or ""))
+
+
+def response_format(json_mode: str) -> dict:
+    if json_mode == "json_schema":
+        return {"response_format": {"type": "json_schema",
+                                    "json_schema": {"name": "email_draft", "strict": True, "schema": DRAFT_SCHEMA}}}
+    if json_mode == "json_object":
+        return {"response_format": {"type": "json_object"}}
+    return {}
+
+
+async def compat_reply(messages: list[dict], max_tokens: int = 1400) -> ModelReply:
+    """One draft from the OpenAI-compatible server, validated. Every failure is an HTTPException that keeps the user's
+    email unchanged. An answer that is not usable JSON is asked for once more."""
+    cfg = compat_settings()
+    endpoint = cfg["base_url"] + "/chat/completions"
+    try:
+        url = httpx.URL(endpoint)
+        if url.scheme not in {"http", "https"} or not url.host or url.username or url.password or url.query or url.fragment:
+            raise httpx.InvalidURL("Invalid provider URL")
+    except (httpx.InvalidURL, ValueError):
+        raise HTTPException(503, "AI provider URL is invalid. Ask your administrator to check COMPAT_BASE_URL.") from None
+    key = api_key()
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    messages = [{**messages[0], "content": messages[0]["content"] + JSON_REMINDER}, *messages[1:]]
+    cache_key = (cfg["base_url"], cfg["model"])
+    start_at = JSON_MODES.index(_json_mode_that_worked.get(cache_key, cfg["json_mode"]))
+    started = time.monotonic()
+    status, attempts = 0, 0
+    try:
+        async with httpx.AsyncClient(timeout=cfg["timeout"]) as client:
+            for attempts in (1, 2):
+                for json_mode in JSON_MODES[start_at:]:
+                    payload = {**cfg["extra"], "model": cfg["model"], "messages": messages, "stream": False,
+                               "temperature": 0.2, "max_tokens": max_tokens, **response_format(json_mode)}
+                    response = await client.post(endpoint, headers=headers, json=payload)
+                    status = response.status_code
+                    if status in (400, 422) and json_mode != "none":  # this server doesn't take that JSON option
+                        continue
+                    break
+                if not response.is_success:
+                    break
+                _json_mode_that_worked[cache_key] = json_mode
+                try:
+                    choice = response.json()["choices"][0]
+                    if choice.get("finish_reason") == "length":
+                        raise ValueError("The answer was cut off")
+                    if choice["message"].get("refusal"):
+                        raise HTTPException(422, "The AI service could not draft that request. Try describing the email differently.")
+                    reply = parse_reply(choice["message"].get("content") or "")
+                    log.info("draft_provider provider=%s model=%s status=%s attempts=%d elapsed_ms=%d", COMPAT_MODE,
+                             cfg["model"], status, attempts, int((time.monotonic() - started) * 1000))
+                    return reply
+                except HTTPException:
+                    raise
+                except (ValueError, TypeError, KeyError, IndexError, AttributeError, ValidationError):
+                    continue  # not usable: ask once more
+    except httpx.TimeoutException:
+        raise HTTPException(504, "AI drafting took too long. Your email is unchanged; please try again.") from None
+    except httpx.RequestError:
+        raise HTTPException(502, "Cannot reach the AI service. Your email is unchanged; please try again.") from None
+    log.info("draft_provider provider=%s model=%s status=%s attempts=%d elapsed_ms=%d", COMPAT_MODE, cfg["model"],
+             status, attempts, int((time.monotonic() - started) * 1000))
+    if status in (401, 403):
+        raise HTTPException(502, "The AI server rejected the API key. Check OPENAI_API_KEY in the root .env file, then restart the API.")
+    if status == 404:
+        raise HTTPException(502, "The AI server could not find the model. Check COMPAT_EMAIL_MODEL against the server's model list (/v1/models).")
+    if status == 429:
+        raise HTTPException(429, "AI drafting is temporarily unavailable due to usage limits. Please try again later.")
+    if status and status != 200:
+        raise HTTPException(502, "The AI service could not generate a draft. Ask your administrator to check the AI server and its model.")
+    raise HTTPException(502, "The AI service returned an unusable draft. Your email is unchanged; please try again.")
 
 
 GENERIC_DRAFT_REQUEST = re.compile(
@@ -466,15 +597,29 @@ async def generate_draft(data: DraftRequest, context: dict, sender_name: str, se
         return EmailDraft(subject=option.subject, body=f"{greeting}\n\n{option.sample}\n\nBest regards,\n{sender_name}\n{sender_email}")
     if mode() == "sample":
         return sample_draft({**context, "current_stage": draft_stage}, sender_name, sender_email, data.action)
-    local = mode() == "ollama"
-    if mode() not in {"openai", "ollama"}:
-        raise HTTPException(503, "Invalid EMAIL_DRAFT_MODE. Use sample, openai or ollama.")
+    if mode() not in {"openai", "ollama", COMPAT_MODE}:
+        raise HTTPException(503, "Invalid EMAIL_DRAFT_MODE. Use sample, openai, ollama or openai_compatible.")
+    local = mode() in OPEN_MODEL_MODES  # our own models: the shorter prompts and no OpenAI key
+    compat = mode() == COMPAT_MODE
     key = "" if local else api_key()
     if not local and not key:
         raise HTTPException(503, "AI drafting is not configured. Ask your administrator to set OPENAI_API_KEY on the backend.")
     instructions = writing_request(data.instructions, revising, draft_stage)
     keep_subject = bool(data.current_subject) and (refining or not asks_for_subject(data.instructions))
     subject_policy = "preserve" if keep_subject else "rewrite" if data.current_subject else "generate"
+
+    def finish(reply: ModelReply) -> GeneratedDraft:
+        """The model's answer as a draft: the same checks whichever provider wrote it."""
+        if reply.outcome == "unsupported":
+            raise HTTPException(422, OUT_OF_SCOPE)
+        if reply.outcome == "needs_context":
+            raise HTTPException(422, NEEDS_CONTEXT)
+        supplied = "\n".join((data.instructions, data.current_subject, data.current_body))
+        body = with_sender_signature(without_new_links(reply.body, supplied), sender_name, sender_email)
+        if not draft_content(body, sender_name, sender_email):
+            raise ValueError("Only a greeting and signature")
+        draft = EmailDraft(subject=data.current_subject if keep_subject else reply.subject, body=body)
+        return GeneratedDraft(**draft.model_dump(), draft_type="revision" if revising else "new")
     payload = {
         "model": os.getenv("OPENAI_EMAIL_MODEL", "gpt-4.1-mini"),
         "store": False,
@@ -513,6 +658,19 @@ async def generate_draft(data: DraftRequest, context: dict, sender_name: str, se
         local_content = json.loads(payload["input"])
         if revising:
             local_content["existing_message"] = without_signature(data.current_body, sender_name, sender_email)
+        if compat:  # an OpenAI-compatible server: its own request and answer format, then the usual checks
+            reply = await compat_reply([
+                {"role": "system", "content": EDIT_INSTRUCTIONS if revising else LOCAL_DRAFT_INSTRUCTIONS},
+                {"role": "user", "content": json.dumps(local_content)},
+                {"role": "user", "content": "Please perform this customer sales email task using the reference data above:\n"
+                 + local_content["user_request"] + "\nSubject instruction: " + subject_policy},
+            ])
+            try:
+                return finish(reply)
+            except HTTPException:
+                raise
+            except (ValueError, TypeError, AttributeError, KeyError, ValidationError):
+                raise HTTPException(502, "The AI service returned an unusable draft. Your email is unchanged; please try again.") from None
         endpoint = os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434").rstrip("/") + "/api/chat"
         payload = {
             "model": os.getenv("OLLAMA_EMAIL_MODEL", "qwen3.5:9b"),
@@ -591,17 +749,7 @@ async def generate_draft(data: DraftRequest, context: dict, sender_name: str, se
         if any(part.get("type") == "refusal" for part in content):
             raise HTTPException(422, "The AI service could not draft that request. Try describing the email differently.")
         text = "".join(part.get("text", "") for part in content if part.get("type") == "output_text")
-        reply = ModelReply.model_validate_json(text)
-        if reply.outcome == "unsupported":
-            raise HTTPException(422, OUT_OF_SCOPE)
-        if reply.outcome == "needs_context":
-            raise HTTPException(422, NEEDS_CONTEXT)
-        supplied = "\n".join((data.instructions, data.current_subject, data.current_body))
-        body = with_sender_signature(without_new_links(reply.body, supplied), sender_name, sender_email)
-        if not draft_content(body, sender_name, sender_email):
-            raise ValueError("Only a greeting and signature")
-        draft = EmailDraft(subject=data.current_subject if keep_subject else reply.subject, body=body)
-        return GeneratedDraft(**draft.model_dump(), draft_type="revision" if revising else "new")
+        return finish(ModelReply.model_validate_json(text))
     except HTTPException:
         raise
     except (ValueError, TypeError, AttributeError, KeyError, ValidationError):
@@ -665,10 +813,11 @@ async def generate_campaign_draft(data: CampaignDraftRequest) -> EmailDraft:
         raise HTTPException(422, "Describe the email you want, e.g. invite them to a 20-minute demo next week.")
     if not refining and OFF_TOPIC.search(text):
         raise HTTPException(422, OUT_OF_SCOPE)
-    if mode() != "openai":
-        raise HTTPException(422, "AI drafting needs the AI to be set up (EMAIL_DRAFT_MODE=openai).")
-    key = api_key()
-    if not key:
+    if mode() not in {"openai", COMPAT_MODE}:
+        raise HTTPException(422, "AI drafting needs the AI to be set up (EMAIL_DRAFT_MODE=openai or openai_compatible).")
+    compat = mode() == COMPAT_MODE
+    key = "" if compat else api_key()
+    if not compat and not key:
         raise HTTPException(503, "AI drafting is not configured. Ask your administrator to set OPENAI_API_KEY on the backend.")
     request_input = json.dumps({
         "task": "revise_campaign_email" if refining or data.current_body.strip() else "new_campaign_email",
@@ -676,32 +825,40 @@ async def generate_campaign_draft(data: CampaignDraftRequest) -> EmailDraft:
         "existing_subject": data.current_subject,
         "existing_message": data.current_body,
     })
-    payload = {"model": os.getenv("OPENAI_EMAIL_MODEL", "gpt-4.1-mini"), "store": False, "max_output_tokens": 1200,
-               "instructions": CAMPAIGN_INSTRUCTIONS, "input": request_input,
-               "text": {"format": {"type": "json_schema", "name": "email_draft", "strict": True, "schema": DRAFT_SCHEMA}}}
-    try:
-        async with httpx.AsyncClient(timeout=40.0) as client:
-            response = await client.post("https://api.openai.com/v1/responses", headers={"Authorization": f"Bearer {key}"},
-                                         json=payload)
-    except httpx.TimeoutException:
-        raise HTTPException(504, "AI drafting took too long. Your email is unchanged; please try again.") from None
-    except httpx.RequestError:
-        raise HTTPException(502, "Cannot reach the AI service. Your email is unchanged; please try again.") from None
-    if response.status_code == 429:
-        raise HTTPException(429, "AI drafting is temporarily unavailable due to usage limits. Please try again later.")
-    if not response.is_success:
-        raise HTTPException(502, "The AI service could not generate a draft. Ask your administrator to check its API key and model access.")
-    try:
-        result = response.json()
-        content = [part for item in result.get("output", []) if item.get("type") == "message" for part in item.get("content", [])]
-        if any(part.get("type") == "refusal" for part in content):
-            raise HTTPException(422, "The AI service could not draft that request. Try describing the email differently.")
-        reply_text = "".join(part.get("text", "") for part in content if part.get("type") == "output_text")
-        reply = ModelReply.model_validate_json(reply_text)
-    except HTTPException:
-        raise
-    except (ValueError, TypeError, KeyError, ValidationError):
-        raise HTTPException(502, "The AI service returned an unusable draft. Your email is unchanged; please try again.") from None
+
+    async def openai_reply() -> ModelReply:
+        payload = {"model": os.getenv("OPENAI_EMAIL_MODEL", "gpt-4.1-mini"), "store": False, "max_output_tokens": 1200,
+                   "instructions": CAMPAIGN_INSTRUCTIONS, "input": request_input,
+                   "text": {"format": {"type": "json_schema", "name": "email_draft", "strict": True, "schema": DRAFT_SCHEMA}}}
+        try:
+            async with httpx.AsyncClient(timeout=40.0) as client:
+                response = await client.post("https://api.openai.com/v1/responses", headers={"Authorization": f"Bearer {key}"},
+                                             json=payload)
+        except httpx.TimeoutException:
+            raise HTTPException(504, "AI drafting took too long. Your email is unchanged; please try again.") from None
+        except httpx.RequestError:
+            raise HTTPException(502, "Cannot reach the AI service. Your email is unchanged; please try again.") from None
+        if response.status_code == 429:
+            raise HTTPException(429, "AI drafting is temporarily unavailable due to usage limits. Please try again later.")
+        if not response.is_success:
+            raise HTTPException(502, "The AI service could not generate a draft. Ask your administrator to check its API key and model access.")
+        try:
+            result = response.json()
+            content = [part for item in result.get("output", []) if item.get("type") == "message" for part in item.get("content", [])]
+            if any(part.get("type") == "refusal" for part in content):
+                raise HTTPException(422, "The AI service could not draft that request. Try describing the email differently.")
+            reply_text = "".join(part.get("text", "") for part in content if part.get("type") == "output_text")
+            return ModelReply.model_validate_json(reply_text)
+        except HTTPException:
+            raise
+        except (ValueError, TypeError, KeyError, ValidationError):
+            raise HTTPException(502, "The AI service returned an unusable draft. Your email is unchanged; please try again.") from None
+
+    if compat:
+        reply = await compat_reply([{"role": "system", "content": CAMPAIGN_INSTRUCTIONS},
+                                    {"role": "user", "content": request_input}], max_tokens=1200)
+    else:
+        reply = await openai_reply()
     if reply.outcome == "unsupported":
         raise HTTPException(422, OUT_OF_SCOPE)
     if reply.outcome == "needs_context":

@@ -56,6 +56,7 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      ASSISTANT_TIMEOUT_SECONDS: ${ASSISTANT_TIMEOUT_SECONDS:-60}
       # LinkedIn autofill on New Lead (Apollo People Enrichment; off until APOLLO_API_KEY is set in .env, backend only)
       APOLLO_API_KEY: ${APOLLO_API_KEY:-}
       # Login: the default Admin created on the first start, and the key that signs login tokens
@@ -70,6 +71,13 @@ services:
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
       OPENAI_ENV_FILE: /run/secrets/ai_settings
       OPENAI_EMAIL_MODEL: ${OPENAI_EMAIL_MODEL:-gpt-4.1-mini}
+      # Open models behind an OpenAI-compatible server such as LiteLLM (EMAIL_DRAFT_MODE=openai_compatible).
+      # The address falls back to OPENAI_BASE_URL and the model to OPENAI_MODEL; the key is OPENAI_API_KEY.
+      COMPAT_BASE_URL: ${COMPAT_BASE_URL:-}
+      COMPAT_EMAIL_MODEL: ${COMPAT_EMAIL_MODEL:-}
+      COMPAT_TIMEOUT_SECONDS: ${COMPAT_TIMEOUT_SECONDS:-120}
+      COMPAT_JSON_MODE: ${COMPAT_JSON_MODE:-json_schema}
+      COMPAT_EXTRA_BODY: ${COMPAT_EXTRA_BODY:-}
       # Email campaigns: sending pace (Outlook allows 30 a minute and 2,000 external recipients a day per mailbox)
       CAMPAIGN_PER_MINUTE: ${CAMPAIGN_PER_MINUTE:-20}
       CAMPAIGN_PER_DAY: ${CAMPAIGN_PER_DAY:-1800}

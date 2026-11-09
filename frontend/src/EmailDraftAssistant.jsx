@@ -97,7 +97,7 @@ export default function EmailDraftAssistant({ target, settings, user, subject, m
           current_body: freshStart && !refining ? "" : message,
           recipient_is_record_contact: toRecordContact(before.to, target.email),
         },
-        AbortSignal.any([mine.controller.signal, AbortSignal.timeout(settings?.draft_mode === "ollama" ? 130000 : 50000)]),
+        AbortSignal.any([mine.controller.signal, AbortSignal.timeout(["ollama", "openai_compatible"].includes(settings?.draft_mode) ? 130000 : 50000)]),
       );
       if (!mounted.current || request.current !== mine) return; // cancelled, closed or replaced
       const latest = now.current;

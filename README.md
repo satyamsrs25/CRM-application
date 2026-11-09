@@ -403,6 +403,35 @@ Nothing is sent or saved until you send the email. To switch back, set `EMAIL_DR
 and configure a valid `OPENAI_API_KEY`. For a backend running directly on your Mac, use
 `OLLAMA_BASE_URL=http://localhost:11434`.
 
+### Use open models through an OpenAI-compatible server (LiteLLM, vLLM, LM Studio)
+
+Both AI features can run on models you host yourself, behind any server that speaks the OpenAI chat API (LiteLLM in
+front of Ollama, for example, reached through an ngrok or internal address).
+
+| Feature | Settings |
+| --- | --- |
+| **AI Assistant** | `OPENAI_BASE_URL` (the server's `/v1` address), `OPENAI_API_KEY`, `OPENAI_MODEL`. The model must support tool (function) calling. `ASSISTANT_TIMEOUT_SECONDS` (default 60) is the wait for each model call; raise it for a slow model |
+| **Email drafting** (lead emails and campaign drafts) | `EMAIL_DRAFT_MODE=openai_compatible`, plus `COMPAT_BASE_URL` and `COMPAT_EMAIL_MODEL` (they default to `OPENAI_BASE_URL` and `OPENAI_MODEL`, so one set of settings can serve both) |
+
+```dotenv
+OPENAI_BASE_URL=https://your-server.ngrok-free.app/v1
+OPENAI_API_KEY=your-litellm-key
+OPENAI_MODEL=qwen2.5:7b-instruct          # the AI Assistant's model
+EMAIL_DRAFT_MODE=openai_compatible
+COMPAT_EMAIL_MODEL=qwen2.5:7b-instruct    # the drafting model (name as the server lists it at /v1/models)
+```
+
+Optional drafting settings: `COMPAT_TIMEOUT_SECONDS` (10 to 120, default 120), `COMPAT_JSON_MODE` (`json_schema`
+by default, then `json_object`, then `none`; a server that refuses one is retried with the next automatically) and
+`COMPAT_EXTRA_BODY` (JSON added to every request, for example `{"think": false}` to switch off a model's thinking).
+
+How it behaves: drafting uses the same rules, checks and CRM context as the other modes (nothing is sent or saved, the
+sender's signature is added by the server, scope and link checks still apply). Open models often wrap their JSON in
+thinking text or a code fence; the server strips that, accepts other key casing, and asks the model once more if an answer
+is not usable JSON. Like Ollama mode, one draft runs at a time on the model server (a second request gets a "busy" answer),
+and the model's name, the status, the number of attempts and the time taken are logged without any prompt or key
+(`docker compose logs api | grep draft_provider`). Run `docker compose up -d --build` after changing the settings.
+
 ### Email drafting reliability
 
 The writing bar shows a generate arrow before a draft exists, then Polish, the refinement menu, and undo/redo.
