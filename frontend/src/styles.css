@@ -798,11 +798,11 @@ p {
 }
 .ring-row {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   align-items: center;
-  justify-content: space-around;
+  justify-content: center;
   gap: 20px;
-  padding: 28px 18px;
+  padding: 24px 18px;
 }
 .legend {
   display: grid;
@@ -1164,7 +1164,7 @@ input[type="checkbox"] {
   color: var(--text-weak);
 }
 .row-done .link {
-  text-decoration: line-through;
+  text-decoration: none;
 }
 td.high {
   color: #8c4b02;
