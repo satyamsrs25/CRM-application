@@ -16,11 +16,10 @@ function taskViews(user, team) {
   const mine = (t) => t.owner_id === user.id;
   return [
     ["All Tasks", () => true],
-    ["My Open Tasks", (t) => mine(t) && !t.completed],
-    ["Today", (t) => mine(t) && !t.completed && t.due === todayKey()],
-    ["Overdue", (t) => mine(t) && !t.completed && t.isOverdue],
-    ["Completed", (t) => mine(t) && t.completed],
-    ...(team ? [["All Open Tasks", (t) => !t.completed]] : []),
+    ["My Tasks", (t) => mine(t)],
+    ["Open Tasks", (t) => !t.completed],
+    ["Completed Tasks", (t) => t.completed],
+    ...(team ? [["My Open Tasks", (t) => mine(t) && !t.completed]] : []),
   ];
 }
 
@@ -43,7 +42,7 @@ export default function TasksPage({ data, user, toggleTask, openTask, setModal, 
     if (task) setModal({ type: "task", record: task });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const views = taskViews(user, team);
-  const [view, setView] = useState(fromLink === "overdue" ? "Overdue" : "All Tasks");
+  const [view, setView] = useState("All Tasks");
   const [pickerOpen, setPickerOpen] = useState(false);
   const pickerRef = useRef(null);
   useEffect(() => {
@@ -66,9 +65,10 @@ export default function TasksPage({ data, user, toggleTask, openTask, setModal, 
     ...(team ? [{ key: "owner", label: "Assigned To", options: ownerOptions(data.users || [], user), get: (t) => String(t.owner_id) }] : []),
   ];
   const [stored, setStored] = useFilters("tasks");
-  // a link to one task or an overdue reminder starts without leftover filters
+  // a link to one task or an overdue reminder starts with that filter
   useEffect(() => {
-    if (fromLink) setStored({});
+    if (fromLink === "overdue") setStored({ due: "overdue" });
+    else if (fromLink) setStored({});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const active = Object.fromEntries(
     Object.entries(stored).filter(([k, v]) => {

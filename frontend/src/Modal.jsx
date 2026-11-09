@@ -212,7 +212,13 @@ export default function Modal({ modal, close, data, run, notify, user }) {
         type={inputType}
         required={required}
         defaultValue={value}
-        min={inputType === "number" ? 0 : undefined}
+        min={
+          name === "reschedule_to" || (name === "demo_date" && modal?.stage === "Demo")
+            ? new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+            : inputType === "number"
+              ? 0
+              : undefined
+        }
         max={name === "probability" ? 100 : undefined}
         step={
           name === "probability" || name === "employees"
