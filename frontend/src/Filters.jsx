@@ -12,6 +12,7 @@ const FUTURE = FUTURE_RANGES;
 export const TASK_DUE_RANGES = [
   ["overdue", "Overdue"],
   ["today", "Today"],
+  ["tomorrow", "Tomorrow"],
   ["week", "This week"],
   ["next7", "Next 7 days"],
 ];
@@ -27,6 +28,8 @@ export function rangeBounds(range, from, to) {
   switch (range) {
     case "today":
       return [today, addDays(today, 1)];
+    case "tomorrow":
+      return [addDays(today, 1), addDays(today, 2)];
     case "week":
       return [weekStart, addDays(weekStart, 7)];
     case "last7":

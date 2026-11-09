@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { AddToCalendar } from "./calendar";
 import OpportunityAttachments from "./Attachments";
 import { EmailList, useEmails } from "./Email";
 import { can, canCreateSales, canTransferLead } from "./permissions";
@@ -398,7 +399,19 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
                 <Field label="Lead LinkedIn URL" onEdit={edit}><ExternalLink href={item.linkedin_url} /></Field>
                 <Field label="Location" onEdit={edit}>{item.location}</Field>
                 <Field label="Lead Source" onEdit={edit}>{item.source}</Field>
-                <Field label="Demo Date">{dateTime(item.demo_date)}</Field>
+                <Field label="Demo Date">
+                  <div style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <span>{dateTime(item.demo_date)}</span>
+                    {item.demo_date && (
+                      <AddToCalendar
+                        title={`Sales Demo: ${[item.salutation, item.first_name, item.last_name].filter(Boolean).join(" ")} (${item.company || "Lead"})`}
+                        start={item.demo_date}
+                        description={`Sales demo with ${item.name} from ${item.company || "lead company"}.\nEmail: ${item.email || ""}\nPhone: ${item.phone || ""}`}
+                        location={item.location || "Online"}
+                      />
+                    )}
+                  </div>
+                </Field>
               </Section>
               <Section title="Company Details">
                 <Field label="Company Website" onEdit={edit}><ExternalLink href={item.company_website} /></Field>
