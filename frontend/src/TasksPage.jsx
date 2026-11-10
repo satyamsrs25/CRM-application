@@ -5,6 +5,7 @@ import { Icon, ObjectIcon, Pagination, usePaged } from "./ui";
 import { applyFilters, filterSummary, opts, ownerOptions, TASK_DUE_RANGES, Th, useFilters } from "./Filters";
 import { can } from "./permissions";
 import { PRIORITIES } from "./domain";
+import { isMyOpenTask, OVERDUE_SHORTCUT_FILTERS } from "./listHelpers";
 
 const todayKey = () => {
   const d = new Date();
@@ -65,24 +66,34 @@ export default function TasksPage({ data, user, toggleTask, openTask, setModal, 
     ...(team ? [{ key: "owner", label: "Assigned To", options: ownerOptions(data.users || [], user), get: (t) => String(t.owner_id) }] : []),
   ];
   const [stored, setStored] = useFilters("tasks");
-  // a link to one task or an overdue reminder starts with that filter
+  // Home > "You have N overdue tasks": your open overdue tasks, as a temporary view. Its filter is kept here, not saved,
+  // so the filters you saved yourself are untouched and come back when you leave it (Show all tasks, or another view)
+  const [shortcut, setShortcut] = useState(fromLink === "overdue");
+  const [shortcutFilters, setShortcutFilters] = useState(OVERDUE_SHORTCUT_FILTERS);
+  const filterValues = shortcut ? shortcutFilters : stored;
+  const setFilterValues = shortcut ? setShortcutFilters : setStored;
+  const leaveShortcut = (nextView = "All Tasks") => {
+    setShortcut(false);
+    setView(nextView);
+    window.history.replaceState(null, "", "#/tasks"); // a reload then opens the normal list
+  };
+  // a link to one task starts without leftover filters, so the task is in the list
   useEffect(() => {
-    if (fromLink === "overdue") setStored({ due: "overdue" });
-    else if (fromLink) setStored({});
+    if (fromLink === "task") setStored({});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const active = Object.fromEntries(
-    Object.entries(stored).filter(([k, v]) => {
+    Object.entries(filterValues).filter(([k, v]) => {
       const f = defs.find((d) => d.key === k.split("_")[0]);
-      if (!f || !stored[f.key]) return false;
+      if (!f || !filterValues[f.key]) return false;
       if (f.type === "date") return k !== f.key || v === "custom" || f.ranges.some(([o]) => o === v);
       return !f.options || k !== f.key || f.options.some(([o]) => o === v);
     }),
   );
-  const viewTest = views.find(([name]) => name === view)[1];
+  const viewTest = shortcut ? (t) => isMyOpenTask(t, user.id) : views.find(([name]) => name === view)[1];
   const rows = applyFilters(data.tasks.filter(viewTest), defs, active)
     .filter((t) => !search.trim() || `${t.title} ${t.related_to || ""}`.toLowerCase().includes(search.trim().toLowerCase()))
     .sort((a, b) => Number(a.completed) - Number(b.completed) || a.due_date.localeCompare(b.due_date));
-  const resetKey = `${view}|${search}|${JSON.stringify(active)}`;
+  const resetKey = `${shortcut ? "shortcut" : view}|${search}|${JSON.stringify(active)}`;
   const { pageRows, pager } = usePaged(rows, resetKey);
   useEffect(() => setPicked(new Set()), [resetKey]);
 
@@ -200,7 +211,7 @@ export default function TasksPage({ data, user, toggleTask, openTask, setModal, 
                 aria-expanded={pickerOpen}
                 title="Choose a list view"
               >
-                {view}
+                {shortcut ? "My Overdue Tasks" : view}
                 <Icon name="down" size={13} />
               </button>
               {pickerOpen && (
@@ -210,26 +221,36 @@ export default function TasksPage({ data, user, toggleTask, openTask, setModal, 
                     <li key={name}>
                       <button
                         role="option"
-                        aria-selected={name === view}
+                        aria-selected={!shortcut && name === view}
                         onClick={() => {
-                          setView(name);
+                          if (shortcut) leaveShortcut(name);
+                          else setView(name);
                           setPickerOpen(false);
                         }}
                       >
-                        {name === view && <Icon name="check" size={13} />} {name}
+                        {!shortcut && name === view && <Icon name="check" size={13} />} {name}
                       </button>
                     </li>
                   ))}
                 </ul>
               )}
             </div>
-          {filterSummary(defs, active) && (
-            <p className="filter-line">
-              Filtered by <b className="filter-note">{filterSummary(defs, active)}</b>{" "}
-              <button className="link filter-clear" onClick={() => setStored({})}>
-                Clear filters
+          {shortcut ? (
+            <p className="filter-line shortcut-line" role="status">
+              From Home: your open tasks that are overdue. Your saved filters aren&apos;t changed.{" "}
+              <button className="link filter-clear" onClick={() => leaveShortcut()}>
+                Show all tasks
               </button>
             </p>
+          ) : (
+            filterSummary(defs, active) && (
+              <p className="filter-line">
+                Filtered by <b className="filter-note">{filterSummary(defs, active)}</b>{" "}
+                <button className="link filter-clear" onClick={() => setFilterValues({})}>
+                  Clear filters
+                </button>
+              </p>
+            )
           )}
           </div>
           <label className="list-search">
@@ -256,7 +277,7 @@ export default function TasksPage({ data, user, toggleTask, openTask, setModal, 
                   ["Assigned To", "owner"],
                   ["Reminder", null, "date"],
                 ].map(([label, key, className]) => (
-                  <Th key={label} label={label} className={className} filter={key && defs.find((f) => f.key === key)} values={active} onChange={setStored} />
+                  <Th key={label} label={label} className={className} filter={key && defs.find((f) => f.key === key)} values={active} onChange={setFilterValues} />
                 ))}
               </tr>
             </thead>

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { canCreateOpportunity, canCreateSales } from "./permissions.js";
+import { canCreateOpportunity, canCreateSales, canEditRecord } from "./permissions.js";
 import {
   api,
   apiRequest,
@@ -59,7 +59,9 @@ import {
   ASSISTANT_FILE_TYPES,
   ASSISTANT_ATTACH_HELP,
   homeDescription,
+  demoDateMin,
 } from "./domain.js";
+import { BUSINESS_TIMEZONE, BUSINESS_TZ_LABEL, businessNow, formatBusiness, formatBusinessTime, fromBusinessInput, toBusinessInput } from "./businessTime.js";
 import { attachedSummary, fileSize } from "./format.js";
 import {
   BULK_LIMIT,
@@ -73,7 +75,11 @@ import {
   selectionSummary,
   sortText,
   withoutFilter,
+  isMyOpenTask,
+  myOverdueTasks,
+  OVERDUE_SHORTCUT_FILTERS,
 } from "./listHelpers.js";
+import { demoEvent, foldIcsLine, googleCalendarUrl, icsContent, icsText, outlookCalendarUrl } from "./calendarLinks.js";
 
 test("lead form uses backend fields and only requires last name and company", () => {
   assert.deepEqual(
@@ -1105,4 +1111,166 @@ test("resetting the writing bar returns to generation even while the previous em
   assert.equal(emailWritingAction("", draft, "Ravi Kumar", "ravi@crm.test", true), "stage");
   assert.equal(emailWritingAction("write an email", draft, "Ravi Kumar", "ravi@crm.test", true), "custom");
   assert.equal(emailWritingAction("", draft, "Ravi Kumar", "ravi@crm.test", false), "formalize");
+});
+
+// ---------- review follow-ups (vikram-fixes) ----------
+
+test("lead Edit: the Details pencils follow the same rule as Actions > Edit (owner or Edit team records)", () => {
+  const lead = { id: 7, owner_id: 2, stage: "Converted" };
+  const user = (role, permissions = [], id = 9) => ({ id, role, permissions });
+  assert.equal(canEditRecord(user("Salesperson", [], 2), lead), true); // the owner
+  assert.equal(canEditRecord(user("Manager", ["edit_team_records", "view_team_records"]), lead), true);
+  assert.equal(canEditRecord(user("Admin", ["edit_team_records", "manage_users"]), lead), true);
+  assert.equal(canEditRecord(user("Salesperson", ["view_team_records"]), lead), false); // team access is view-only
+  assert.equal(canEditRecord(user("Salesperson"), lead), false);
+  assert.equal(canEditRecord(null, lead), false);
+  const page = source("./RecordPage.jsx");
+  assert.match(page, /const canEdit = canEditRecord\(user, item\);/);
+  assert.match(page, /const editField = canEdit \? edit : undefined;/);
+  assert.doesNotMatch(page, /onEdit=\{edit\}/); // every pencil uses the guarded handler
+  assert.match(page, /canEdit && \{ label: "Edit", onClick: edit \}/); // Actions > Edit unchanged (also Converted leads)
+});
+
+test("record pages: one New Task button, in the Activity tab, linked to the record", () => {
+  const page = source("./RecordPage.jsx");
+  const header = page.slice(page.indexOf('<div className="button-group">'), page.indexOf("<ActionMenu", page.indexOf('<div className="button-group">')));
+  assert.doesNotMatch(header, /openTask\(/); // no New Task button in the header any more
+  assert.match(page, /<button className="sf-button" onClick=\{\(\) => openTask\(item\.id, collection\)\}>\s*<ObjectIcon type="task" size=\{18\} \/> New Task/);
+  // the stage popups still require their own New Task
+  assert.equal(stageTaskNeeded("stage", "leads", "Demo"), true);
+});
+
+test("completed tasks: no strikethrough on record pages or the Tasks list; the status stays visible", () => {
+  const css = source("./styles.css");
+  assert.match(css, /\.task-line\.done \.link \{\s*text-decoration: none;/);
+  assert.match(css, /\.row-done \.link \{\s*text-decoration: none;/);
+  assert.doesNotMatch(css, /\.task-line\.done \.link \{[^}]*line-through/);
+  const page = source("./RecordPage.jsx");
+  assert.match(page, /checked=\{task\.completed\}\s*disabled=\{task\.completed\}/); // ticked and disabled
+  assert.match(page, /\{task\.completed \? ` • \$\{task\.status\}` : ""\}/); // "Done" / "Auto-closed" in the line
+});
+
+test("sign-in: Edge's own password reveal is hidden, so the app's Show / Hide password button is the only one", () => {
+  const css = source("./login.css");
+  assert.match(css, /#signin-password::-ms-reveal, #signin-password::-ms-clear \{ display: none; \}/);
+  const login = source("./Login.jsx");
+  assert.match(login, /aria-label=\{showPassword \? "Hide password" : "Show password"\}/);
+  assert.match(login, /type=\{showPassword \? "text" : "password"\}/);
+  assert.match(login, /autoComplete="current-password"/); // password managers still fill it
+});
+
+test("demo times are IST (Asia/Kolkata) for entry and display, whatever the browser's time zone", () => {
+  // a fixed instant: 2026-11-09 22:16:30 UTC = 10 Nov 03:46 IST (and 17:16 in New York)
+  const now = new Date(Date.UTC(2026, 10, 9, 22, 16, 30));
+  const zones = ["America/New_York", "America/Los_Angeles", "Europe/London"];
+  const saved = process.env.TZ;
+  try {
+    for (const tz of zones) {
+      process.env.TZ = tz; // the browser's own zone must not matter
+      assert.equal(businessNow(now), "2026-11-10T03:46", tz);
+      assert.equal(toBusinessInput("2026-11-20T15:30:00Z"), "2026-11-20T21:00", tz); // stored 10:30 New York
+      assert.equal(formatBusiness("2026-11-20T15:30:00Z"), "11/20/2026, 9:00 PM IST", tz);
+      assert.equal(formatBusinessTime("2026-11-20T15:30:00Z"), "9:00 PM IST", tz);
+      assert.equal(new Date(fromBusinessInput("2026-11-20T21:00")).toISOString(), "2026-11-20T15:30:00.000Z", tz);
+    }
+  } finally {
+    if (saved === undefined) delete process.env.TZ;
+    else process.env.TZ = saved;
+  }
+  assert.equal(BUSINESS_TIMEZONE, "Asia/Kolkata");
+  assert.equal(BUSINESS_TZ_LABEL, "IST (UTC+05:30)");
+  assert.equal(fromBusinessInput(""), null);
+  assert.equal(toBusinessInput(null), "");
+  // the backend uses the same zone
+  assert.match(readFileSync(new URL("../../backend/app/services.py", import.meta.url), "utf8"), /BUSINESS_TIMEZONE = ZoneInfo\("Asia\/Kolkata"\)/);
+});
+
+test("demo date pickers: earliest is now in IST; Edit Lead keeps a demo that already passed", () => {
+  const now = new Date(Date.UTC(2026, 10, 9, 22, 16, 30)); // 10 Nov 03:46 IST
+  const earliest = "2026-11-10T03:46";
+  assert.equal(demoDateMin({ name: "demo_date", type: "stage", stage: "Demo", now }), earliest); // Change Stage > Demo
+  assert.equal(demoDateMin({ name: "reschedule_to", type: "cancelDemo", now }), earliest); // Reschedule
+  assert.equal(demoDateMin({ name: "demo_date", type: "lead", current: "", now }), earliest); // Edit Lead, no date yet
+  assert.equal(demoDateMin({ name: "demo_date", type: "lead", current: "2026-12-01T10:00", now }), earliest);
+  assert.equal(demoDateMin({ name: "demo_date", type: "lead", current: "2026-11-10T03:00", now }), undefined); // passed
+  assert.equal(demoDateMin({ name: "task_due_date", type: "stage", stage: "Demo", now }), undefined);
+  const modal = source("./Modal.jsx");
+  assert.match(modal, /demoDateMin\(\{ name, type, stage: modal\?\.stage, current: value \}\)/);
+  // labelled, filled from the instant, sent with the IST offset
+  assert.equal((modal.match(/`Demo Date in \$\{BUSINESS_TZ_LABEL\}`/g) || []).length, 2); // Edit Lead and Change Stage
+  assert.match(modal, /`New Demo Date in \$\{BUSINESS_TZ_LABEL\}`/); // Reschedule
+  assert.equal((modal.match(/toBusinessInput\(record\.demo_at\)/g) || []).length, 2);
+  assert.match(modal, /\{ demo_date: fromBusinessInput\(v\.demo_date\) \}/);
+  assert.match(modal, /reschedule_to: demoChoice === "reschedule" \? fromBusinessInput\(v\.reschedule_to\) : null/);
+  assert.match(source("./api.js"), /payload\.demo_date = fromBusinessInput\(optional\(values\.demo_date\)\)/);
+  assert.match(source("./RecordPage.jsx"), /<span>\{formatBusiness\(item\.demo_at\)\}<\/span>/);
+  assert.match(source("./SellerHome.jsx"), /formatBusinessTime\(e\.start_at\)/);
+});
+
+test("Home overdue shortcut: the count and the Tasks page use one definition, and the shortcut is never saved", () => {
+  const tasks = [
+    { id: "1", owner_id: 2, completed: false, isOverdue: true },
+    { id: "2", owner_id: 2, completed: true, isOverdue: false }, // done (a past due date doesn't make it overdue)
+    { id: "3", owner_id: 5, completed: false, isOverdue: true }, // someone else's
+    { id: "4", owner_id: 2, completed: false, isOverdue: false }, // due today or later
+  ];
+  assert.deepEqual(myOverdueTasks(tasks, 2).map((t) => t.id), ["1"]);
+  assert.deepEqual(tasks.filter((t) => isMyOpenTask(t, 2)).map((t) => t.id), ["1", "4"]); // the shortcut's list
+  assert.deepEqual(OVERDUE_SHORTCUT_FILTERS, { due: "overdue" }); // + Due Date: Overdue = task 1 only
+  const page = source("./TasksPage.jsx");
+  assert.doesNotMatch(page, /setStored\(\{ due: "overdue" \}\)/); // the saved filters are not overwritten
+  assert.match(page, /const filterValues = shortcut \? shortcutFilters : stored;/);
+  assert.match(page, /const viewTest = shortcut \? \(t\) => isMyOpenTask\(t, user\.id\)/);
+  assert.match(source("./SellerHome.jsx"), /const overdue = myOverdueTasks\(data\.tasks, user\.id\);/);
+  // Due Date > Overdue itself is unchanged (it still lists every task due before today), and so is the dropdown
+  assert.match(source("./Filters.jsx"), /case "overdue":\s*return \[null, today\];/);
+  assert.match(page, /\["My Tasks", \(t\) => mine\(t\)\],\s*\["Open Tasks", \(t\) => !t\.completed\],\s*\["Completed Tasks", \(t\) => t\.completed\],/);
+});
+
+test("Add to Calendar: Google and Microsoft 365 links, a valid .ics, only for a booked demo", () => {
+  const start = new Date(Date.UTC(2026, 10, 20, 15, 30));
+  const event = { uid: "lead-7-demo@salestrack", title: "Sales Demo: Ana Ruiz (Acme, Inc; West)", start, description: "Line one\nEmail: ana@acme.test" };
+  const google = new URL(googleCalendarUrl(event));
+  assert.equal(google.host, "calendar.google.com");
+  assert.equal(google.searchParams.get("dates"), "20261120T153000Z/20261120T163000Z"); // one hour, in UTC
+  assert.equal(google.searchParams.get("location"), null);
+  const outlook = new URL(outlookCalendarUrl(event));
+  assert.equal(outlook.host, "outlook.office.com"); // Microsoft 365, not outlook.live.com
+  assert.equal(outlook.searchParams.get("startdt"), "2026-11-20T15:30:00.000Z");
+  assert.equal(outlook.searchParams.get("enddt"), "2026-11-20T16:30:00.000Z");
+  const ics = icsContent({ ...event, stamp: new Date(Date.UTC(2026, 10, 9, 22, 0)) });
+  assert.ok(ics.endsWith("\r\n") && !/[^\r]\n/.test(ics)); // CRLF line ends only
+  for (const line of ["UID:lead-7-demo@salestrack", "DTSTAMP:20261109T220000Z", "DTSTART:20261120T153000Z", "DTEND:20261120T163000Z"])
+    assert.ok(ics.includes(`\r\n${line}\r\n`), line);
+  assert.ok(ics.includes("SUMMARY:Sales Demo: Ana Ruiz (Acme\\, Inc\\; West)"));
+  assert.ok(ics.includes("DESCRIPTION:Line one\\nEmail: ana@acme.test"));
+  assert.doesNotMatch(ics, /LOCATION|ORGANIZER|ATTENDEE/); // no venue guessed, no invitation
+  assert.equal(icsText("a\\b"), "a\\\\b");
+  // long lines fold at 75 octets (also with multi-byte characters), continuation lines start with a space
+  const folded = foldIcsLine(`DESCRIPTION:${"é".repeat(60)}`);
+  for (const part of folded.split("\r\n")) assert.ok(new TextEncoder().encode(part).length <= 75);
+  assert.equal(folded.split("\r\n").slice(1).every((p) => p.startsWith(" ")), true);
+  assert.equal(folded.replace(/\r\n /g, ""), `DESCRIPTION:${"é".repeat(60)}`);
+  // only for a lead at Demo with a date
+  const lead = { id: 7, stage: "Demo", demo_date: "2026-11-20T10:30:00", demo_at: "2026-11-20T15:30:00Z", name: "Ana Ruiz", first_name: "Ana", last_name: "Ruiz", company: "Acme", email: "ana@acme.test" };
+  const booked = demoEvent(lead);
+  assert.equal(booked.start.toISOString(), "2026-11-20T15:30:00.000Z"); // the API's instant: the same for every viewer
+  assert.equal(booked.uid, "lead-7-demo@salestrack");
+  assert.equal(booked.title, "Sales Demo: Ana Ruiz (Acme)");
+  assert.equal(booked.description, "Sales demo with Ana Ruiz from Acme.\nEmail: ana@acme.test"); // no empty Phone line
+  for (const stage of ["Converted", "Lost", "Revisit", "Nurturing"]) assert.equal(demoEvent({ ...lead, stage }), null);
+  assert.equal(demoEvent({ ...lead, demo_date: null, demo_at: null }), null); // cancelled demo
+  const menu = source("./calendar.jsx");
+  for (const a of ['aria-haspopup="menu"', "aria-expanded={open}", 'role="menu"', 'role="menuitem"', 'e.key === "Escape"', "button.current?.focus()"])
+    assert.ok(menu.includes(a), a);
+});
+
+test("list headers: the buttons on the right are spaced and wrap, without touching each other", () => {
+  const css = source("./styles.css");
+  const rule = css.match(/\.list-title > \.list-buttons \{([^}]*)\}/);
+  assert.ok(rule, "list-buttons rule");
+  for (const decl of ["display: flex", "flex-wrap: wrap", "gap: 8px", "justify-content: flex-end"]) assert.ok(rule[1].includes(decl), decl);
+  assert.match(css, /\.list-title \{\s*display: flex;\s*flex-wrap: wrap;/);
+  // List / Kanban stay one joined control (no gap between its two halves)
+  assert.doesNotMatch(css, /\.toggle-group \{[^}]*gap:/);
 });

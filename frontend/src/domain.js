@@ -1,3 +1,5 @@
+import { businessNow } from "./businessTime.js";
+
 // Lead path (same as backend/app/constants.py): New -> Nurturing -> Revisit -> Demo -> Converted. New leads start at
 // New. Revisit is optional ("not now": the lead asked to be contacted on a later date), so it can be passed over;
 // every other stage must be done or confirmed as done. Closed without converting, from any open stage:
@@ -430,6 +432,18 @@ export function homeDescription(role, team) {
       : "Review your opportunities, accounts and upcoming follow-ups.";
   if (team) return "The team's deals, accounts and follow-ups at a glance.";
   return "Your deals, accounts and follow-ups for today.";
+}
+
+// The earliest demo date and time the pickers accept: now, to the minute, in IST (demo times are IST whatever the
+// browser's time zone; the API checks again). Change Stage > Demo and Reschedule Demo always; Edit Lead too, unless
+// the demo date it already has is in the past (that lead's other details can still be saved without moving the demo).
+export function demoDateMin({ name, type, stage, current = "", now = new Date() }) {
+  const earliest = businessNow(now);
+  if (name === "reschedule_to") return earliest;
+  if (name !== "demo_date") return undefined;
+  if (stage === "Demo") return earliest; // Change Stage > Demo (also from the Kanban board)
+  if (type === "lead") return current && String(current).slice(0, 16) < earliest ? undefined : earliest; // Edit Lead
+  return undefined;
 }
 
 // The primary writing action is shared by the button and Enter key.

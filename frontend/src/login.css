@@ -42,6 +42,9 @@
 .signin-field { display: flex; align-items: center; gap: 10px; min-height: 46px; margin-top: 6px; padding: 0 14px; border: 1px solid #d7dbe2; border-radius: 10px; background: #fff; color: #7b7e85; box-shadow: 0 1px 3px #18264404; }
 .signin-field input { width: 100%; min-width: 0; height: 44px; padding: 0; border: 0; outline: 0; background: transparent; font-size: 15px; color: #182644; }
 .signin-field input::placeholder { color: #878990; opacity: 1; }
+/* Edge adds its own reveal (eye) and clear buttons to password fields: the app's Show / Hide password button is the
+   only one here */
+#signin-password::-ms-reveal, #signin-password::-ms-clear { display: none; }
 .signin-field:focus-within { border-color: #2463df; box-shadow: 0 0 0 3px #2463df15; }
 .signin-forgot { color: #2452ab; font-size: 13px; font-weight: 600; text-align: right; }
 .signin-forgot:hover { text-decoration: underline; }

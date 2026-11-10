@@ -16,7 +16,7 @@ from app.database import get_db
 from app.security import acting_user, team_ids
 from app.models import Account, Contact, Lead, Opportunity, Task, User
 from app.serializers import task_out
-from app.services import now
+from app.services import BUSINESS_TIMEZONE, demo_instant, now
 
 router = APIRouter(prefix="/api", tags=["Home"])
 
@@ -113,10 +113,12 @@ def home_page(owner_id: int | None = Query(None, description="Only this salesper
     recent_upcoming = count(recent_q.where(has_upcoming))
     recent_with_tasks = count(recent_q.where(has_task))
 
-    # Today's Events: demos booked for today
-    today_start = datetime.combine(date.today(), datetime.min.time())
+    # Today's Events: demos booked for today in IST (demo times are IST; stored in server time)
+    ist_today = datetime.now(BUSINESS_TIMEZONE).date()
+    ist_day = [datetime.combine(ist_today + timedelta(days=n), datetime.min.time(), BUSINESS_TIMEZONE)
+               .astimezone().replace(tzinfo=None) for n in (0, 1)]
     demos = db.scalars(
-        leads_q.where(Lead.demo_date >= today_start, Lead.demo_date < tomorrow).order_by(Lead.demo_date)
+        leads_q.where(Lead.demo_date >= ist_day[0], Lead.demo_date < ist_day[1]).order_by(Lead.demo_date)
     ).all()
 
     recent = []
@@ -166,7 +168,8 @@ def home_page(owner_id: int | None = Query(None, description="Only this salesper
                 for o in key_deals
             ],
             "todays_events": [
-                {"type": "Demo", "lead_id": lead.id, "name": lead.name, "company": lead.company, "start": lead.demo_date}
+                {"type": "Demo", "lead_id": lead.id, "name": lead.name, "company": lead.company, "start": lead.demo_date,
+                 "start_at": demo_instant(lead.demo_date)}
                 for lead in demos
             ],
             "accounts": {"total": len(accounts), **activity_split([[t for o in a.opportunities for t in o.tasks] for a in accounts])},

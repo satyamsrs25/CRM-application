@@ -251,7 +251,7 @@ def test_lead_emails_move_to_opportunity_on_convert(client, outbox):
 def test_demo_reminder_is_sent_before_the_demo(client, outbox):
     lead = new_lead(client)
     demo = (datetime.now() + timedelta(minutes=30)).replace(microsecond=0)  # reminder time (1 hour before) has passed
-    client.put(f"/api/leads/{lead['id']}/stage", json={"task": TASK, "completed_stages": ["New", "Nurturing"], "stage": "Demo", "demo_date": demo.isoformat(), "note": "Synthetic test note"})
+    client.put(f"/api/leads/{lead['id']}/stage", json={"task": TASK, "completed_stages": ["New", "Nurturing"], "stage": "Demo", "demo_date": demo.astimezone().isoformat(), "note": "Synthetic test note"})  # server time
     outbox.clear()
     db = db_session()
     assert scheduler.run_checks(db)["reminders"] == 1

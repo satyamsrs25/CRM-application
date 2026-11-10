@@ -1,8 +1,10 @@
 import React, { useState } from "react";
 import { AddToCalendar } from "./calendar";
+import { demoEvent } from "./calendarLinks";
+import { formatBusiness } from "./businessTime";
 import OpportunityAttachments from "./Attachments";
 import { EmailList, useEmails } from "./Email";
-import { can, canCreateSales, canTransferLead } from "./permissions";
+import { canCreateSales, canEditRecord, canTransferLead } from "./permissions";
 import { amount, dateTime, shortDate } from "./format";
 import { ActionMenu, Card, Icon, ObjectIcon, PathBar, PhoneReveal, StageBadge } from "./ui";
 
@@ -161,12 +163,14 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
 
   const closed = ["Won", "Lost", "Converted", "Unqualified"].includes(item.stage);
   // Salespeople change only their own records; Managers and Admins can change any (the backend checks it too)
-  const canEdit = item.owner_id === user?.id || can(user, "edit_team_records");
+  const canEdit = canEditRecord(user, item);
   const canConvert = canEdit && canCreateSales(user); // Lead conversion is reserved for Managers and Salespeople
   const canTransfer = lead && canTransferLead(user, item); // Admin: any lead; owner with "Transfer leads": their own
   const transfers = (lead && item.transfers) || [];
   const tasks = data.tasks.filter((t) => t.relatedId === item.id && t.relatedType === collection);
   const edit = () => (lead ? openLead(item) : setModal({ type: "opportunity", record: item }));
+  // the pencils on the Details tab follow the same rule as Actions > Edit (none for a view-only user)
+  const editField = canEdit ? edit : undefined;
   const convertedTo = lead && data.opportunities.find((o) => o.leadId === item.id);
   const sourceLead = !lead && item.leadId && data.leads.find((l) => l.id === item.leadId);
   const contact = !lead && data.contacts.find((c) => c.id === item.primary_contact_id);
@@ -260,9 +264,7 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
             <button className="sf-button" onClick={sendEmail}>
               Send Email
             </button>
-            <button className="sf-button" onClick={() => openTask(item.id, collection)}>
-              New Task
-            </button>
+            {/* New Task is in the Activity tab (the same form, already linked to this record) */}
             {canConvert && lead && !closed && (
               <button className="sf-button" onClick={() => convert(item.id)}>
                 Convert
@@ -388,36 +390,30 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
               <Section title="Lead Information">
                 <Field label="Lead Owner">{item.owner}</Field>
                 <Field label="Lead Status"><StageBadge stage={item.stage} /></Field>
-                <Field label="Name" onEdit={edit}>
+                <Field label="Name" onEdit={editField}>
                   {[item.salutation, item.first_name, item.last_name].filter(Boolean).join(" ")}
                 </Field>
-                <Field label="Company" onEdit={edit}>{item.company}</Field>
-                <Field label="Title" onEdit={edit}>{item.title}</Field>
-                <Field label="Industry" onEdit={edit}>{item.industry}</Field>
-                <Field label="Email" onEdit={edit}>{item.email && <a href={`mailto:${item.email}`}>{item.email}</a>}</Field>
-                <Field label="Phone" onEdit={edit}><PhoneReveal value={item.phone} /></Field>
-                <Field label="Lead LinkedIn URL" onEdit={edit}><ExternalLink href={item.linkedin_url} /></Field>
-                <Field label="Location" onEdit={edit}>{item.location}</Field>
-                <Field label="Lead Source" onEdit={edit}>{item.source}</Field>
+                <Field label="Company" onEdit={editField}>{item.company}</Field>
+                <Field label="Title" onEdit={editField}>{item.title}</Field>
+                <Field label="Industry" onEdit={editField}>{item.industry}</Field>
+                <Field label="Email" onEdit={editField}>{item.email && <a href={`mailto:${item.email}`}>{item.email}</a>}</Field>
+                <Field label="Phone" onEdit={editField}><PhoneReveal value={item.phone} /></Field>
+                <Field label="Lead LinkedIn URL" onEdit={editField}><ExternalLink href={item.linkedin_url} /></Field>
+                <Field label="Location" onEdit={editField}>{item.location}</Field>
+                <Field label="Lead Source" onEdit={editField}>{item.source}</Field>
                 <Field label="Demo Date">
-                  <div style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                    <span>{dateTime(item.demo_date)}</span>
-                    {item.demo_date && (
-                      <AddToCalendar
-                        title={`Sales Demo: ${[item.salutation, item.first_name, item.last_name].filter(Boolean).join(" ")} (${item.company || "Lead"})`}
-                        start={item.demo_date}
-                        description={`Sales demo with ${item.name} from ${item.company || "lead company"}.\nEmail: ${item.email || ""}\nPhone: ${item.phone || ""}`}
-                        location={item.location || "Online"}
-                      />
-                    )}
-                  </div>
+                  <span className="demo-date-value">
+                    <span>{formatBusiness(item.demo_at)}</span>
+                    {/* only for a demo that is booked now: a lead at Demo with a date (not Converted, Lost or cancelled) */}
+                    <AddToCalendar event={demoEvent(item)} />
+                  </span>
                 </Field>
               </Section>
               <Section title="Company Details">
-                <Field label="Company Website" onEdit={edit}><ExternalLink href={item.company_website} /></Field>
-                <Field label="Company LinkedIn URL" onEdit={edit}><ExternalLink href={item.company_linkedin_url} /></Field>
-                <Field label="Turnover" onEdit={edit}>{item.annual_revenue != null ? `$${amount(item.annual_revenue)}` : ""}</Field>
-                <Field label="Headcount" onEdit={edit}>{headcount(item.employees)}</Field>
+                <Field label="Company Website" onEdit={editField}><ExternalLink href={item.company_website} /></Field>
+                <Field label="Company LinkedIn URL" onEdit={editField}><ExternalLink href={item.company_linkedin_url} /></Field>
+                <Field label="Turnover" onEdit={editField}>{item.annual_revenue != null ? `$${amount(item.annual_revenue)}` : ""}</Field>
+                <Field label="Headcount" onEdit={editField}>{headcount(item.employees)}</Field>
               </Section>
               {item.stage === "Lost" && (
                 <Section title="Lost Details">
@@ -450,16 +446,16 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
           ) : (
             <>
               <Section title="Opportunity Information">
-                <Field label="Opportunity Owner" onEdit={edit}>{item.owner}</Field>
-                <Field label="Opportunity Name" onEdit={edit}>{item.name}</Field>
+                <Field label="Opportunity Owner" onEdit={editField}>{item.owner}</Field>
+                <Field label="Opportunity Name" onEdit={editField}>{item.name}</Field>
                 <Field label="Account Name">
                   {item.account_id && <a href={`#/accounts/${item.account_id}`}>{item.account_name}</a>}
                 </Field>
-                <Field label="Primary Contact" onEdit={edit}>
+                <Field label="Primary Contact" onEdit={editField}>
                   {contact && <a href={`#/contacts/${contact.id}`}>{contact.full_name}</a>}
                 </Field>
-                <Field label="Close Date" onEdit={edit}>{shortDate(item.expected_close_date)}</Field>
-                <Field label="Amount" onEdit={edit}>{amount(item.expected_value)}</Field>
+                <Field label="Close Date" onEdit={editField}>{shortDate(item.expected_close_date)}</Field>
+                <Field label="Amount" onEdit={editField}>{amount(item.expected_value)}</Field>
                 <Field label="Stage"><StageBadge stage={item.stage} /></Field>
                 {item.stage === "Won" && <Field label="Final Amount">{amount(item.final_value)}</Field>}
                 <Field label="Converted From">
@@ -467,10 +463,10 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
                 </Field>
               </Section>
               <Section title="Discovery">
-                <Field label="Needs / Pain Points" onEdit={edit}>{item.discovery_needs}</Field>
-                <Field label="Budget" onEdit={edit}>{item.discovery_budget}</Field>
-                <Field label="Decision Maker" onEdit={edit}>{item.discovery_decision_maker}</Field>
-                <Field label="Timeline" onEdit={edit}>{item.discovery_timeline}</Field>
+                <Field label="Needs / Pain Points" onEdit={editField}>{item.discovery_needs}</Field>
+                <Field label="Budget" onEdit={editField}>{item.discovery_budget}</Field>
+                <Field label="Decision Maker" onEdit={editField}>{item.discovery_decision_maker}</Field>
+                <Field label="Timeline" onEdit={editField}>{item.discovery_timeline}</Field>
               </Section>
               {item.stage === "Lost" && (
                 <Section title="Lost Details">

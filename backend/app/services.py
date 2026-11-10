@@ -11,7 +11,8 @@
                          the owner gets a bell notification and an email with the next follow-up task
 """
 import re
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
 from sqlalchemy import not_, or_, select, update
@@ -32,6 +33,45 @@ from app.security import owner_for_new
 
 def now() -> datetime:
     return datetime.now().replace(microsecond=0)
+
+
+# ---------- demo dates: the business time zone ----------
+# Demo dates and times are entered and shown in the company's time zone, IST (Asia/Kolkata, UTC+05:30, no daylight
+# saving), whatever the server's or the browser's time zone. They are stored as before: without a zone, in server time
+# (TZ in docker-compose.yml), which reminders and every "now" check use. Demo dates saved before keep that meaning:
+# they are converted for display, never rewritten. The frontend has the same setting (frontend/src/businessTime.js).
+BUSINESS_TIMEZONE = ZoneInfo("Asia/Kolkata")
+BUSINESS_TZ_NAME = "IST"
+DEMO_IN_PAST = "Choose a demo date and time in the future"
+
+
+def demo_input(value: datetime) -> datetime:
+    """A demo date and time from a request, in server time (as stored). With an offset ("...+05:30", "...Z") it is
+    converted; without one it is read as IST."""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=BUSINESS_TIMEZONE)
+    return value.astimezone().replace(tzinfo=None, microsecond=0)
+
+
+def require_future(when: datetime, message: str = DEMO_IN_PAST) -> datetime:
+    """A demo date and time in server time, refused unless it is after now() (the one clock every check uses)."""
+    if when <= now():
+        raise HTTPException(status_code=400, detail=message)
+    return when
+
+
+def future_demo(value: datetime, message: str = DEMO_IN_PAST) -> datetime:
+    return require_future(demo_input(value), message)
+
+
+def demo_instant(stored: datetime | None) -> datetime | None:
+    """A stored demo date and time (server time, no zone) as an instant in UTC, so every viewer gets the same time."""
+    return stored.astimezone(timezone.utc) if stored else None
+
+
+def demo_text(stored: datetime, pattern: str = "%d %b %Y %I:%M %p") -> str:
+    """A stored demo date and time as people read it, in IST: "20 Nov 2026 09:00 PM IST"."""
+    return f"{stored.astimezone(BUSINESS_TIMEZONE):{pattern}} {BUSINESS_TZ_NAME}"
 
 
 def start_of_today() -> datetime:
@@ -225,7 +265,7 @@ def schedule_demo_tasks(db: Session, lead) -> Task | None:
         prep_due = None
     return upsert_timeline_task(
         db, title=DEMO_PREP_TASK, record_name=lead.name, due=prep_due, owner_id=lead.owner_id, lead_id=lead.id,
-        description=f"Demo with {lead.name} ({lead.company}) on {demo:%d %b %Y at %I:%M %p}." if demo else "",
+        description=f"Demo with {lead.name} ({lead.company}) on {demo_text(demo, '%d %b %Y at %I:%M %p')}." if demo else "",
     )
 
 

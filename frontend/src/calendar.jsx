@@ -1,149 +1,97 @@
-// Calendar export utilities for SalesTrack CRM (Google Calendar, Outlook Web, and iCal .ics)
-import React, { useEffect, useRef, useState } from "react";
+// "Add to Calendar" next to a lead's demo date: Google Calendar, Outlook on the web (Microsoft 365) or an .ics file.
+// The links and the file are built in calendarLinks.js; nothing is synchronised and no invitation is sent.
+import React, { useEffect, useId, useRef, useState } from "react";
+import { googleCalendarUrl, icsContent, outlookCalendarUrl } from "./calendarLinks";
 import { Icon } from "./ui";
 
-export function googleCalendarUrl({ title, start, description, location }) {
-  const startDate = new Date(start);
-  const endDate = new Date(startDate.getTime() + 60 * 60 * 1000); // 1-hour duration
-  const fmt = (d) => d.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
-  const params = new URLSearchParams({
-    action: "TEMPLATE",
-    text: title,
-    dates: `${fmt(startDate)}/${fmt(endDate)}`,
-    details: description || "",
-    location: location || "",
-  });
-  return `https://calendar.google.com/calendar/render?${params.toString()}`;
-}
-
-export function outlookCalendarUrl({ title, start, description, location }) {
-  const startDate = new Date(start);
-  const endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
-  const params = new URLSearchParams({
-    path: "/calendar/action/compose",
-    rru: "addevent",
-    subject: title,
-    startdt: startDate.toISOString(),
-    enddt: endDate.toISOString(),
-    body: description || "",
-    location: location || "",
-  });
-  return `https://outlook.live.com/calendar/0/deeplink/compose?${params.toString()}`;
-}
-
-export function downloadIcs({ title, start, description, location }) {
-  const startDate = new Date(start);
-  const endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
-  const fmt = (d) => d.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
-  const ics = [
-    "BEGIN:VCALENDAR",
-    "VERSION:2.0",
-    "PRODID:-//SalesTrack CRM//EN",
-    "CALSCALE:GREGORIAN",
-    "METHOD:PUBLISH",
-    "BEGIN:VEVENT",
-    `SUMMARY:${title.replace(/[\r\n]/g, " ")}`,
-    `DTSTART:${fmt(startDate)}`,
-    `DTEND:${fmt(endDate)}`,
-    `DESCRIPTION:${(description || "").replace(/\n/g, "\\n")}`,
-    `LOCATION:${(location || "").replace(/[\r\n]/g, " ")}`,
-    `STATUS:CONFIRMED`,
-    "END:VEVENT",
-    "END:VCALENDAR",
-  ].join("\r\n");
-
-  const blob = new Blob([ics], { type: "text/calendar;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
+function downloadIcs(event) {
+  const url = URL.createObjectURL(new Blob([icsContent(event)], { type: "text/calendar;charset=utf-8" }));
   const a = document.createElement("a");
   a.href = url;
-  a.download = `${title.replace(/[^a-zA-Z0-9]/g, "_")}.ics`;
+  a.download = event.fileName;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
 
-// Dropdown button component to add events to Google Calendar, Outlook, or Apple/Desktop iCal
-export function AddToCalendar({ title, start, description = "", location = "", buttonText = "Add to Calendar" }) {
+// A menu button: opens on the first choice; arrow keys, Home and End move; Esc closes it and returns to the button;
+// Tab or a click elsewhere closes it.
+export function AddToCalendar({ event, buttonText = "Add to Calendar" }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef(null);
+  const wrap = useRef(null);
+  const button = useRef(null);
+  const menu = useRef(null);
+  const id = useId();
 
   useEffect(() => {
-    if (!open) return;
-    const clickAway = (e) => {
-      if (!ref.current?.contains(e.target)) setOpen(false);
+    if (!open) return undefined;
+    const items = () => [...(menu.current?.querySelectorAll('[role="menuitem"]') || [])];
+    items()[0]?.focus();
+    const away = (e) => !wrap.current?.contains(e.target) && setOpen(false);
+    const key = (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setOpen(false);
+        button.current?.focus();
+        return;
+      }
+      if (e.key === "Tab") return setOpen(false);
+      if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
+      e.preventDefault();
+      const list = items();
+      const at = list.indexOf(document.activeElement);
+      const next =
+        e.key === "Home" ? 0 : e.key === "End" ? list.length - 1 : (at + (e.key === "ArrowDown" ? 1 : -1) + list.length) % list.length;
+      list[next]?.focus();
     };
-    document.addEventListener("mousedown", clickAway);
-    return () => document.removeEventListener("mousedown", clickAway);
+    document.addEventListener("mousedown", away);
+    document.addEventListener("keydown", key);
+    return () => {
+      document.removeEventListener("mousedown", away);
+      document.removeEventListener("keydown", key);
+    };
   }, [open]);
 
-  if (!start) return null;
-
-  const eventData = { title, start, description, location };
+  if (!event) return null;
+  const close = () => setOpen(false);
 
   return (
-    <div className="add-to-cal-wrap" ref={ref} style={{ display: "inline-block", position: "relative" }}>
+    <div className="add-to-cal" ref={wrap}>
       <button
+        ref={button}
         type="button"
         className="sf-button add-to-cal-btn"
-        style={{ height: 26, padding: "0 10px", fontSize: 12, gap: 4 }}
-        onClick={(e) => {
-          e.stopPropagation();
-          setOpen((o) => !o);
-        }}
-        title="Add to Google Calendar, Outlook, or download iCal"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={`${id}-menu`}
+        onClick={() => setOpen((o) => !o)}
+        title="Add to Google Calendar or Outlook, or download an .ics file"
       >
-        <Icon name="event" size={13} />
+        <Icon name="calendar" size={13} />
         {buttonText}
         <Icon name="down" size={11} />
       </button>
-
       {open && (
-        <ul
-          className="menu-pop add-to-cal-menu"
-          style={{
-            position: "absolute",
-            top: "100%",
-            left: 0,
-            zIndex: 100,
-            marginTop: 4,
-            minWidth: 160,
-          }}
-        >
-          <li>
-            <a
-              href={googleCalendarUrl(eventData)}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={() => setOpen(false)}
-            >
-              Google Calendar
-            </a>
-          </li>
-          <li>
-            <a
-              href={outlookCalendarUrl(eventData)}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={() => setOpen(false)}
-            >
-              Outlook (Web)
-            </a>
-          </li>
-          <li>
-            <button
-              type="button"
-              className="link"
-              style={{ width: "100%", textAlign: "left" }}
-              onClick={() => {
-                downloadIcs(eventData);
-                setOpen(false);
-              }}
-            >
-              Download iCal (.ics)
-            </button>
-          </li>
-        </ul>
+        <div id={`${id}-menu`} className="menu-pop add-to-cal-menu" role="menu" aria-label="Add the demo to a calendar" ref={menu}>
+          <a role="menuitem" href={googleCalendarUrl(event)} target="_blank" rel="noopener noreferrer" onClick={close}>
+            Google Calendar
+          </a>
+          <a role="menuitem" href={outlookCalendarUrl(event)} target="_blank" rel="noopener noreferrer" onClick={close}>
+            Outlook (Microsoft 365)
+          </a>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              downloadIcs(event);
+              close();
+              button.current?.focus();
+            }}
+          >
+            Download .ics file
+          </button>
+        </div>
       )}
     </div>
   );

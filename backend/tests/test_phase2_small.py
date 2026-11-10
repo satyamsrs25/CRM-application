@@ -124,9 +124,9 @@ def test_reschedule_demo_instead_of_cancelling(client):
     lead = new_lead(client)
     first = (datetime.now() + timedelta(days=3)).replace(hour=11, minute=0, second=0, microsecond=0)
     client.put(f"/api/leads/{lead['id']}/stage",
-               json={"task": TASK, "stage": "Demo", "demo_date": first.isoformat(), "completed_stages": ["New", "Nurturing"], "note": "Synthetic test note"})
+               json={"task": TASK, "stage": "Demo", "demo_date": first.astimezone().isoformat(), "completed_stages": ["New", "Nurturing"], "note": "Synthetic test note"})
     new = first + timedelta(days=2, hours=3)
-    res = client.post(f"/api/leads/{lead['id']}/cancel-demo", json={"reason": "Client asked", "reschedule_to": new.isoformat()})
+    res = client.post(f"/api/leads/{lead['id']}/cancel-demo", json={"reason": "Client asked", "reschedule_to": new.astimezone().isoformat()})  # server time
     assert res.status_code == 200, res.text
     out = res.json()
     assert out["stage"] == "Demo" and out["demo_date"] == new.isoformat()  # still at Demo, new date
