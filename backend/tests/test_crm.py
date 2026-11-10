@@ -3,6 +3,21 @@ from conftest import login_as
 import itertools
 from datetime import datetime, timedelta
 
+from app.services import BUSINESS_TIMEZONE
+
+
+def in_server_time(value: str) -> str:
+    """A date and time in the server's own zone, written with its offset: a demo time without an offset is IST
+    (the business time zone), and these tests check reminders in server time."""
+    return datetime.fromisoformat(value).astimezone().isoformat()
+
+
+def tonight_ist() -> datetime:
+    """Later today in IST (Home > Today's Events lists the demos on today's IST date)."""
+    ist_now = datetime.now(BUSINESS_TIMEZONE).replace(second=0, microsecond=0)
+    return max(ist_now.replace(hour=23, minute=59), ist_now + timedelta(minutes=1))
+
+
 TASK = {"title": "Synthetic follow-up task", "due_date": "2030-01-15T10:00:00"}  # every stage change needs one
 
 EMAILS = itertools.count(1)
@@ -85,7 +100,7 @@ def test_stage_change_closes_old_task_and_creates_next(client):
     nurt = client.put(f"/api/leads/{lead['id']}/stage", json={"task": TASK, "stage": "Nurturing", "completed_stages": ["New"], "note": "call in 2 weeks"}).json()
     assert [t["title"] for t in open_tasks(nurt)] == [TASK["title"]]  # the user's new task, not a system follow-up
     assert any(t["status"] == "Auto-closed" for t in nurt["tasks"])
-    demo = client.put(f"/api/leads/{lead['id']}/stage", json={"task": TASK, "completed_stages": ["New", "Nurturing"], "stage": "Demo", "demo_date": demo_at, "note": "Synthetic test note"}).json()
+    demo = client.put(f"/api/leads/{lead['id']}/stage", json={"task": TASK, "completed_stages": ["New", "Nurturing"], "stage": "Demo", "demo_date": in_server_time(demo_at), "note": "Synthetic test note"}).json()
     assert demo["demo_date"] == demo_at
     # the demo reminder is due at the demo; a prep task is due at 9 AM the day before; and the user's new task
     assert sorted((t["title"], t["due_date"]) for t in open_tasks(demo)) == [
@@ -227,7 +242,7 @@ def test_home_page(client):
     later = (datetime.now() + timedelta(days=200)).date().isoformat()  # next quarter or later: not in Close Deals
     convert(client, new_lead(client, name="F", company="Later Co")["id"], expected_value=5000, expected_close_date=later)
     demo = new_lead(client, name="E", company="Demo Co")
-    client.put(f"/api/leads/{demo['id']}/stage", json={"task": TASK, "completed_stages": ["New", "Nurturing"], "stage": "Demo", "demo_date": f"{today}T23:30:00", "note": "Synthetic test note"})
+    client.put(f"/api/leads/{demo['id']}/stage", json={"task": TASK, "completed_stages": ["New", "Nurturing"], "stage": "Demo", "demo_date": tonight_ist().isoformat(), "note": "Synthetic test note"})
 
     home = client.get("/api/home").json()
     assert home["summary"]["total_leads"] == 6 and home["summary"]["won_deals"] == 1
@@ -286,9 +301,9 @@ def test_contacts_and_probability_edit(client):
 def test_demo_reminders_follow_the_demo_date(client):
     lead = new_lead(client)
     lid = lead["id"]
-    client.put(f"/api/leads/{lid}/stage", json={"task": TASK, "completed_stages": ["New", "Nurturing"], "stage": "Demo", "demo_date": "2026-12-01T11:00:00", "note": "Synthetic test note"})
+    client.put(f"/api/leads/{lid}/stage", json={"task": TASK, "completed_stages": ["New", "Nurturing"], "stage": "Demo", "demo_date": in_server_time("2026-12-01T11:00:00"), "note": "Synthetic test note"})
     # reschedule from the Edit form: both demo reminders move and are re-armed; the user's own task keeps its date
-    client.put(f"/api/leads/{lid}", json={"demo_date": "2026-12-10T15:30:00"})
+    client.put(f"/api/leads/{lid}", json={"demo_date": in_server_time("2026-12-10T15:30:00")})
     tasks = {t["title"].split(" - ")[0]: t for t in open_tasks(client.get(f"/api/leads/{lid}").json())}
     assert set(tasks) == {"Conduct demo", "Prepare for demo", TASK["title"]}
     assert tasks["Conduct demo"]["due_date"] == "2026-12-10T15:30:00"
@@ -306,7 +321,7 @@ def test_demo_reminders_follow_the_demo_date(client):
 def test_no_prep_task_when_demo_is_too_soon(client):
     lead = new_lead(client)
     soon = (datetime.now() + timedelta(hours=3)).replace(microsecond=0, second=0)
-    demo = client.put(f"/api/leads/{lead['id']}/stage", json={"task": TASK, "completed_stages": ["New", "Nurturing"], "stage": "Demo", "demo_date": soon.isoformat(), "note": "Synthetic test note"}).json()
+    demo = client.put(f"/api/leads/{lead['id']}/stage", json={"task": TASK, "completed_stages": ["New", "Nurturing"], "stage": "Demo", "demo_date": in_server_time(soon.isoformat()), "note": "Synthetic test note"}).json()
     titles = [t["title"] for t in open_tasks(demo)]
     if soon.date() == datetime.now().date():  # prep time (9 AM yesterday) is already past
         assert sorted(titles) == ["Conduct demo - Arjun Mehta", TASK["title"]]

@@ -1,3 +1,4 @@
+import { fromBusinessInput } from "./businessTime.js";
 // The React dev server proxies /api to the locally configured backend.
 const BASE = (import.meta.env?.VITE_API_BASE_URL || "/api").replace(/\/$/, "");
 
@@ -72,7 +73,7 @@ export function leadPayload(values, editing = false) {
     source: values.source || "Other",
     owner_id: numeric(values.owner_id),
   };
-  if (editing) payload.demo_date = optional(values.demo_date);
+  if (editing) payload.demo_date = fromBusinessInput(optional(values.demo_date)); // typed in IST, sent with its offset
   if (values.confirm_email_domain === "1") payload.confirm_email_domain = true; // checked: email domain differs from website
   return payload;
 }

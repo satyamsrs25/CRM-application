@@ -968,8 +968,19 @@ input[type="checkbox"] {
 }
 .list-title {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
+  gap: 10px 12px;
+}
+/* the buttons on the right of a list header (Upload, Download, History, New...): spaced evenly, wrapping onto the
+   next line (still on the right) when the title needs the room */
+.list-title > .list-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-left: auto;
 }
 .list-title > div:nth-child(2) {
   flex: 1;
@@ -1514,8 +1525,9 @@ td.high {
 .task-line small {
   color: var(--text-weak);
 }
+/* a completed task: ticked (disabled) box, muted title and its status ("Done" / "Auto-closed"); no strikethrough */
 .task-line.done .link {
-  text-decoration: line-through;
+  text-decoration: none;
   color: var(--text-weak);
 }
 .related-links li {
@@ -6675,4 +6687,44 @@ p.list-state {
 .people-toolbar .filter-chip.people-filter {
   flex: none;
   height: 30px;
+}
+
+/* ---------- Add to Calendar (lead Details > Demo Date) ---------- */
+.demo-date-value {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.add-to-cal {
+  position: relative;
+  display: inline-block;
+}
+.sf-button.add-to-cal-btn {
+  gap: 4px;
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+.add-to-cal-menu {
+  top: calc(100% + 4px);
+  right: auto;
+  left: 0;
+  min-width: 200px;
+}
+.add-to-cal-menu a,
+.add-to-cal-menu button {
+  display: flex;
+  width: 100%;
+  padding: 8px 14px;
+  color: var(--text);
+  text-align: left;
+}
+.add-to-cal-menu a:hover,
+.add-to-cal-menu a:focus-visible,
+.add-to-cal-menu button:hover,
+.add-to-cal-menu button:focus-visible {
+  outline: none;
+  background: #f3f6fb;
+  text-decoration: none;
 }

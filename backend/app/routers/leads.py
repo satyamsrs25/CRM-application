@@ -27,6 +27,9 @@ from app.services import (
     confirm_skipped,
     create_auto_task,
     email_website_problem,
+    demo_input,
+    demo_text,
+    future_demo,
     is_personal_email,
     get_for_update,
     get_or_404,
@@ -38,6 +41,7 @@ from app.services import (
     handover_lines,
     record_link,
     record_stage_change,
+    require_future,
     resolve_user_id,
     schedule_close_date_task,
     schedule_demo_tasks,
@@ -190,6 +194,10 @@ def update_lead(lead_id: int, data: schemas.LeadUpdate, db: Session = Depends(ge
     changes = data.model_dump(exclude_unset=True)
     changes.pop("changed_by_id", None)
     domain_confirmed = changes.pop("confirm_email_domain", False)
+    if changes.get("demo_date") is not None:  # IST unless an offset is given; a new demo date must be in the future
+        when = demo_input(changes["demo_date"])
+        unchanged = lead.demo_date is not None and when.replace(second=0) == lead.demo_date.replace(second=0)
+        changes["demo_date"] = lead.demo_date if unchanged else require_future(when)
     actor = acting_user_id()
     new_owner = changes.pop("owner_id", None)  # a new owner is a transfer (same rules and history as Transfer)
     old_demo = lead.demo_date
@@ -213,9 +221,9 @@ def update_lead(lead_id: int, data: schemas.LeadUpdate, db: Session = Depends(ge
         # demo rescheduled: move the demo reminders and tell the owner
         prep = schedule_demo_tasks(db, lead)
         if lead.demo_date is not None:
-            was = f" (was {old_demo:%d %b %Y %I:%M %p})" if old_demo else ""
+            was = f" (was {demo_text(old_demo)})" if old_demo else ""
             notify(db, lead.owner_id, "Lead demo rescheduled",
-                   "\n".join([f'Demo with "{lead.name}" is now on {lead.demo_date:%d %b %Y at %I:%M %p}{was}.',
+                   "\n".join([f'Demo with "{lead.name}" is now on {demo_text(lead.demo_date, "%d %b %Y at %I:%M %p")}{was}.',
                                *task_line("Prep reminder", prep)]),
                    link=record_link(lead_id=lead.id))
     db.commit()
@@ -402,20 +410,18 @@ def cancel_demo(lead_id: int, data: schemas.CancelDemo, db: Session = Depends(ge
     by = acting_user_id()
     was = lead.demo_date
     if data.reschedule_to is not None:
-        new_date = data.reschedule_to.replace(tzinfo=None, microsecond=0)
-        if new_date <= now():
-            raise HTTPException(status_code=400, detail="Choose a new demo date and time in the future")
+        new_date = future_demo(data.reschedule_to, "Choose a new demo date and time in the future")
         if was is not None and new_date == was:
             raise HTTPException(status_code=400, detail="The demo is already booked for that date and time")
         lead.demo_date = new_date
-        note = f"Demo rescheduled to {new_date:%d %b %Y %I:%M %p}" + (f": {reason}" if reason else "")
+        note = f"Demo rescheduled to {demo_text(new_date)}" + (f": {reason}" if reason else "")
         record_stage_change(db, lead_id=lead.id, from_stage="Demo", to_stage="Demo", changed_by_id=by, note=note)
         if open_system_task(db, AUTO_TASKS["Demo"][0], lead_id=lead.id) is None:  # e.g. the demo task was ticked off
             create_auto_task(db, stage="Demo", owner_id=lead.owner_id, record_name=lead.name, lead_id=lead.id,
                              due_date=new_date)
         prep = schedule_demo_tasks(db, lead)  # moves "Conduct demo" and "Prepare for demo"
-        lines = [f'Demo with "{lead.name}" is now on {new_date:%d %b %Y at %I:%M %p}'
-                 + (f" (was {was:%d %b %Y %I:%M %p})." if was else "."), *task_line("Prep reminder", prep)]
+        lines = [f'Demo with "{lead.name}" is now on {demo_text(new_date, "%d %b %Y at %I:%M %p")}'
+                 + (f" (was {demo_text(was)})." if was else "."), *task_line("Prep reminder", prep)]
         if reason:
             lines.append(f"Reason: {reason}")
         notify(db, lead.owner_id, "Lead demo rescheduled", "\n".join(lines), link=record_link(lead_id=lead.id))
@@ -429,7 +435,7 @@ def cancel_demo(lead_id: int, data: schemas.CancelDemo, db: Session = Depends(ge
     auto_close_open_tasks(db, lead_id=lead.id)  # closes "Conduct demo" and "Prepare for demo"
     task = add_stage_task(db, data.task, owner_id=task_owner, record_owner_id=lead.owner_id, actor_id=by,
                           lead_id=lead.id)
-    details = [f"Cancelled demo: {was:%d %b %Y %I:%M %p}" if was else "No demo date was set"]
+    details = [f"Cancelled demo: {demo_text(was)}" if was else "No demo date was set"]
     if reason:
         details.append(f"Reason: {reason}")
     stage_notice(db, kind="Lead", stage="Revisit", record_name=lead.name, owner_id=lead.owner_id, actor_id=by,
@@ -453,6 +459,8 @@ def change_stage(lead_id: int, data: schemas.LeadStageChange, db: Session = Depe
     if lead.stage == data.stage:
         raise HTTPException(status_code=400, detail=f"Lead {lead_id} is already at {data.stage}")
     require_edit(lead.owner_id, "lead")
+    if data.stage == "Demo" and data.demo_date:  # in server time, and in the future
+        data.demo_date = future_demo(data.demo_date)
     task_owner = stage_task_owner(db, data.task, lead.owner_id)
     lead.untouched = False  # someone is working on it now
     by = acting_user_id()
@@ -490,7 +498,7 @@ def change_stage(lead_id: int, data: schemas.LeadStageChange, db: Session = Depe
                              due_date=data.demo_date)
         prep = schedule_demo_tasks(db, lead)  # "Conduct demo" reminder + day-before prep task
         if lead.demo_date:
-            details.append(f"Demo date: {lead.demo_date:%d %b %Y %I:%M %p}")
+            details.append(f"Demo date: {demo_text(lead.demo_date)}")
         details += task_line("Prep reminder", prep)
     details.append(f"Note: {data.note}")
     stage_notice(db, kind="Lead", stage=data.stage, record_name=lead.name, owner_id=lead.owner_id,

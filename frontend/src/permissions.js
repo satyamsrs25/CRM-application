@@ -6,6 +6,11 @@ export const can = (user, permission) => !!user?.permissions?.includes(permissio
 export const canManageAccess = (user) =>
   can(user, "manage_users") || can(user, "grant_team_access") || can(user, "manage_team");
 
+// Change a lead or opportunity (Actions > Edit and the pencils on its Details tab): its owner, or anyone with
+// "Edit team records" (Managers by default; the Admin has every permission). Team access alone is view-only.
+export const canEditRecord = (user, record) =>
+  !!user && !!record && (record.owner_id === user.id || can(user, "edit_team_records"));
+
 // Lead conversion is reserved for Managers and Salespeople.
 export const canCreateSales = (user) => !!user && user.role !== "Admin";
 

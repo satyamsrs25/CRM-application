@@ -134,3 +134,10 @@ export function leadsEmptyMessage({ search, filtered, view, viewName }) {
   if (view === "all") return { title: "No leads yet", text: "Leads you add or upload appear here." };
   return { title: `No leads in ${viewName || "this list view"}`, text: "Choose another list view to see other leads." };
 }
+
+// Home > "You have N overdue tasks" and the Tasks page it opens use this one definition: your own tasks that are still
+// open and were due before today. The Tasks page shows them through a temporary view (Due Date: Overdue on your open
+// tasks) that is never saved, so the filters you chose yourself are still there afterwards.
+export const OVERDUE_SHORTCUT_FILTERS = { due: "overdue" };
+export const isMyOpenTask = (task, userId) => task.owner_id === userId && !task.completed;
+export const myOverdueTasks = (tasks, userId) => tasks.filter((t) => isMyOpenTask(t, userId) && t.isOverdue);

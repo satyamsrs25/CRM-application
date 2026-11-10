@@ -337,7 +337,8 @@ class LeadOut(Out):
     uploaded_from: str | None = None  # file name when the lead came from a bulk upload
     source: str
     stage: str
-    demo_date: datetime | None
+    demo_date: datetime | None  # server time, no zone (as stored)
+    demo_at: datetime | None = None  # the same moment in UTC: the app shows it in IST and calendars use it
     lost_reason: str | None
     lost_notes: str | None
     unqualified_reason: str | None = None

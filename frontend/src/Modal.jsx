@@ -29,8 +29,10 @@ import {
   stageTaskProblems,
   UNQUALIFIED_REASONS,
   REVISIT_REASONS,
+  demoDateMin,
 } from "./domain";
 import { can } from "./permissions";
+import { BUSINESS_TZ_LABEL, formatBusiness, fromBusinessInput, toBusinessInput } from "./businessTime";
 import { Icon } from "./ui";
 
 const go = (path) => {
@@ -213,11 +215,7 @@ export default function Modal({ modal, close, data, run, notify, user }) {
         required={required}
         defaultValue={value}
         min={
-          name === "reschedule_to" || (name === "demo_date" && modal?.stage === "Demo")
-            ? new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16)
-            : inputType === "number"
-              ? 0
-              : undefined
+          demoDateMin({ name, type, stage: modal?.stage, current: value }) ?? (inputType === "number" ? 0 : undefined)
         }
         max={name === "probability" ? 100 : undefined}
         step={
@@ -471,7 +469,7 @@ export default function Modal({ modal, close, data, run, notify, user }) {
     if (type === "transfer") return `"${name}" was transferred to ${saved?.owner_name || "the new owner"}.`;
     if (type === "cancelDemo")
       return demoChoice === "reschedule"
-        ? `The demo with "${name}" was rescheduled to ${new Date(v.reschedule_to).toLocaleString()}. Its reminders moved too.`
+        ? `The demo with "${name}" was rescheduled to ${formatBusiness(fromBusinessInput(v.reschedule_to))}. Its reminders moved too.`
         : `The demo with "${name}" was cancelled. The lead is back in Revisit with your follow-up task.`;
     if (type === "emailStatus")
       return modal.status === "invalid"
@@ -603,7 +601,7 @@ export default function Modal({ modal, close, data, run, notify, user }) {
           task: stageTaskPayload(v),
           ...skipPayload(v),
           ...(modal.collection === "leads" && modal.stage === "Demo"
-            ? { demo_date: v.demo_date || null }
+            ? { demo_date: fromBusinessInput(v.demo_date) } // typed in IST, sent with its offset
             : {}),
           ...(revisit ? { revisit_date: v.task_due_date, revisit_reason: v.revisit_reason } : {}),
           ...(discovery ? discoveryPayload(v) : {}),
@@ -630,7 +628,7 @@ export default function Modal({ modal, close, data, run, notify, user }) {
       if (type === "cancelDemo")
         await run("cancelDemo", record.id, {
           reason: stageNote(v.reason) || null,
-          reschedule_to: demoChoice === "reschedule" ? v.reschedule_to : null,
+          reschedule_to: demoChoice === "reschedule" ? fromBusinessInput(v.reschedule_to) : null,
           ...(taskNeeded ? { task: stageTaskPayload(v) } : {}),
         });
       close();
@@ -748,11 +746,11 @@ export default function Modal({ modal, close, data, run, notify, user }) {
               {field("Headcount", "employees", "number")}
               {record &&
                 field(
-                  "Demo Date",
+                  `Demo Date in ${BUSINESS_TZ_LABEL}`,
                   "demo_date",
                   "datetime-local",
                   false,
-                  localInput(record.demo_date),
+                  toBusinessInput(record.demo_at),
                 )}
             </div>
             </>
@@ -996,11 +994,11 @@ export default function Modal({ modal, close, data, run, notify, user }) {
               )}
               {modal.stage === "Demo" &&
                 field(
-                  "Demo Date",
+                  `Demo Date in ${BUSINESS_TZ_LABEL}`,
                   "demo_date",
                   "datetime-local",
                   false,
-                  localInput(record.demo_date),
+                  toBusinessInput(record.demo_at),
                 )}
               {noteBox("Note", "note")}
               {taskSection()}
@@ -1026,7 +1024,7 @@ export default function Modal({ modal, close, data, run, notify, user }) {
           {type === "cancelDemo" && (
             <>
               <p className="field-hint">
-                Current demo: {record.demo_date ? new Date(record.demo_date).toLocaleString() : "no date set"}
+                Current demo: {record.demo_at ? formatBusiness(record.demo_at) : "no date set"}
               </p>
               <fieldset className="demo-choice">
                 <legend>What should happen?</legend>
@@ -1055,7 +1053,7 @@ export default function Modal({ modal, close, data, run, notify, user }) {
                   <span>Cancel the demo and move the lead back to Revisit</span>
                 </label>
               </fieldset>
-              {demoChoice === "reschedule" && field("New Demo Date", "reschedule_to", "datetime-local", true, "")}
+              {demoChoice === "reschedule" && field(`New Demo Date in ${BUSINESS_TZ_LABEL}`, "reschedule_to", "datetime-local", true, "")}
               {/* going back to Revisit is a stage change, so the reason is its required note */}
               {demoChoice === "nurturing" ? noteBox("Reason", "reason") : textArea("Reason", "reason")}
               {taskNeeded && taskSection()}

@@ -1,7 +1,7 @@
 """Turn database rows into API responses, adding readable names (owner, account, related record)."""
 from app import schemas
 from app.models import Account, Contact, Lead, Note, Opportunity, StageHistory, Task
-from app.services import start_of_today, task_related
+from app.services import demo_instant, start_of_today, task_related
 
 
 def task_out(t: Task) -> schemas.TaskOut:
@@ -34,6 +34,7 @@ def lead_out(lead: Lead) -> schemas.LeadOut:
             "owner_name": lead.owner.full_name if lead.owner else None,
             "opportunity_id": lead.opportunity.id if lead.opportunity else None,
             "last_transferred_at": lead.transfers[-1].transferred_at if lead.transfers else None,
+            "demo_at": demo_instant(lead.demo_date),
         }
     )
 

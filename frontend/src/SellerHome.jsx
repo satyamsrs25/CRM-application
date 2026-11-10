@@ -3,6 +3,8 @@ import { api } from "./api";
 import { LEAD_OPEN_STAGES, OPPORTUNITY_OPEN_STAGES, dateKey, homeDescription } from "./domain";
 import { compact, dateTime, greeting, shortDate, time } from "./format";
 import { Card, EmptyState, Icon, ObjectIcon, Ring, StageBadge } from "./ui";
+import { myOverdueTasks } from "./listHelpers";
+import { formatBusinessTime } from "./businessTime";
 
 const COLORS = { open: "#06a59a", won: "#1b96ff", lost: "#ea001e", upcoming: "#06a59a", past: "#1b96ff", none: "#ea001e" };
 const routeFor = { Lead: "leads", Opportunity: "opportunities", Account: "accounts", Contact: "contacts" };
@@ -65,7 +67,7 @@ function ActivityCard({ title, subtitle, stats, total, noun, href, button, listH
 function assistantItems(data, user) {
   const mine = (r) => r.owner_id === user.id;
   const items = [];
-  const overdue = data.tasks.filter((t) => mine(t) && !t.completed && t.isOverdue);
+  const overdue = myOverdueTasks(data.tasks, user.id); // the same tasks the link opens
   if (overdue.length)
     items.push({
       key: "overdue",
@@ -314,7 +316,7 @@ export default function SellerHome({ data, user, toggleTask, openTask, scope = "
             <ul className="event-list">
               {home.todays_events.map((e) => (
                 <li key={e.lead_id}>
-                  <span className="event-time">{time(e.start)}</span>
+                  <span className="event-time">{formatBusinessTime(e.start_at)}</span>
                   <ObjectIcon type="event" size={28} />
                   <div>
                     <a href={`#/leads/${e.lead_id}`}>Demo with {e.name}</a>

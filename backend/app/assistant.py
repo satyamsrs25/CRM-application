@@ -35,7 +35,7 @@ from app.constants import (LEAD_FLOW, LEAD_STAGES, OPPORTUNITY_FLOW, OPPORTUNITY
 from app.models import Lead, User
 from app.routers import accounts, activity, home, leads, opportunities, tasks
 from app.security import acting_user
-from app.services import log_activity
+from app.services import BUSINESS_TIMEZONE, demo_input, log_activity
 
 log = logging.getLogger("crm.assistant")
 MAX_STEPS = 10         # model <-> tool round trips per message
@@ -296,14 +296,16 @@ def fill_defaults(db: Session, name: str, args: dict) -> dict:
     args = dict(args)
     lead = db.get(Lead, args["lead_id"]) if isinstance(args.get("lead_id"), int) else None
     who = lead.name if lead else "the lead"
+    try:  # demo times are IST unless the time says otherwise; tasks are due in server time
+        when = datetime.fromisoformat(str(args["demo_date"]))
+    except ValueError:
+        when = None
     if not any(isinstance(args.get(k), str) and args[k].strip() for k in ("task_title", "task_due_date")):
-        args["task_title"], args["task_due_date"] = f"Demo with {who}", args["demo_date"]
+        args["task_title"] = f"Demo with {who}"
+        args["task_due_date"] = demo_input(when).isoformat() if when else args["demo_date"]
     if not user_note(name, args):
-        try:
-            when = datetime.fromisoformat(str(args["demo_date"])[:16])
-            args["note"] = f"Demo booked for {when:%d %b %Y, %I:%M %p}."
-        except ValueError:
-            args["note"] = f"Demo booked for {args['demo_date']}."
+        args["note"] = (f"Demo booked for {(when if when.tzinfo else when.replace(tzinfo=BUSINESS_TIMEZONE)).astimezone(BUSINESS_TIMEZONE):%d %b %Y, %I:%M %p} IST."
+                        if when else f"Demo booked for {args['demo_date']}.")
     return args
 
 
@@ -336,8 +338,12 @@ def _user_id(db: Session, name: str | None) -> int | None:
 
 
 def _lead_row(l):
-    return {k: l.get(k) for k in ("id", "name", "company", "title", "email", "phone", "stage", "source",
-                                  "owner_name", "demo_date", "created_at")}
+    row = {k: l.get(k) for k in ("id", "name", "company", "title", "email", "phone", "stage", "source",
+                                 "owner_name", "demo_date", "created_at")}
+    if l.get("demo_at"):  # the demo in IST, with its offset (how users give and read demo times)
+        row["demo_date"] = datetime.fromisoformat(str(l["demo_at"]).replace("Z", "+00:00")).astimezone(
+            BUSINESS_TIMEZONE).isoformat(timespec="minutes")
+    return row
 
 
 def _opp_row(o):
@@ -611,6 +617,8 @@ def system_prompt() -> str:
     return (
         "You are the SalesTrack CRM assistant. You help the logged-in user do their CRM work by calling tools. "
         f"Today is {now:%A, %d %B %Y}, time {now:%I:%M %p} (America/New_York). "
+        f"Demo dates and times are in IST (Asia/Kolkata, UTC+05:30): now it is "
+        f"{datetime.now(BUSINESS_TIMEZONE):%A, %d %B %Y, %I:%M %p} IST; give demo_date / new_date in IST. "
         f"The user is {me.full_name} ({me.role}).\n"
         + role_guidance(me) +
         "Scope:\n"
