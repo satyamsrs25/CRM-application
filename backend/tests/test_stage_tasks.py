@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.routers import leads as leads_router, opportunities as opportunities_router
-from conftest import login_as
+from conftest import finish_stage_tasks, login_as
 from test_assistant import ai, call  # noqa: F401 (ai: a scripted stand-in for the AI model)
 from test_mandatory_stage_notes import history, message, new_lead, ok, sent, snapshot  # noqa: F401 (sent: autouse)
 from test_opportunity_attachments import ASHA, PDF, PRIYA, RAVI, add_salesperson, db_session, new_opportunity, pdf_file
@@ -182,6 +182,7 @@ def test_an_opportunity_move_keeps_the_close_date_reminder(client):
 def test_the_won_task_stays_open_and_can_be_managed_after_closing(client, sent):
     opp = new_opportunity(client)
     ok(client.put(f"/api/opportunities/{opp['id']}/stage", json={"stage": "Proposal", "completed_stages": ["Discovery"], "note": NOTE, "task": TASK}))
+    finish_stage_tasks(client, opp["id"])  # the Proposal task is done before the deal is won
     won = ok(client.post(f"/api/opportunities/{opp['id']}/won", json={"note": NOTE, "task": HANDOVER,
                                                                        "notify_customer": False}))
     assert won["stage"] == "Won"
@@ -193,11 +194,9 @@ def test_the_won_task_stays_open_and_can_be_managed_after_closing(client, sent):
     assert edited["due_date"] == "2030-02-12T09:00:00"
     done = ok(client.put(f"/api/tasks/{task['id']}/complete"))
     assert done["status"] == "Done" and done["completed_at"]
-    # the won deal itself stays closed: no stage change and no new files
+    # the won deal itself stays closed: no stage change (new files are labelled Won: test_office_attachments.py)
     assert client.put(f"/api/opportunities/{opp['id']}/stage",
                       json={"stage": "Opportunity", "note": NOTE, "task": TASK}).status_code == 400
-    assert client.post(f"/api/opportunities/{opp['id']}/attachments",
-                       files={"file": ("late.pdf", pdf_file(), PDF)}).status_code == 409
 
 
 def test_lost_needs_no_task_and_creates_none(client):
@@ -257,6 +256,7 @@ def test_double_submissions_create_one_transition_and_one_task(client):
     convert = {"note": NOTE, "task": TASK, "completed_stages": ["Demo"]}
     first = ok(client.post(f"/api/leads/{lead['id']}/convert", json=convert))
     assert client.post(f"/api/leads/{lead['id']}/convert", json=convert).status_code == 400  # closed now
+    finish_stage_tasks(client, first["opportunity"]["id"])
     won = {"note": NOTE, "task": HANDOVER, "completed_stages": ["Discovery", "Proposal"], "final_value": 10}
     assert client.post(f"/api/opportunities/{first['opportunity']['id']}/won", json=won).status_code == 200
     assert client.post(f"/api/opportunities/{first['opportunity']['id']}/won", json=won).status_code == 400

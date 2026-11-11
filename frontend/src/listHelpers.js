@@ -20,7 +20,68 @@ export const FUTURE_RANGES = [
   ["month", "This month"],
   ["quarter", "This quarter"],
 ];
-const RANGE_LABEL = Object.fromEntries([...PAST_RANGES, ...FUTURE_RANGES, ["custom", "Custom range"]]);
+// The Leads page (List and Kanban): Created and Last Modified offer only these, plus Any time and Custom range
+export const LEAD_DATE_RANGES = [
+  ["today", "Today"],
+  ["lastweek", "Last week"],
+  ["lastmonth", "Last month"],
+];
+const RANGE_LABEL = Object.fromEntries([...PAST_RANGES, ...FUTURE_RANGES, ...LEAD_DATE_RANGES, ["custom", "Custom range"]]);
+
+// [start, end) of a date choice, in the computer's local time like every other list date filter (the Leads page sends
+// them to the API as instants). Weeks for "This week" start on Sunday as before; "Last week" is the previous complete
+// calendar week, Monday to Sunday; "Last month" the previous complete calendar month. custom uses the two date inputs
+// (yyyy-mm-dd), the To day included. now: for tests.
+const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+const addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+export function dateRangeBounds(range, from, to, now = new Date()) {
+  const today = startOfDay(now);
+  const weekStart = addDays(today, -today.getDay());
+  const monday = addDays(today, -((today.getDay() + 6) % 7)); // this week's Monday (Sunday belongs to the week before)
+  const q = Math.floor(today.getMonth() / 3) * 3;
+  switch (range) {
+    case "today":
+      return [today, addDays(today, 1)];
+    case "tomorrow":
+      return [addDays(today, 1), addDays(today, 2)];
+    case "week":
+      return [weekStart, addDays(weekStart, 7)];
+    case "lastweek":
+      return [addDays(monday, -7), monday];
+    case "lastmonth":
+      return [new Date(today.getFullYear(), today.getMonth() - 1, 1), new Date(today.getFullYear(), today.getMonth(), 1)];
+    case "last7":
+      return [addDays(today, -6), addDays(today, 1)];
+    case "last30":
+      return [addDays(today, -29), addDays(today, 1)];
+    case "next7":
+      return [today, addDays(today, 7)];
+    case "next30":
+      return [today, addDays(today, 30)];
+    case "overdue":
+      return [null, today];
+    case "month":
+      return [new Date(today.getFullYear(), today.getMonth(), 1), new Date(today.getFullYear(), today.getMonth() + 1, 1)];
+    case "quarter":
+      return [new Date(today.getFullYear(), q, 1), new Date(today.getFullYear(), q + 3, 1)];
+    case "year":
+      return [new Date(today.getFullYear(), 0, 1), new Date(today.getFullYear() + 1, 0, 1)];
+    case "custom": {
+      const day = (s) => (s ? new Date(`${s}T00:00:00`) : null);
+      return [day(from), to ? addDays(day(to), 1) : null];
+    }
+    default:
+      return [null, null];
+  }
+}
+
+// Is a saved date filter one this list still offers? A choice that was removed (e.g. "Last 7 days" on the Leads page)
+// or a custom range without dates is left out, so no filter is ever applied that the page doesn't show.
+export function dateFilterOffered(def, values) {
+  const v = values[def.key];
+  if (v === "custom") return !!(values[`${def.key}_from`] || values[`${def.key}_to`]);
+  return (def.ranges || (def.future ? FUTURE_RANGES : PAST_RANGES)).some(([option]) => option === v);
+}
 
 const number = (n) => Number(n).toLocaleString("en-US");
 
@@ -79,6 +140,9 @@ export const clampPage = (page, total, size) => Math.max(0, Math.min(page, Math.
 
 // "Sorted by Created, newest first"
 const DATE_SORTS = new Set(["created", "modified"]);
+// The order a sort field starts with when it is chosen in the Leads Kanban's "Sort by" (the board has no direction
+// control): dates newest first, as the page opens; names and other text A–Z
+export const defaultSortDirection = (col) => (DATE_SORTS.has(col) ? "desc" : "asc");
 export function sortText(label, col, dir) {
   if (!label) return "";
   const way = DATE_SORTS.has(col) ? (dir === "asc" ? "oldest first" : "newest first") : dir === "asc" ? "A–Z" : "Z–A";
@@ -141,3 +205,31 @@ export function leadsEmptyMessage({ search, filtered, view, viewName }) {
 export const OVERDUE_SHORTCUT_FILTERS = { due: "overdue" };
 export const isMyOpenTask = (task, userId) => task.owner_id === userId && !task.completed;
 export const myOverdueTasks = (tasks, userId) => tasks.filter((t) => isMyOpenTask(t, userId) && t.isOverdue);
+
+// Leads Kanban: every status column has its own page of cards (Previous / Next), all with the same cards-per-page
+// choice as the List page. Column pages belong to one board query (list view, filters, search, sort, cards per page):
+// a new query starts every column on its first page; a page past the end (after a stage change moved cards out of a
+// column) moves back to that column's last page (clampPage).
+export const boardQueryKey = ({ view, stage, filters, search, sort, size }) =>
+  JSON.stringify([view, stage || "", filters || {}, search || "", sort?.col, sort?.dir, size]);
+export const boardPages = (state, key) => (state && state.key === key ? state.pages : {});
+export const withColumnPage = (state, key, stage, page) => ({ key, pages: { ...boardPages(state, key), [stage]: page } });
+// "16–30 of 50,001" and "Page 2 of 3,334" for one column
+export function columnRange(page, size, total) {
+  const pages = Math.max(1, Math.ceil(total / size));
+  if (!total) return { pages, range: "No leads", pageText: "" };
+  const first = Math.min(page * size, total - 1) + 1;
+  const last = Math.min(first - 1 + size, total);
+  return { pages, range: `${number(first)}–${number(last)} of ${number(total)}`, pageText: `Page ${number(page + 1)} of ${number(pages)}` };
+}
+// Requests that can finish out of order (one per column): only the latest request for a column may show its result,
+// so a slow answer to an earlier query or page never replaces a newer one.
+export function latestRequests() {
+  const latest = {};
+  let count = 0;
+  return {
+    start: (name) => (latest[name] = ++count),
+    isLatest: (name, id) => latest[name] === id,
+    forgetAll: () => Object.keys(latest).forEach((name) => (latest[name] = ++count)),
+  };
+}

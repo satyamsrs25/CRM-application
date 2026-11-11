@@ -1,7 +1,7 @@
 """Turn database rows into API responses, adding readable names (owner, account, related record)."""
 from app import schemas
 from app.models import Account, Contact, Lead, Note, Opportunity, StageHistory, Task
-from app.services import demo_instant, start_of_today, task_related
+from app.services import demo_instant, is_date_reminder, start_of_today, task_related
 
 
 def task_out(t: Task) -> schemas.TaskOut:
@@ -12,6 +12,7 @@ def task_out(t: Task) -> schemas.TaskOut:
             "related_type": related_type,
             "related_to": related_to,
             "is_overdue": t.status == "Open" and t.due_date < start_of_today(),
+            "is_date_reminder": is_date_reminder(t),
         }
     )
 

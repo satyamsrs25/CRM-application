@@ -1,9 +1,13 @@
-"""Files kept on an opportunity: PDF, Word (.docx), JPEG and PNG, up to 20 MB each, stored in the database.
+"""Files kept on an opportunity: PDF, Word (.docx), PowerPoint (.pptx), Excel (.xlsx), JPEG and PNG, up to 20 MB each,
+stored in the database.
 
-- Upload: one file per request, only while the deal is open (Opportunity, Discovery or Proposal). The server checks what the file
-  really is (its content, not the browser's file type) and saves the stage the deal is at.
-- Files keep their stage when the deal moves on. After Won / Lost they can still be viewed and downloaded,
-  but no file can be added or deleted.
+- Upload: one file per request, while the deal is open (Opportunity, Discovery or Proposal) or Won (a signed order or
+  final pricing added after the win). The server checks what the file really is (its content, not the browser's file
+  type) and saves the stage the deal is at and who uploaded it.
+- Files keep their stage when the deal moves on. Won and Lost files can be viewed and downloaded; no file can be deleted
+  after Won / Lost, and none added after Lost.
+- PowerPoint and Excel files are downloaded (opened with PowerPoint / Excel on the computer); there is no preview.
+  Old .ppt / .xls / .doc files are refused with a request to save them as .pptx / .xlsx / .docx.
 - Viewing and downloading need access to the opportunity; uploading needs edit access. Deleting also needs to be
   the person who uploaded the file, or a Manager / Admin.
 - Delete only hides the file (deleted_at / deleted_by_id) and adds a line to the Admin's Activity Log.
@@ -37,19 +41,34 @@ READ_CHUNK = 1024 * 1024
 
 PDF = "application/pdf"
 DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 JPEG = "image/jpeg"
 PNG = "image/png"
 ZIP = "application/zip"                # only used in error messages
 OLE = "application/x-ole-storage"      # old .doc files and password-protected Office files
-TYPE_OF_EXTENSION = {".pdf": PDF, ".docx": DOCX, ".jpg": JPEG, ".jpeg": JPEG, ".png": PNG}
-TYPE_NAME = {PDF: "PDF", DOCX: "Word document (.docx)", JPEG: "JPEG image", PNG: "PNG image",
+TYPE_OF_EXTENSION = {".pdf": PDF, ".docx": DOCX, ".pptx": PPTX, ".xlsx": XLSX, ".jpg": JPEG, ".jpeg": JPEG,
+                     ".png": PNG}
+TYPE_NAME = {PDF: "PDF", DOCX: "Word document (.docx)", PPTX: "PowerPoint presentation (.pptx)",
+             XLSX: "Excel workbook (.xlsx)", JPEG: "JPEG image", PNG: "PNG image",
              ZIP: "ZIP archive", OLE: "legacy (old-format or password-protected) Office file"}
-PREVIEW_TYPES = {PDF, JPEG, PNG}  # shown in the browser; Word documents are downloaded
+SUPPORTED = "PDF, Word (.docx), PowerPoint (.pptx), Excel (.xlsx), JPG and PNG files"
+PREVIEW_TYPES = {PDF, JPEG, PNG}  # shown in the browser; Word, PowerPoint and Excel files are downloaded
+# Old binary Office formats: the program to open them in and the format to save them as
+LEGACY_OFFICE = {".doc": ("Word", ".docx"), ".ppt": ("PowerPoint", ".pptx"), ".xls": ("Excel", ".xlsx")}
+OFFICE_APP = {DOCX: ("Word", "Word documents"), PPTX: ("PowerPoint", "PowerPoint presentations"),
+              XLSX: ("Excel", "Excel workbooks")}
 
-# A .docx is a zip "package". Only its table of contents and two small XML parts are read (never extracted).
+# .docx, .pptx and .xlsx files are zip "packages" (Office Open XML). Only the table of contents and two small XML parts
+# are read (never extracted): [Content_Types].xml must declare the main part of a regular document, presentation or
+# workbook, and _rels/.rels must point to it. Macro-enabled files, templates and slide shows declare other main parts.
 DOCX_MAX_PARTS = 5000
 DOCX_MAX_XML_BYTES = 256 * 1024
-DOCX_MAIN_PART = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
+OFFICE_MAIN_PART = {
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml": DOCX,
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml": PPTX,
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml": XLSX,
+}
 CONTENT_TYPES_NS = "{http://schemas.openxmlformats.org/package/2006/content-types}"
 RELATIONSHIPS_NS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
 
@@ -67,7 +86,8 @@ router = APIRouter(prefix="/api/opportunities", tags=["Opportunity attachments"]
 UPLOAD_FORM = {"requestBody": {"required": True, "content": {"multipart/form-data": {"schema": {
     "type": "object", "required": ["file"],
     "properties": {"file": {"type": "string", "format": "binary",
-                            "description": "One PDF, Word (.docx), JPG or PNG file, up to 20 MB"}}}}}}}
+                            "description": "One PDF, Word (.docx), PowerPoint (.pptx), Excel (.xlsx), JPG or PNG "
+                                           "file, up to 20 MB"}}}}}}}
 
 
 # ---------- file checks ----------
@@ -128,10 +148,11 @@ def xml_root(content: bytes) -> ElementTree.Element:
     return ElementTree.fromstring(content)
 
 
-def docx_problem(data: bytes) -> str | None:
-    """None for a real Word (.docx) package; otherwise "damaged" or "not Word".
-    Checks the Open XML package: [Content_Types].xml declares a Word main document, and _rels/.rels points to it.
-    Reads the zip's table of contents and these two small parts only, with size caps."""
+def office_package(data: bytes) -> str:
+    """What an Office Open XML (zip) file is: DOCX, PPTX or XLSX for a regular Word document, PowerPoint presentation or
+    Excel workbook; "damaged" for a broken package; "other" for any other zip (macro-enabled files, templates, slide
+    shows, plain zip archives). The package's [Content_Types].xml must declare the main part, _rels/.rels must point to
+    it, and the part must exist. Reads the zip's table of contents and these two small parts only, with size caps."""
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as package:
             parts = package.infolist()
@@ -139,51 +160,60 @@ def docx_problem(data: bytes) -> str | None:
                 return "damaged"
             names = {p.filename for p in parts}
             if not {"[Content_Types].xml", "_rels/.rels"} <= names:
-                return "not Word"
+                return "other"
             types, rels = small_part(package, "[Content_Types].xml"), small_part(package, "_rels/.rels")
             if types is None or rels is None:
                 return "damaged"
-            main_parts = {o.get("PartName", "").lstrip("/") for o in xml_root(types).iter(f"{CONTENT_TYPES_NS}Override")
-                          if o.get("ContentType") == DOCX_MAIN_PART}
+            main_parts = {o.get("PartName", "").lstrip("/"): OFFICE_MAIN_PART[o.get("ContentType")]
+                          for o in xml_root(types).iter(f"{CONTENT_TYPES_NS}Override")
+                          if o.get("ContentType") in OFFICE_MAIN_PART}
             targets = {r.get("Target", "").lstrip("/") for r in xml_root(rels).iter(f"{RELATIONSHIPS_NS}Relationship")
                        if r.get("Type", "").endswith("/officeDocument")}
     except (zipfile.BadZipFile, zipfile.LargeZipFile, ElementTree.ParseError, KeyError, EOFError, OSError,
             ValueError, RuntimeError, NotImplementedError, zlib.error):
         return "damaged"
-    return None if main_parts & targets & names else "not Word"
+    kinds = {kind for part, kind in main_parts.items() if part in targets and part in names}
+    return kinds.pop() if len(kinds) == 1 else "other"
+
+
+def a_or_an(name: str) -> str:
+    return f"an {name}" if name[:1].lower() in "aeiou" else f"a {name}"
 
 
 def checked_type(filename: str, data: bytes) -> str:
-    """The file type saved for the file. Refuses (415 / 422) anything that is not a real PDF, .docx, JPEG or PNG,
-    or whose content does not match its extension."""
+    """The file type saved for the file. Refuses (415 / 422) anything that is not a real PDF, .docx, .pptx, .xlsx,
+    JPEG or PNG, or whose content does not match its extension."""
     ext = os.path.splitext(filename)[1].lower()
-    if ext == ".doc":
-        raise HTTPException(status_code=415, detail=f"{filename}: old Word files (.doc) can't be uploaded. "
-                                                    "Open it in Word, save it as .docx and upload that.")
+    if ext in LEGACY_OFFICE:
+        program, new_ext = LEGACY_OFFICE[ext]
+        raise HTTPException(status_code=415, detail=f"{filename}: old {program} files ({ext}) can't be uploaded. "
+                                                    f"Open it in {program}, save it as {new_ext} and upload that.")
     expected = TYPE_OF_EXTENSION.get(ext)
     if expected is None:
-        raise HTTPException(status_code=415, detail=f"{filename}: only PDF, Word (.docx), JPG and PNG files can be uploaded.")
+        raise HTTPException(status_code=415, detail=f"{filename}: only {SUPPORTED} can be uploaded.")
     if not data:
         raise HTTPException(status_code=422, detail=f"{filename} is empty.")
     actual = first_bytes_type(data)
     if actual == ZIP:
-        problem = docx_problem(data)
-        if problem is None:
-            actual = DOCX
-        elif expected == DOCX:
-            raise HTTPException(status_code=422 if problem == "damaged" else 415, detail=(
-                f"{filename} looks damaged, so it can't be uploaded." if problem == "damaged" else
-                f"{filename} isn't a Word document (.docx). Only regular Word documents can be uploaded, "
-                "not macro-enabled files, templates or other zip files."))
-    if actual == OLE and expected == DOCX:
-        raise HTTPException(status_code=415, detail=f"{filename} is an old-format or password-protected Word file. "
-                                                    "Save it as a regular .docx without a password and try again.")
+        package = office_package(data)
+        if package in OFFICE_APP:
+            actual = package
+        elif expected in OFFICE_APP:
+            raise HTTPException(status_code=422 if package == "damaged" else 415, detail=(
+                f"{filename} looks damaged, so it can't be uploaded." if package == "damaged" else
+                f"{filename} isn't {a_or_an(TYPE_NAME[expected])}. Only regular {OFFICE_APP[expected][1]} can be "
+                "uploaded, not macro-enabled files, templates or other zip files."))
+    if actual == OLE and expected in OFFICE_APP:
+        program = OFFICE_APP[expected][0]
+        raise HTTPException(status_code=415, detail=f"{filename} is an old-format or password-protected {program} "
+                                                    f"file. Save it as a regular {ext} without a password and try again.")
     if actual is None:
         raise HTTPException(status_code=415, detail=f"{filename} isn't a real {TYPE_NAME[expected]}. "
                                                     "The file may be damaged or have the wrong extension.")
     if actual != expected:
-        raise HTTPException(status_code=415, detail=f"{filename} is named as a {TYPE_NAME[expected]} but is really a "
-                                                    f"{TYPE_NAME[actual]}. Rename it or choose the right file.")
+        raise HTTPException(status_code=415, detail=f"{filename} is named as {a_or_an(TYPE_NAME[expected])} but is "
+                                                    f"really {a_or_an(TYPE_NAME[actual])}. Rename it or choose the "
+                                                    "right file.")
     if damaged(actual, data):
         raise HTTPException(status_code=422, detail=f"{filename} looks damaged or incomplete, so it can't be uploaded.")
     return actual
@@ -208,8 +238,13 @@ def content_disposition(kind: str, filename: str) -> str:
 
 # ---------- helpers ----------
 
-def ensure_files_open(opp: Opportunity, action: str) -> None:
-    if opp.stage not in OPPORTUNITY_OPEN_STAGES:
+# Files can be added while the deal is open, and to a Won deal (e.g. the signed order); never to a Lost one.
+# Deleting stays limited to open deals.
+UPLOAD_STAGES = [*OPPORTUNITY_OPEN_STAGES, "Won"]
+
+
+def ensure_files_open(opp: Opportunity, action: str, stages=OPPORTUNITY_OPEN_STAGES) -> None:
+    if opp.stage not in stages:
         raise HTTPException(status_code=409, detail=f"This opportunity is {opp.stage}, so files can't be {action} any more. "
                                                     "Its files can still be viewed and downloaded.")
 
@@ -262,11 +297,12 @@ def list_attachments(opportunity_id: int, db: Session = Depends(get_db)):
 @router.post("/{opportunity_id}/attachments", response_model=schemas.OpportunityAttachmentOut,
              status_code=status.HTTP_201_CREATED, openapi_extra=UPLOAD_FORM)
 async def upload_attachment(opportunity_id: int, request: Request, db: Session = Depends(get_db)):
-    """Add one file (form field "file"): PDF, Word (.docx), JPG or PNG, up to 20 MB.
-    Only while the deal is open (Opportunity, Discovery or Proposal), by someone who can edit the opportunity."""
+    """Add one file (form field "file"): PDF, Word (.docx), PowerPoint (.pptx), Excel (.xlsx), JPG or PNG, up to 20 MB.
+    While the deal is open (Opportunity, Discovery or Proposal) or Won, by someone who can edit the opportunity. The
+    file is saved with the deal's stage at that moment (e.g. Won) and the uploader."""
     opp = get_or_404(db, Opportunity, opportunity_id, "Opportunity")
     me = require_edit(opp.owner_id, "opportunity")
-    ensure_files_open(opp, "added")
+    ensure_files_open(opp, "added", UPLOAD_STAGES)
     # the size is checked before anything is read; the server never accepts more than Content-Length
     length = request.headers.get("content-length", "")
     if not length.isdigit():
@@ -284,7 +320,7 @@ async def upload_attachment(opportunity_id: int, request: Request, db: Session =
     content_type = checked_type(filename, data)
 
     opp = locked_opportunity(db, opportunity_id)
-    ensure_files_open(opp, "added")  # it may have been closed while the file was uploading
+    ensure_files_open(opp, "added", UPLOAD_STAGES)  # it may have been closed as Lost while the file was uploading
     attachment = OpportunityAttachment(
         opportunity_id=opp.id, stage=opp.stage, filename=filename, content_type=content_type,
         size_bytes=len(data), data=data, uploaded_by_id=me.id,

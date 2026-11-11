@@ -1370,11 +1370,134 @@ td.high {
   padding: 0 8px;
   font-size: 12px;
 }
-.lead-board .kanban-more {
-  padding: 4px 8px;
+/* a column left out of this board (list view or Lead Status filter): muted, with no count */
+.lead-board .kanban-col.excluded {
+  background: #f9f9f9;
+}
+.lead-board .kanban-col.excluded .kanban-stage {
+  color: var(--text-weak);
+}
+.lead-board .kanban-col.excluded .kanban-empty {
+  font-size: 12px;
+}
+.lead-board .kanban-cards.is-loading {
+  opacity: 0.55;
+  transition: opacity 0.15s;
+}
+/* each column's page: the range, then Previous / Next, right after its cards (the header shows the range too) */
+.lead-board .kanban-col {
+  scroll-margin-top: 72px; /* a page change brings the column's top back into view, below the app header */
+}
+.kanban-pager {
+  display: grid;
+  gap: 6px;
+  margin: 0 8px 8px;
+  padding: 8px 0 0;
+  border-top: 1px solid #e3e3e3;
+}
+.kanban-range {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0 8px;
+  margin: 0;
   color: var(--text-weak);
   font-size: 12px;
   text-align: center;
+}
+.kanban-range b {
+  color: var(--text);
+  font-weight: 600;
+}
+.kanban-pager-buttons {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.kanban-pager-buttons .sf-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 0 6px;
+}
+.kanban-pager-buttons .sf-button:disabled {
+  border-color: #e3e3e3;
+  background: #f7f7f7;
+  color: #939393;
+  cursor: default;
+}
+/* Kanban filter bar: the List page's filters as buttons, the sort and cards per column */
+.board-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: #fafbfc;
+}
+.board-filters,
+.board-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+}
+.board-bar-label {
+  color: var(--text-weak);
+  font-size: 13px;
+  font-weight: 600;
+}
+.filter-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  height: 30px;
+  padding: 0 10px 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--white);
+  color: var(--text);
+  font-size: 13px;
+}
+.filter-pill > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.filter-pill:hover {
+  border-color: var(--brand);
+}
+.filter-pill.on {
+  border-color: #a9cdf2;
+  background: #eaf4fe;
+  color: var(--brand-dark);
+  font-weight: 600;
+}
+.board-clear {
+  padding: 4px 2px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.board-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-weak);
+  font-size: 13px;
+}
+.board-select select {
+  height: 30px;
+  border-radius: 8px;
+}
+@media (max-width: 720px) {
+  .board-bar {
+    padding: 10px 12px;
+  }
 }
 
 /* ---------- record pages ---------- */
@@ -3135,6 +3258,44 @@ a.pill:hover {
 .delete-box p {
   margin: 0;
   color: var(--text);
+}
+/* an opportunity can't move forward yet: its stage's open tasks */
+.stage-blocked {
+  display: flex;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid #f2cf8f;
+  border-radius: 8px;
+  background: #fff8ea;
+  color: #8c4b02;
+}
+.stage-blocked > div {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.stage-blocked p {
+  margin: 0;
+  color: var(--text);
+}
+.stage-blocked-tasks {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.stage-blocked-tasks li {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid #f0dcb4;
+  border-radius: 6px;
+  background: var(--white);
+  color: var(--text);
+}
+.stage-blocked-tasks small {
+  color: var(--text-weak);
 }
 
 .external-link {

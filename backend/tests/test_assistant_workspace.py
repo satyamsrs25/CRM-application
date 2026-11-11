@@ -11,7 +11,7 @@ from openpyxl import Workbook
 
 from app import assistant
 from app.assistant_reports import period_range
-from conftest import login_as
+from conftest import finish_stage_tasks, login_as
 from test_assistant import ai, call  # noqa: F401 (ai: a scripted stand-in for the AI model)
 
 
@@ -328,6 +328,7 @@ def test_reports_are_counted_in_the_database(client, ai):
              for i in range(3)]
     won = client.post(f"/api/leads/{leads[0]['id']}/convert", json={
         "task": TASK, "note": NOTE, "expected_value": 30000, "completed_stages": ["Nurturing", "Demo"]}).json()["opportunity"]
+    finish_stage_tasks(client, won["id"])
     client.post(f"/api/opportunities/{won['id']}/won", json={"task": TASK, "note": NOTE, "completed_stages": ["Discovery", "Proposal"]})
     client.post(f"/api/leads/{leads[1]['id']}/lost", json={"lost_reason": "Price", "lost_notes": NOTE})
     client.post("/api/opportunities", json={"name": "Open deal", "account_name": "C9", "contact_last_name": "X",
