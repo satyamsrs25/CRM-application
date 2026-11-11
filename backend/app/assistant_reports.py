@@ -2,7 +2,7 @@
 over the records the user may see (their own, or the team's with "View team records").
 
 crm_report(period=..., owner_id=...) returns leads, opportunities and tasks figures for a period, plus a snapshot of
-what is open right now. Amounts are USD. Rates are percentages with one decimal.
+what is open right now. Amounts are in each deal's own currency (see "currency"). Rates are percentages with one decimal.
 """
 from datetime import date, datetime, time, timedelta
 
@@ -185,10 +185,14 @@ def crm_report(db: Session, *, period: str | None = None, date_from: str | None 
         "completed_in_period": count(_between(task_scope(Task.status == "Done"), Task.completed_at, start, end)),
     }
     me = acting_user()
+    # amounts are added as entered: say so when the deals use more than one currency (there are no exchange rates)
+    used = sorted(set(db.scalars(_scope(select(Opportunity.currency).distinct(), Opportunity, owner_id)).all())) or ["USD"]
+    currency = used[0] if len(used) == 1 else (f"mixed ({', '.join(used)}): totals add the amounts as entered, "
+                                                "without converting; give the amounts per deal when this matters")
     return {
         "period": label, "from": start.date().isoformat() if start else None,
         "to": (end - timedelta(days=1)).date().isoformat() if end else (date.today().isoformat() if start else None),
         "scope": ("the whole team" if me.sees_team else "your own records") +
                  (f", owner {names.get(owner_id)}" if owner_id is not None else ""),
-        "currency": "USD", "leads": leads, "opportunities": opportunities, "tasks": tasks,
+        "currency": currency, "leads": leads, "opportunities": opportunities, "tasks": tasks,
     }

@@ -276,36 +276,37 @@ def footer(lead_id: int | None = None, *, token: str | None = None, subscribe: b
 # ---------- the HTML version (Outlook and Gmail show this; the plain text above stays as the fallback) ----------
 
 def _button(href: str, label: str, primary: bool) -> str:
-    """A button that also works in Outlook for Windows (a table cell with a link, no CSS buttons)."""
+    """A small button: a styled link, no table (new Outlook puts an "expand table" arrow on tables)."""
     bg, fg, border = ("#0176d3", "#ffffff", "#0176d3") if primary else ("#ffffff", "#0176d3", "#c9c9c9")
-    return (f'<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="display:inline-table">'
-            f'<tr><td style="border-radius:6px;background:{bg};border:1px solid {border}">'
-            f'<a href="{escape(href)}" style="display:inline-block;padding:9px 20px;font-family:Segoe UI,Arial,sans-serif;'
-            f'font-size:14px;font-weight:600;color:{fg};text-decoration:none;border-radius:6px">{label}</a>'
-            f'</td></tr></table>')
+    return (f'<a href="{escape(href)}" style="display:inline-block;padding:5px 14px;border:1px solid {border};'
+            f'border-radius:4px;background:{bg};font-family:Segoe UI,Arial,sans-serif;font-size:12px;line-height:16px;'
+            f'font-weight:600;color:{fg};text-decoration:none">{label}</a>')
 
 
 def email_html(body: str, lead_id: int | None = None, *, token: str | None = None, subscribe: bool = True) -> str:
-    """The email as HTML: the text as written, then a footer with one button.
+    """The email as HTML: the text as written, then a one-line footer with a small button.
     - Not subscribed yet: a Subscribe button (and a small Unsubscribe link: every campaign email must offer it).
-    - Subscribed: an Unsubscribe button."""
+    - Subscribed: an Unsubscribe button.
+    One click on either opens the page that makes the change (see routers/campaigns.py page(auto=True))."""
     paragraphs = [p for p in re.split(r"\n\s*\n", body.strip()) if p.strip()]
     text = "".join(f'<p style="margin:0 0 14px">{escape(p).replace(chr(10), "<br>")}</p>' for p in paragraphs)
     company = escape(mailer.company_name())
     unsubscribe = unsubscribe_link(lead_id, token=token)
+    small = "font-family:Segoe UI,Arial,sans-serif;font-size:12px;line-height:16px;color:#706e6b"
     if subscribe:
-        note = f"You're receiving this email from {company}. Subscribe to keep getting our updates."
+        note = f"You're receiving this email from {company}."
         action = (_button(unsubscribe_link(lead_id, "subscribe", token=token), "Subscribe", True)
-                  + f'<p style="margin:10px 0 0;font-size:12px;color:#706e6b">Don\'t want these emails? '
-                    f'<a href="{escape(unsubscribe)}" style="color:#706e6b">Unsubscribe</a></p>')
+                  + f'&nbsp;&nbsp; Not interested? <a href="{escape(unsubscribe)}" '
+                    f'style="color:#706e6b;text-decoration:underline">Unsubscribe</a>')
     else:
         note = f"You're subscribed to emails from {company}."
         action = _button(unsubscribe, "Unsubscribe", False)
     return (f'<!doctype html><html><body style="margin:0;padding:0">'
             f'<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;line-height:1.55;color:#181818;'
             f'max-width:640px">{text}'
-            f'<div style="margin-top:24px;padding-top:16px;border-top:1px solid #e5e5e5">'
-            f'<p style="margin:0 0 12px;font-size:13px;color:#706e6b">{note}</p>{action}</div></div></body></html>')
+            f'<div style="margin-top:24px;padding-top:14px;border-top:1px solid #e5e5e5">'
+            f'<p style="margin:0 0 10px;{small}">{note}</p><p style="margin:0;{small}">{action}</p></div></div>'
+            f'</body></html>')
 
 
 @dataclass

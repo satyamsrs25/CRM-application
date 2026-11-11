@@ -119,6 +119,7 @@ test("lead form uses backend fields and only requires last name and company", ()
       company_website: null,
       company_linkedin_url: null,
       annual_revenue: null,
+      currency: "USD",
       employees: null,
       location: null,
       source: "Phone",
@@ -1298,6 +1299,18 @@ test("list headers: the buttons on the right are spaced and wrap, without touchi
   assert.match(css, /\.list-title \{\s*display: flex;\s*flex-wrap: wrap;/);
   // List / Kanban stay one joined control (no gap between its two halves)
   assert.doesNotMatch(css, /\.toggle-group \{[^}]*gap:/);
+});
+
+test("amounts show their own currency and totals are never added across currencies", async () => {
+  const { amount, compactMoney, compactMoneyMix, CURRENCIES } = await import("./format.js");
+  assert.deepEqual(CURRENCIES, ["USD", "INR", "EUR", "CAD", "AUD", "AED"]);
+  assert.equal(amount(1234.5, "USD"), "$1,234.5");
+  assert.equal(amount(1234.5, "INR"), "₹1,234.5");
+  assert.equal(amount(1234.5, "AED"), "AED 1,234.5");
+  assert.equal(amount(null, "EUR"), "");
+  assert.equal(compactMoney(2550000, "EUR"), "€2.55M");
+  assert.equal(compactMoneyMix({ INR: 500000, USD: 12000 }), "$12K + ₹500K");
+  assert.equal(compactMoneyMix({}), "$0");
 });
 
 // ---------- vikram-fixes2: Opportunity stage tasks, PowerPoint / Excel attachments, Leads Kanban pages ----------

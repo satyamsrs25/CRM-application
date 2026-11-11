@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 
 from app import schemas
 from app.assistant_reports import PERIODS, crm_report
-from app.constants import (LEAD_FLOW, LEAD_STAGES, OPPORTUNITY_FLOW, OPPORTUNITY_STAGES, REVISIT_REASONS,
+from app.constants import (CURRENCIES, LEAD_FLOW, LEAD_STAGES, OPPORTUNITY_FLOW, OPPORTUNITY_STAGES, REVISIT_REASONS,
                            UNQUALIFIED_REASONS)
 from app.models import Lead, User
 from app.routers import accounts, activity, home, leads, opportunities, tasks
@@ -82,12 +82,14 @@ TASK_ARGS = {
     "task_description": S,
 }
 TASK_REQUIRED = ["task_title", "task_due_date"]
+CURRENCY = {"type": "string", "enum": CURRENCIES, "description": "Currency of the amount (default USD)"}
 LEAD_FIELDS = {
     "salutation": {"type": "string", "enum": ["Mr.", "Ms.", "Mrs.", "Dr.", "Prof."]},
     "first_name": S, "last_name": S, "company": S, "title": S, "industry": S, "email": S, "phone": S,
     "source": {"type": "string", "enum": ["Website", "Referral", "Phone", "Email", "Event", "Social Media", "Other"]},
     "location": S, "linkedin_url": S, "company_website": S, "company_linkedin_url": S,
-    "annual_revenue": {"type": "number", "description": "Turnover in USD"},
+    "annual_revenue": {"type": "number", "description": "Turnover, in the lead's currency"},
+    "currency": CURRENCY,
     "employees": {"type": "integer", "description": "Headcount"},
 }
 LOST = {"type": "string", "enum": ["Price", "Competitor", "No response", "No budget", "Not interested", "Other"]}
@@ -133,14 +135,14 @@ TOOLS = [
           "The same open opportunity for the same person and company can't be created twice.", {
               "name": {"type": "string", "description": "Opportunity name"}, "account_id": I, "account_name": S,
               "contact_id": I, "contact_first_name": S, "contact_last_name": S, "contact_email": S, "contact_title": S,
-              "contact_phone": S, "amount": N, "close_date": DATE,
+              "contact_phone": S, "amount": N, "currency": CURRENCY, "close_date": DATE,
               "owner_name": {"type": "string", "description": "Only when the user names another owner"},
               "note": {"type": "string", "description": "Required: why the opportunity is opened, in the user's own "
                        "words (take them from what the user said; ask only if they gave no reason)."},
               **TASK_ARGS}, ["name", "note", *TASK_REQUIRED]),
     _tool("update_opportunity", "Change an opportunity's name, amount, close date, contact or discovery details "
           "(not its stage or owner).", {
-              "opportunity_id": I, "name": S, "amount": N, "close_date": DATE, "primary_contact_id": I,
+              "opportunity_id": I, "name": S, "amount": N, "currency": CURRENCY, "close_date": DATE, "primary_contact_id": I,
               "discovery_needs": S, "discovery_budget": S, "discovery_decision_maker": S, "discovery_timeline": S},
           ["opportunity_id"]),
     _tool("update_task", "Change a task: reschedule it, rename it or change its priority or description.", {
@@ -161,7 +163,7 @@ TOOLS = [
     _tool("reschedule_demo", "Move a booked demo to a new date and time (the lead stays at Demo).", {
         "lead_id": I, "new_date": DATE_TIME, "reason": S}, ["lead_id", "new_date"]),
     _tool("convert_lead", "Convert a lead into an account, contact and opportunity.", {
-        "lead_id": I, "note": CONVERSION_COMMENT, "opportunity_name": S, "amount": N, "close_date": DATE,
+        "lead_id": I, "note": CONVERSION_COMMENT, "opportunity_name": S, "amount": N, "currency": CURRENCY, "close_date": DATE,
         "completed_stages": COMPLETED, **TASK_ARGS}, ["lead_id", "note", *TASK_REQUIRED]),
     _tool("move_opportunity_stage", "Move an opportunity to Opportunity, Discovery or Proposal.", {
         "opportunity_id": I, "stage": {"type": "string", "enum": OPPORTUNITY_FLOW}, "note": NOTE,
@@ -347,7 +349,7 @@ def _lead_row(l):
 
 
 def _opp_row(o):
-    return {k: o.get(k) for k in ("id", "name", "account_name", "stage", "expected_value", "final_value",
+    return {k: o.get(k) for k in ("id", "name", "account_name", "stage", "expected_value", "final_value", "currency",
                                   "expected_close_date", "owner_name")}
 
 
@@ -433,7 +435,7 @@ def run_tool(db: Session, name: str, args: dict) -> tuple[dict, dict | None]:
     if name == "create_opportunity":
         data = schemas.OpportunityCreate(
             name=a["name"], note=a.get("note"), task=stage_task(a), expected_value=a.get("amount"),
-            expected_close_date=a.get("close_date"), owner_id=_user_id(db, a.get("owner_name")),
+            currency=a.get("currency"), expected_close_date=a.get("close_date"), owner_id=_user_id(db, a.get("owner_name")),
             account_id=a.get("account_id"), account_name=a.get("account_name"), primary_contact_id=a.get("contact_id"),
             contact_first_name=a.get("contact_first_name"), contact_last_name=a.get("contact_last_name"),
             contact_email=a.get("contact_email"), contact_title=a.get("contact_title"),
@@ -444,7 +446,8 @@ def run_tool(db: Session, name: str, args: dict) -> tuple[dict, dict | None]:
                 "contact": (out.get("contact") or {}).get("full_name"), "reused": out.get("reused")}, \
             _link("Opportunity", opp)
     if name == "update_opportunity":
-        fields = {"name": a.get("name"), "expected_value": a.get("amount"), "expected_close_date": a.get("close_date"),
+        fields = {"name": a.get("name"), "expected_value": a.get("amount"), "currency": a.get("currency"),
+                  "expected_close_date": a.get("close_date"),
                   "primary_contact_id": a.get("primary_contact_id"),
                   **{k: a.get(k) for k in ("discovery_needs", "discovery_budget", "discovery_decision_maker",
                                            "discovery_timeline")}}
@@ -484,8 +487,8 @@ def run_tool(db: Session, name: str, args: dict) -> tuple[dict, dict | None]:
         return _lead_row(out), _link("Lead", out)
     if name == "convert_lead":
         data = schemas.ConvertLead(note=a.get("note"), opportunity_name=a.get("opportunity_name"),
-                                   expected_value=a.get("amount"), expected_close_date=a.get("close_date"),
-                                   completed_stages=a.get("completed_stages", []), task=stage_task(a))
+                                   expected_value=a.get("amount"), currency=a.get("currency"),
+                                   expected_close_date=a.get("close_date"), completed_stages=a.get("completed_stages", []), task=stage_task(a))
         out = _plain(leads.convert_lead(lead_id=a["lead_id"], data=data, db=db))
         opp = out.get("opportunity") or {}
         return {"opportunity": _opp_row(opp), "account": (out.get("account") or {}).get("name")}, _link("Opportunity", opp)

@@ -78,6 +78,7 @@ class Account(Base):
     address: Mapped[str | None] = mapped_column(String(500))
     linkedin_url: Mapped[str | None] = mapped_column(String(300))
     annual_revenue: Mapped[Decimal | None]
+    currency: Mapped[str] = mapped_column(String(3), default="USD", server_default="USD")  # of the turnover
     employees: Mapped[int | None]
     owner_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime | None] = mapped_column(server_default=func.now())
@@ -128,7 +129,8 @@ class Lead(Base):
     linkedin_url: Mapped[str | None] = mapped_column(String(300))
     company_website: Mapped[str | None] = mapped_column(String(255))
     company_linkedin_url: Mapped[str | None] = mapped_column(String(300))
-    annual_revenue: Mapped[Decimal | None]  # turnover, USD
+    annual_revenue: Mapped[Decimal | None]  # turnover, in the lead's currency
+    currency: Mapped[str] = mapped_column(String(3), default="USD", server_default="USD")  # constants.CURRENCIES
     employees: Mapped[int | None]  # headcount
     location: Mapped[str | None] = mapped_column(String(200))
     # uploaded from a file and nobody has worked on it yet (kept out of the normal lists until someone does)
@@ -189,6 +191,7 @@ class Opportunity(Base):
     stage: Mapped[str] = mapped_column(String(20), default="Opportunity")   # constants.OPPORTUNITY_STAGES
     expected_value: Mapped[Decimal | None]
     final_value: Mapped[Decimal | None]
+    currency: Mapped[str] = mapped_column(String(3), default="USD", server_default="USD")  # of both amounts
     expected_close_date: Mapped[date | None]
     probability: Mapped[int] = mapped_column(default=20)  # % chance to win, set by stage
     lost_reason: Mapped[str | None] = mapped_column(String(20))

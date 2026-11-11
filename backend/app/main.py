@@ -57,6 +57,9 @@ def upgrade_database() -> None:
             ("accounts", "linkedin_url", "VARCHAR(300)"), ("accounts", "annual_revenue", "NUMERIC(16,2)"),
             ("accounts", "employees", "INT"), ("contacts", "linkedin_url", "VARCHAR(300)"),
             ("leads", "untouched", "BOOLEAN NOT NULL DEFAULT FALSE"), ("leads", "uploaded_from", "VARCHAR(255)"),
+            # the currency of a lead's turnover and an opportunity's amounts (existing records: USD)
+            ("leads", "currency", "VARCHAR(3) NOT NULL DEFAULT 'USD'"), ("accounts", "currency", "VARCHAR(3) NOT NULL DEFAULT 'USD'"),
+            ("opportunities", "currency", "VARCHAR(3) NOT NULL DEFAULT 'USD'"),
         ):
             conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {kind}"))
         # 'Upload' lead source for leads created by a bulk upload

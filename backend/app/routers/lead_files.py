@@ -17,7 +17,7 @@ from sqlalchemy import func, insert, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app import schemas
-from app.constants import LEAD_OPEN_STAGES, LEAD_SOURCES, LEAD_STAGES, LEAD_START
+from app.constants import CURRENCIES, DEFAULT_CURRENCY, LEAD_OPEN_STAGES, LEAD_SOURCES, LEAD_STAGES, LEAD_START
 from app.database import get_db
 from app.models import Account, ActivityLog, Contact, Lead, StageHistory, User
 from app.security import acting_user, can_view, require, team_ids, visible
@@ -47,7 +47,8 @@ COLUMNS = {
                      "profileurl"),
     "company_website": ("website", "companywebsite", "companyurl", "url", "domain"),
     "company_linkedin_url": ("companylinkedinurl", "companylinkedin"),
-    "annual_revenue": ("annualrevenue", "revenue", "turnover"),
+    "annual_revenue": ("annualrevenue", "revenue", "turnover", "turnoverusd"),
+    "currency": ("currency", "currencycode"),
     "employees": ("employees", "noemployees", "employeecount", "noofemployees", "numberofemployees", "headcount", "companysize"),
     "location": ("location",),
     "city": ("city",),
@@ -186,6 +187,10 @@ def parse(header: list[str], rows: list[list]):
         lead["email"] = email or None
         salutation = raw.get("salutation", "").title().rstrip(".") + "." if raw.get("salutation") else None
         lead["salutation"] = salutation if salutation in ("Mr.", "Ms.", "Mrs.", "Dr.", "Prof.") else None
+        currency = (raw.get("currency") or "").strip().upper()
+        if currency and currency not in CURRENCIES:
+            blank.append(f"currency '{raw.get('currency')[:20]}' is not one of {', '.join(CURRENCIES)} (USD used)")
+        lead["currency"] = currency if currency in CURRENCIES else DEFAULT_CURRENCY
         lead["source"] = SOURCE_ALIASES.get((raw.get("source") or "").lower(), "Upload")  # source from the file, or Upload
         location = raw.get("location") or ", ".join(x for x in (raw.get("city"), raw.get("state"), raw.get("country")) if x)
         lead["location"] = location[:200] or None
@@ -591,7 +596,7 @@ EXPORT_COLUMNS = (
     ("Salutation", "salutation"), ("First Name", "first_name"), ("Last Name", "last_name"), ("Title", "title"),
     ("Company", "company"), ("Email", "email"), ("Phone", "phone"), ("LinkedIn URL", "linkedin_url"),
     ("Company Website", "company_website"), ("Company LinkedIn URL", "company_linkedin_url"),
-    ("Turnover (USD)", "annual_revenue"), ("Headcount", "employees"), ("Location", "location"),
+    ("Turnover", "annual_revenue"), ("Currency", "currency"), ("Headcount", "employees"), ("Location", "location"),
     ("Industry", "industry"), ("Lead Source", "source"), ("Status", "stage"), ("Owner", "owner"),
     ("Lost Reason", "lost_reason"), ("Created", "created_at"), ("Converted", "converted_at"),
 )

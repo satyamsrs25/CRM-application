@@ -1789,6 +1789,12 @@ td.high {
 .field textarea {
   resize: vertical;
 }
+/* Amount + currency dropdown on one line */
+.amount-input {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 84px;
+  gap: 8px;
+}
 .field input:focus,
 .field select:focus,
 .field textarea:focus {
@@ -3186,6 +3192,8 @@ a.pill:hover {
 .email-ai-submit svg { width: 24px; height: 24px; }
 .email-ai-submit:hover:not(:disabled) { background: #a8dcff; }
 .email-ai-submit:disabled { opacity: .5; cursor: default; }
+.email-ai-submit[aria-busy="true"] { opacity: 1; }
+.email-ai-spinner { width: 18px; height: 18px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
 .email-ai-refine-button { display: grid; place-items: center; width: 30px; height: 34px; padding: 6px; border: 0; border-radius: 50%; background: transparent; color: #444746; cursor: pointer; }
 .email-ai-refine-button svg { width: 18px; height: 18px; }
 .email-ai-refine-button:hover:not(:disabled), .email-ai-polish:hover:not(:disabled) { background: #e0eafa; }

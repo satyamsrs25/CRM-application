@@ -1,5 +1,5 @@
 // Small building blocks used by every screen: icons, object icons, ring charts, path bar, empty states.
-import { formatPhone, maskPhone, shortDate, time } from "./format";
+import { CURRENCIES, DEFAULT_CURRENCY, formatPhone, maskPhone, shortDate, time } from "./format";
 import { pageSummary } from "./listHelpers";
 import React, { useEffect, useState } from "react";
 
@@ -469,5 +469,29 @@ export function DateCell({ value }) {
       {shortDate(value)}
       <small>{time(value)}</small>
     </span>
+  );
+}
+
+// An amount with its currency: the number and a currency dropdown side by side (sent as `name` and `currencyName`)
+export function AmountField({ label, name, value = "", currency, currencyName = "currency", required = false }) {
+  return (
+    <div className="field">
+      <label htmlFor={`amount-${name}`}>
+        <span>
+          {label}
+          {required && <i> *</i>}
+        </span>
+      </label>
+      <div className="amount-input">
+        <input id={`amount-${name}`} name={name} type="number" min={0} step="any" required={required} defaultValue={value ?? ""} />
+        <select name={currencyName} defaultValue={currency || DEFAULT_CURRENCY} aria-label={`${label} currency`}>
+          {CURRENCIES.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </select>
+      </div>
+    </div>
   );
 }

@@ -9,11 +9,37 @@ export function compact(value) {
   return String(+n.toFixed(2));
 }
 
-export function amount(value) {
+// Currency of a lead's turnover or an opportunity's amounts (chosen per record; never converted)
+export const CURRENCIES = ["USD", "INR", "EUR", "CAD", "AUD", "AED"];
+export const DEFAULT_CURRENCY = "USD";
+// USD -> "$", INR -> "₹", EUR -> "€", CAD -> "CA$", AUD -> "A$", AED -> "AED"
+export function currencySymbol(currency = DEFAULT_CURRENCY) {
+  const code = CURRENCIES.includes(currency) ? currency : DEFAULT_CURRENCY;
+  const parts = new Intl.NumberFormat("en-US", { style: "currency", currency: code }).formatToParts(0);
+  return parts.find((p) => p.type === "currency")?.value || code;
+}
+const joinSymbol = (symbol, text) => (/^[A-Z]{3}$/.test(symbol) ? `${symbol} ${text}` : `${symbol}${text}`);
+
+// 1234.5 -> "1,234.5"; with a currency: "$1,234.5", "₹1,234.5", "AED 1,234.5"
+export function amount(value, currency) {
   if (value == null || value === "") return "";
-  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(
-    value,
-  );
+  const text = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(value);
+  return currency ? joinSymbol(currencySymbol(currency), text) : text;
+}
+
+// Short money for cards: 2550000, "USD" -> "$2.55M"
+export const compactMoney = (value, currency = DEFAULT_CURRENCY) =>
+  value == null || value === "" ? "—" : joinSymbol(currencySymbol(currency), compact(value));
+
+// Totals per currency from the API ({USD: 12000, INR: 500000}) -> "$12K + ₹500K". Amounts in different
+// currencies are never added together. Empty -> "$0".
+export function compactMoneyMix(values) {
+  const entries = Object.entries(values || {}).filter(([, v]) => v);
+  if (!entries.length) return compactMoney(0);
+  return entries
+    .sort(([a], [b]) => CURRENCIES.indexOf(a) - CURRENCIES.indexOf(b))
+    .map(([currency, v]) => compactMoney(v, currency))
+    .join(" + ");
 }
 
 const asDate = (value) =>

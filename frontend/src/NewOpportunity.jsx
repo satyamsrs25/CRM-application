@@ -5,7 +5,7 @@
 import React, { useEffect, useState } from "react";
 import { api } from "./api";
 import { SALUTATIONS } from "./domain";
-import { Icon } from "./ui";
+import { AmountField, Icon } from "./ui";
 
 // Asks the server what would happen, shortly after the user stops typing
 export function useDuplicateCheck(params, enabled = true) {
@@ -210,10 +210,7 @@ export function NewOpportunityFields({ data, defaults, owner, onBlocked }) {
       )}
       <div className="form-grid">
         {input("Opportunity Name", "name", name, setName, { required: true, maxLength: 200 })}
-        <label className="field">
-          <span>Amount</span>
-          <input name="expected_value" type="number" min={0} step="0.01" />
-        </label>
+        <AmountField label="Amount" name="expected_value" />
         <label className="field">
           <span>Close Date</span>
           <input name="expected_close_date" type="date" />
@@ -233,6 +230,7 @@ export function newOpportunityPayload(v, extra) {
   return {
     name: (v.name || "").trim(),
     expected_value: v.expected_value === "" || v.expected_value == null ? null : Number(v.expected_value),
+    currency: v.currency || "USD",
     expected_close_date: v.expected_close_date || null,
     owner_id: v.owner_id ? Number(v.owner_id) : null,
     account_id: isNew || !v.account_id ? null : Number(v.account_id),

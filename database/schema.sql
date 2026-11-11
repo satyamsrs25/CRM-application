@@ -86,6 +86,7 @@ CREATE TABLE accounts (
   address    VARCHAR(500),
   linkedin_url   VARCHAR(300),
   annual_revenue NUMERIC(16,2),
+  currency       VARCHAR(3) NOT NULL DEFAULT 'USD' CHECK (currency IN ('USD','INR','EUR','CAD','AUD','AED')),
   employees      INT CHECK (employees >= 0),
   owner_id   INT NOT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -131,7 +132,8 @@ CREATE TABLE leads (
   linkedin_url         VARCHAR(300),   -- the lead's LinkedIn profile
   company_website      VARCHAR(255),
   company_linkedin_url VARCHAR(300),
-  annual_revenue       NUMERIC(16,2),  -- turnover (USD)
+  annual_revenue       NUMERIC(16,2),  -- turnover, in the lead's currency
+  currency             VARCHAR(3) NOT NULL DEFAULT 'USD' CHECK (currency IN ('USD','INR','EUR','CAD','AUD','AED')),
   employees            INT CHECK (employees >= 0),  -- headcount
   location             VARCHAR(200),
   untouched            BOOLEAN NOT NULL DEFAULT FALSE,  -- uploaded and not worked on yet
@@ -180,6 +182,7 @@ CREATE TABLE opportunities (
                       CHECK (stage IN ('Opportunity','Discovery','Proposal','Won','Lost')),
   expected_value      NUMERIC(14,2),
   final_value         NUMERIC(14,2),
+  currency            VARCHAR(3) NOT NULL DEFAULT 'USD' CHECK (currency IN ('USD','INR','EUR','CAD','AUD','AED')),
   expected_close_date DATE,
   -- % chance to win: Opportunity 20, Discovery 40, Proposal 75, Won 100, Lost 0
   probability         SMALLINT NOT NULL DEFAULT 20 CHECK (probability BETWEEN 0 AND 100),
