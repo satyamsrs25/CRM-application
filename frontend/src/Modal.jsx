@@ -33,7 +33,7 @@ import {
 } from "./domain";
 import { can } from "./permissions";
 import { BUSINESS_TZ_LABEL, formatBusiness, fromBusinessInput, toBusinessInput } from "./businessTime";
-import { Icon } from "./ui";
+import { AmountField, Icon } from "./ui";
 
 const go = (path) => {
   window.location.hash = path;
@@ -588,6 +588,7 @@ export default function Modal({ modal, close, data, run, notify, user }) {
           opportunity_name: v.opportunity_name || null,
           expected_value:
             v.expected_value === "" ? null : Number(v.expected_value),
+          currency: v.currency || null,
           expected_close_date: v.expected_close_date || null,
           account_id: v.account_id ? Number(v.account_id) : null,
           ...skipPayload(v),
@@ -742,7 +743,7 @@ export default function Modal({ modal, close, data, run, notify, user }) {
               <h3 className="form-section">Company Details</h3>
               {field("Company Website", "company_website", "text", true)}
               {field("Company LinkedIn URL", "company_linkedin_url", "text", true)}
-              {field("Turnover (USD)", "annual_revenue", "number")}
+              <AmountField label="Turnover" name="annual_revenue" value={record?.annual_revenue} currency={record?.currency} />
               {field("Headcount", "employees", "number")}
               {record &&
                 field(
@@ -765,7 +766,7 @@ export default function Modal({ modal, close, data, run, notify, user }) {
           {type === "opportunity" && (
             <div className="form-grid">
               {field("Opportunity Name", "name", "text", true)}
-              {field("Amount", "expected_value", "number")}
+              <AmountField label="Amount" name="expected_value" value={record?.expected_value} currency={record?.currency} />
               {field("Close Date", "expected_close_date", "date")}
               {select(
                 "Primary Contact",
@@ -911,7 +912,7 @@ export default function Modal({ modal, close, data, run, notify, user }) {
             <>
               {skippedChecklist()}
               {field(
-                "Final Amount",
+                `Final Amount (${record.currency || "USD"})`,
                 "final_value",
                 "number",
                 record.expected_value == null,
@@ -933,7 +934,7 @@ export default function Modal({ modal, close, data, run, notify, user }) {
                 }
               >
                 {field("Opportunity Name", "opportunity_name")}
-                {field("Amount", "expected_value", "number")}
+                <AmountField label="Amount" name="expected_value" currency={record?.currency} />
                 {field("Close Date", "expected_close_date", "date")}
                 <label className="field">
                   <span>Account</span>

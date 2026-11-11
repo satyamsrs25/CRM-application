@@ -16,7 +16,7 @@ from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.constants import OPPORTUNITY_OPEN_STAGES, OPPORTUNITY_STAGES, STAGE_PROBABILITY
+from app.constants import CURRENCIES, DEFAULT_CURRENCY, OPPORTUNITY_OPEN_STAGES, OPPORTUNITY_STAGES, STAGE_PROBABILITY
 from app.database import get_db
 from app.models import Account, Contact, Opportunity, StageHistory, User
 from app.routers.lead_files import EMAIL_RE, MAX_FILE_BYTES, MAX_ROWS, issue_list, key, number, read_rows, text_of
@@ -28,8 +28,9 @@ router = APIRouter(prefix="/api/opportunities", tags=["Opportunities: upload and
 COLUMNS = {
     "name": ("opportunityname", "opportunity", "dealname", "deal", "name"),
     "company": ("company", "companyname", "account", "accountname", "organization", "organisation", "client"),
-    "amount": ("amount", "expectedvalue", "value", "dealvalue", "dealamount", "expectedamount"),
-    "final_amount": ("finalamount", "finalvalue", "wonamount"),
+    "amount": ("amount", "expectedvalue", "value", "dealvalue", "dealamount", "expectedamount", "amountusd"),
+    "final_amount": ("finalamount", "finalvalue", "wonamount", "finalamountusd"),
+    "currency": ("currency", "currencycode"),
     "close_date": ("closedate", "expectedclosedate", "closingdate"),
     "stage": ("stage", "status", "dealstage"),
     "lost_reason": ("lostreason", "reason"),
@@ -95,6 +96,10 @@ def parse(header, rows):
         if stage == "Won" and final is None:
             errors.append({"row": row_no, "reason": "A Won deal needs an amount"})
             continue
+        currency = (raw.get("currency") or DEFAULT_CURRENCY).strip().upper()
+        if currency not in CURRENCIES:
+            errors.append({"row": row_no, "reason": f"Currency '{raw.get('currency')}' is not one of {', '.join(CURRENCIES)}"})
+            continue
         email = (raw.get("email") or "").lower()
         if email and not EMAIL_RE.match(email):
             errors.append({"row": row_no, "reason": f"Email '{email}' is not valid"})
@@ -107,7 +112,7 @@ def parse(header, rows):
             last = email.split("@")[0]
         reason = next((r for r in LOST_REASONS if r.lower() == (raw.get("lost_reason") or "").strip().lower()), "Other")
         deals.append({
-            "_row": row_no, "name": name, "company": company or name, "stage": stage, "amount": amount,
+            "_row": row_no, "name": name, "company": company or name, "stage": stage, "amount": amount, "currency": currency,
             "final": final, "close": close, "lost_reason": reason if stage == "Lost" else None,
             "contact": {"first_name": (first or "")[:50] or None, "last_name": last[:50], "email": email or None,
                         "phone": (raw.get("phone") or "")[:30] or None, "job_title": (raw.get("title") or "")[:100] or None}
@@ -163,7 +168,7 @@ async def import_opportunities(
         "invalid": len(errors) - duplicates, "owner": target.full_name, "columns_used": mapped,
         "columns_ignored": ignored, "errors": issue_list(errors, header, rows, LOOKUP),
         "preview": [{"name": d["name"], "company": d["company"], "stage": d["stage"],
-                     "amount": float(d["amount"]) if d["amount"] is not None else None,
+                     "amount": float(d["amount"]) if d["amount"] is not None else None, "currency": d["currency"],
                      "close_date": d["close"].isoformat() if d["close"] else None,
                      "contact": " ".join(x for x in ((d["contact"] or {}).get("first_name"),
                                                      (d["contact"] or {}).get("last_name")) if x)}
@@ -194,7 +199,7 @@ async def import_opportunities(
         closed = d["stage"] in ("Won", "Lost")
         opp = Opportunity(
             name=d["name"], stage=d["stage"], probability=STAGE_PROBABILITY[d["stage"]], expected_value=d["amount"],
-            final_value=d["final"] if d["stage"] == "Won" else None, expected_close_date=d["close"],
+            currency=d["currency"], final_value=d["final"] if d["stage"] == "Won" else None, expected_close_date=d["close"],
             lost_reason=d["lost_reason"], closed_at=datetime.now() if closed else None, account_id=account.id,
             primary_contact_id=contact.id if contact else None, owner_id=owner_id,
         )
@@ -215,7 +220,8 @@ async def import_opportunities(
 
 EXPORT_COLUMNS = (
     ("Opportunity Name", "name"), ("Account", "account"), ("Primary Contact", "contact"),
-    ("Contact Email", "contact_email"), ("Amount (USD)", "expected_value"), ("Final Amount (USD)", "final_value"),
+    ("Contact Email", "contact_email"), ("Amount", "expected_value"), ("Final Amount", "final_value"),
+    ("Currency", "currency"),
     ("Close Date", "expected_close_date"), ("Stage", "stage"), ("Probability (%)", "probability"),
     ("Lost Reason", "lost_reason"), ("Owner", "owner"), ("Created", "created_at"), ("Closed", "closed_at"),
 )

@@ -5,6 +5,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { LEAD_STAGES, OPPORTUNITY_STAGES } from "./domain";
 import { can } from "./permissions";
+import { amount } from "./format";
 import { Icon } from "./ui";
 
 const SAMPLE_LEADS = [
@@ -44,7 +45,7 @@ const OBJECTS = {
       ["Opportunity", (o) => o.name],
       ["Company", (o) => o.company],
       ["Stage", (o) => o.stage],
-      ["Amount", (o) => (o.amount != null ? `$${Number(o.amount).toLocaleString()}` : "")],
+      ["Amount", (o) => amount(o.amount, o.currency || "USD")],
       ["Close Date", (o) => o.close_date],
       ["Contact", (o) => o.contact],
     ],

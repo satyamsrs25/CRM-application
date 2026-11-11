@@ -68,6 +68,7 @@ export function leadPayload(values, editing = false) {
     company_website: optional(values.company_website?.trim()),
     company_linkedin_url: optional(values.company_linkedin_url?.trim()),
     annual_revenue: numeric(values.annual_revenue),
+    currency: values.currency || "USD",
     employees: numeric(values.employees),
     location: optional(values.location?.trim()),
     source: values.source || "Other",
@@ -98,6 +99,7 @@ export function opportunityPayload(values) {
   return {
     name: values.name.trim(),
     expected_value: numeric(values.expected_value),
+    currency: values.currency || undefined,
     expected_close_date: optional(values.expected_close_date),
     primary_contact_id: numeric(values.primary_contact_id),
     owner_id: numeric(values.owner_id),

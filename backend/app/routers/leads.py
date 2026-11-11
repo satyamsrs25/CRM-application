@@ -11,7 +11,7 @@ from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app import schemas
-from app.constants import (AUTO_TASKS, LEAD_FLOW, LEAD_OPEN_STAGES, LEAD_OPTIONAL_STAGES, LEAD_SOURCES, LEAD_STAGES,
+from app.constants import (AUTO_TASKS, DEFAULT_CURRENCY, LEAD_FLOW, LEAD_OPEN_STAGES, LEAD_OPTIONAL_STAGES, LEAD_SOURCES, LEAD_STAGES,
                            LEAD_START, STAGE_PROBABILITY)
 from app.database import get_db
 from app.security import (acting_user, acting_user_id, forbid_admin_create, owner_for_new, require_edit,
@@ -193,6 +193,8 @@ def update_lead(lead_id: int, data: schemas.LeadUpdate, db: Session = Depends(ge
     lead.untouched = False  # someone is working on it now
     changes = data.model_dump(exclude_unset=True)
     changes.pop("changed_by_id", None)
+    if changes.get("currency") is None:
+        changes.pop("currency", None)  # left as it is
     domain_confirmed = changes.pop("confirm_email_domain", False)
     if changes.get("demo_date") is not None:  # IST unless an offset is given; a new demo date must be in the future
         when = demo_input(changes["demo_date"])
@@ -611,7 +613,7 @@ def convert_lead(lead_id: int, data: schemas.ConvertLead, db: Session = Depends(
         account = Account(
             name=lead.company or lead.name, industry=lead.industry, phone=lead.phone, owner_id=lead.owner_id,
             website=lead.company_website, linkedin_url=lead.company_linkedin_url, address=lead.location,
-            annual_revenue=lead.annual_revenue, employees=lead.employees,
+            annual_revenue=lead.annual_revenue, currency=lead.currency, employees=lead.employees,
         )
         db.add(account)
         db.flush()
@@ -641,6 +643,7 @@ def convert_lead(lead_id: int, data: schemas.ConvertLead, db: Session = Depends(
         stage="Opportunity",
         probability=STAGE_PROBABILITY["Opportunity"],
         expected_value=data.expected_value,
+        currency=data.currency or lead.currency or DEFAULT_CURRENCY,
         expected_close_date=data.expected_close_date or (date.today() + timedelta(days=30)),
         account_id=account.id,
         primary_contact_id=contact.id,

@@ -244,7 +244,7 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
     : [
         ["Account Name", item.account_id && <a href={`#/accounts/${item.account_id}`}>{item.account_name}</a>],
         ["Close Date", shortDate(item.expected_close_date)],
-        ["Amount", amount(item.value)],
+        ["Amount", amount(item.value, item.currency)],
         ["Opportunity Owner", item.owner],
       ];
 
@@ -359,7 +359,7 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
               : item.stage === "Unqualified"
                 ? `Unqualified: ${item.unqualified_reason || ""}`
               : item.stage === "Won"
-                ? `Closed Won • ${amount(item.final_value)}`
+                ? `Closed Won • ${amount(item.final_value, item.currency)}`
                 : "Converted"}
           </span>
         )}
@@ -412,7 +412,7 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
               <Section title="Company Details">
                 <Field label="Company Website" onEdit={editField}><ExternalLink href={item.company_website} /></Field>
                 <Field label="Company LinkedIn URL" onEdit={editField}><ExternalLink href={item.company_linkedin_url} /></Field>
-                <Field label="Turnover" onEdit={editField}>{item.annual_revenue != null ? `$${amount(item.annual_revenue)}` : ""}</Field>
+                <Field label="Turnover" onEdit={editField}>{amount(item.annual_revenue, item.currency)}</Field>
                 <Field label="Headcount" onEdit={editField}>{headcount(item.employees)}</Field>
               </Section>
               {item.stage === "Lost" && (
@@ -455,9 +455,9 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
                   {contact && <a href={`#/contacts/${contact.id}`}>{contact.full_name}</a>}
                 </Field>
                 <Field label="Close Date" onEdit={editField}>{shortDate(item.expected_close_date)}</Field>
-                <Field label="Amount" onEdit={editField}>{amount(item.expected_value)}</Field>
+                <Field label="Amount" onEdit={editField}>{amount(item.expected_value, item.currency)}</Field>
                 <Field label="Stage"><StageBadge stage={item.stage} /></Field>
-                {item.stage === "Won" && <Field label="Final Amount">{amount(item.final_value)}</Field>}
+                {item.stage === "Won" && <Field label="Final Amount">{amount(item.final_value, item.currency)}</Field>}
                 <Field label="Converted From">
                   {sourceLead && <a href={`#/leads/${sourceLead.id}`}>{sourceLead.name}</a>}
                 </Field>

@@ -92,7 +92,7 @@ function columns(collection, data) {
       ["Opportunity Name", (r) => r.name, (r) => link(r, r.name)],
       ["Client Name", (r) => r.lead_name || "", (r) => r.lead_id && r.lead_name ? <a href={`#/leads/${r.lead_id}`}>{r.lead_name}</a> : "—"],
       ["Account Name", (r) => r.account_name || "", account],
-      ["Amount", (r) => Number(r.value ?? -1), (r) => amount(r.value), "num"],
+      ["Amount", (r) => Number(r.value ?? -1), (r) => amount(r.value, r.currency), "num"],
       ["Close Date", (r) => r.expected_close_date || "", (r) => shortDate(r.expected_close_date)],
       ["Stage", (r) => r.stage, (r) => <StageBadge stage={r.stage} />],
       ["Owner", (r) => r.owner || ""],
@@ -227,7 +227,7 @@ function Kanban({ records, setModal }) {
                     <dt>Close Date</dt>
                     <dd>{shortDate(r.expected_close_date)}</dd>
                     <dt>Amount</dt>
-                    <dd>{amount(r.value) || "—"}</dd>
+                    <dd>{amount(r.value, r.currency) || "—"}</dd>
                   </dl>
                   <small>{r.owner}</small>
                 </article>

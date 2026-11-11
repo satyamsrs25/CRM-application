@@ -13,10 +13,11 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from html import escape
+from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
@@ -450,68 +451,95 @@ def set_email_status(lead_id: int, data: EmailStatusIn, db: Session = Depends(ge
 
 ICONS = {
     "done": ("#e6f4ea", "#2e844a", '<path d="m5 12 5 5 9-10"/>'),
-    "ask": ("#e8f1fb", "#0176d3", '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/>'),
-    "info": ("#f3f3f3", "#706e6b", '<circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/>'),
+    "ask": ("#d8e6fe", "#0176d3", '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/>'),
+    "info": ("#f3f3f3", "#5c5c5c", '<circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/>'),
 }
+LOGO = Path(__file__).resolve().parent.parent / "static" / "srs-logo.png"  # the SRS Consulting logo
+
+
+PAGE_CSS = """
+:root{--brand:#0176d3;--brand-dark:#014486;--text:#181818;--weak:#5c5c5c;--border:#e5e5e5;--border-strong:#c9c9c9;--bg:#f3f3f3}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:flex;flex-direction:column;background:var(--bg);color:var(--text);
+font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5}
+header{display:flex;align-items:center;justify-content:space-between;gap:12px;height:56px;padding:0 24px;background:#fff;
+box-shadow:0 1px 2px rgba(16,24,40,.05)}
+.brand{display:block;height:36px;width:auto}
+main{flex:1;display:flex;align-items:flex-start;justify-content:center;padding:56px 16px 24px}
+.card{width:100%;max-width:480px;overflow:hidden;border:1px solid var(--border);border-radius:20px;background:#fff;
+box-shadow:0 2px 2px rgba(0,0,0,.1)}
+.card-head{display:flex;align-items:center;gap:14px;padding:20px 24px;border-bottom:1px solid var(--border)}
+.badge{display:grid;place-items:center;flex:none;width:40px;height:40px;border-radius:50%}
+h1{margin:0;font-size:18px;line-height:1.35}
+.card-body{padding:20px 24px 24px}
+.card-body p{margin:0;color:#3e3e3c}
+.email{font-weight:600;color:var(--text);overflow-wrap:anywhere}
+.actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:20px 0 0}
+.btn{display:inline-flex;align-items:center;justify-content:center;height:32px;padding:0 16px;border:1px solid var(--border-strong);
+border-radius:999px;background:#fff;color:var(--brand);font:inherit;font-size:13px;text-decoration:none;cursor:pointer}
+.btn:hover{background:var(--bg)}
+.btn.brand{border-color:var(--brand);background:var(--brand);color:#fff}
+.btn.brand:hover{background:var(--brand-dark)}
+.card-foot{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;padding:12px 24px;
+border-top:1px solid var(--border);background:#fafaf9;color:var(--weak);font-size:13px}
+.card-foot form{margin:0}
+.link{padding:0;border:0;background:none;color:var(--brand);font:inherit;font-weight:600;cursor:pointer}
+.link:hover{text-decoration:underline}
+.spinner{width:20px;height:20px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;
+animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.working{display:none}
+.js .working{display:block}.js .asking{display:none}
+@media (max-width:520px){header{padding:0 16px}main{padding-top:24px}
+.card-head,.card-body{padding-left:18px;padding-right:18px}.card-foot{padding:12px 18px}}
+"""
 
 
 def page(title: str, text: str, token: str, show: str | None, ask: bool = False, done: bool = False,
-         icon: str | None = None, keep: str = "Cancel", note: str = "") -> HTMLResponse:
-    """The page opened from the email's button (no login).
+         icon: str | None = None, keep: str = "Cancel", note: str = "", auto: bool = False) -> HTMLResponse:
+    """The page opened from the email's button (no login), in the SalesTrack look (header, card, pill buttons).
     ask=True: the question, with the action button and a second button that changes nothing (keep).
+    auto=True (with ask): one click from the email is enough. The browser confirms by itself as the page opens, and
+      the thank-you follows. Mail scanners that open links without running scripts only see the question, so they
+      never change anything.
     done=True: the thank-you, with a check mark; the opposite action is offered as a small link under it."""
     company = escape(engine.mailer.company_name(), quote=False)
     t = escape(token)
     labels = {"unsubscribe": "Unsubscribe", "subscribe": "Subscribe"}
+    foot = escape(note, quote=False) if note else ""
+    actions = ""
     if show and done:
         undo = "Subscribe again" if show == "subscribe" else "Unsubscribe"
-        actions = (f'<form method="post" class="undo"><span>Changed your mind?</span>'
-                   f'<input type="hidden" name="t" value="{t}"><input type="hidden" name="action" value="{show}">'
-                   f'<button class="link">{undo}</button></form>')
+        foot = (f'<form method="post"><span>Changed your mind?</span> <input type="hidden" name="t" value="{t}">'
+                f'<input type="hidden" name="action" value="{show}"><button class="link">{undo}</button></form>')
     elif show:
         label = labels[show] if ask else ("Subscribe again" if show == "subscribe" else "Unsubscribe")
-        cancel = f'<a class="secondary" href="?t={t}&amp;action=cancel">{escape(keep)}</a>' if ask else ""
-        style = "primary" if ask or show == "subscribe" else "secondary"
-        actions = (f'<form method="post" class="actions"><input type="hidden" name="t" value="{t}">'
+        cancel = f'<a class="btn" href="?t={t}&amp;action=cancel">{escape(keep)}</a>' if ask else ""
+        style = "btn brand" if ask or show == "subscribe" else "btn"
+        actions = (f'<form method="post" class="actions" id="choice"><input type="hidden" name="t" value="{t}">'
                    f'<input type="hidden" name="action" value="{show}"><button class="{style}">{label}</button>'
                    f'{cancel}</form>')
-    else:
-        actions = ""
     bg, fg, path = ICONS[icon or ("done" if done else "ask" if ask else "info")]
-    badge = (f'<div class="badge" style="background:{bg};color:{fg}" aria-hidden="true"><svg width="26" height="26" '
+    badge = (f'<div class="badge" style="background:{bg};color:{fg}" aria-hidden="true"><svg width="22" height="22" '
              f'viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" '
              f'stroke-linejoin="round">{path}</svg></div>')
-    closing = f'<p class="close">{escape(note, quote=False)}</p>' if note else ""
+    card = (f'<div class="card-head">{badge}<h1>{escape(title, quote=False)}</h1></div>'
+            f'<div class="card-body"><p>{text}</p>{actions}</div>' + (f'<div class="card-foot">{foot}</div>' if foot else ""))
+    script = ""
+    if auto and ask and show:
+        working = "Subscribing you" if show == "subscribe" else "Unsubscribing you"
+        card = (f'<div class="asking">{card}</div><div class="working" role="status"><div class="card-head">'
+                f'<div class="badge" style="background:#d8e6fe;color:#0176d3"><span class="spinner"></span></div>'
+                f'<h1>{working}…</h1></div><div class="card-body"><p>Updating your email preferences. This takes a '
+                f'moment.</p></div></div>')
+        script = ('<script>document.documentElement.className="js";addEventListener("DOMContentLoaded",function(){'
+                  'document.getElementById("choice").submit()})</script>')
     html = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>{escape(title, quote=False)}</title>
-<style>
-*{{box-sizing:border-box}}
-body{{margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;
-padding:24px 16px;background:#eef4fb;font-family:"Segoe UI",system-ui,-apple-system,sans-serif;color:#181818}}
-.brand{{margin-bottom:16px;font-size:14px;font-weight:600;letter-spacing:.02em;color:#032d60}}
-main{{width:100%;max-width:460px;padding:36px 36px 30px;border-radius:16px;background:#fff;text-align:center;
-box-shadow:0 1px 2px #0000000d,0 8px 28px #032d6014}}
-.badge{{display:grid;place-items:center;width:56px;height:56px;margin:0 auto 18px;border-radius:50%}}
-h1{{margin:0 0 10px;font-size:22px;line-height:1.3}}
-p{{margin:0;color:#444;font-size:15px;line-height:1.6}}
-.email{{font-weight:600;color:#181818;word-break:break-all}}
-.actions{{display:flex;flex-wrap:wrap;justify-content:center;gap:10px;margin-top:24px}}
-button,.secondary{{display:inline-block;min-width:140px;padding:10px 20px;border-radius:8px;font:inherit;font-size:15px;
-font-weight:600;text-decoration:none;cursor:pointer}}
-button.primary{{border:1px solid #0176d3;background:#0176d3;color:#fff}}
-button.primary:hover{{background:#014486}}
-.secondary,button.secondary{{border:1px solid #c9c9c9;background:#fff;color:#181818}}
-.secondary:hover{{background:#f3f3f3}}
-.undo{{margin-top:24px;padding-top:18px;border-top:1px solid #eee;color:#706e6b;font-size:14px}}
-.undo button.link{{min-width:0;margin:0 0 0 4px;padding:0;border:0;background:none;color:#0176d3;font-size:14px;
-font-weight:600;text-decoration:underline}}
-.close{{margin-top:16px;font-size:13px;color:#706e6b}}
-footer{{margin-top:18px;font-size:12px;color:#706e6b}}
-</style></head>
-<body><div class="brand">{company}</div>
-<main>{badge}<h1>{escape(title, quote=False)}</h1><p>{text}</p>{actions}{closing}</main>
-<footer>Email preferences for {company}</footer></body></html>"""
-    return HTMLResponse(html)
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>{escape(title, quote=False)} · {company}</title>
+<style>{PAGE_CSS}</style>{script}</head>
+<body><header><img class="brand" src="/api/public/logo.png" alt="{company}"></header>
+<main><section class="card" aria-labelledby="t">{card}</section></main></body></html>"""
+    return HTMLResponse(html.replace("<h1>", '<h1 id="t">', 1))
 
 
 def who_html(email: str) -> str:
@@ -570,10 +598,17 @@ NOT_VALID = ("This link isn't valid any more. Please use the Subscribe or Unsubs
              "you received from us.")
 
 
+@public.get("/logo.png", include_in_schema=False)
+def logo():
+    """The SRS Consulting logo at the top of the subscribe / unsubscribe page."""
+    return FileResponse(LOGO, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
+
+
 @public.get("/unsubscribe", response_class=HTMLResponse, include_in_schema=False)
 def unsubscribe_page(t: str = Query(""), action: str = Query("unsubscribe"), db: Session = Depends(get_db)):
-    """Asks before changing anything: mail scanners open links, and must not unsubscribe people by themselves.
-    action=subscribe (the "Subscribe" button) offers to subscribe."""
+    """One click from the email: the page confirms by itself as it opens (see page(auto=True)), then shows the
+    thank-you. Without scripts (mail scanners open links) it only asks, so nobody is unsubscribed by a scanner.
+    action=subscribe (the "Subscribe" button) subscribes."""
     who = _subscriber(db, t)
     company = escape(engine.mailer.company_name(), quote=False)
     if who is None:
@@ -582,25 +617,24 @@ def unsubscribe_page(t: str = Query(""), action: str = Query("unsubscribe"), db:
     off = who.unsubscribed(db)
     if action == "cancel":
         state = "unsubscribed from" if off else "still subscribed to"
-        return page("No changes made", f"{email} is {state} emails from {company}.", t, None, icon="info",
-                    note="You can close this page.")
+        return page("No changes made", f"{email} is {state} emails from {company}.", t, None, icon="info")
     if action == "subscribe":
         if off:
             return page(f"Subscribe to {company} emails again?",
                         f"We'll start sending our updates to {email} again. You can unsubscribe at any time.",
-                        t, "subscribe", ask=True, keep="Not now")
+                        t, "subscribe", ask=True, keep="Not now", auto=True)
         if who.subscribed(db):
             return page("You're already subscribed", f"{email} receives emails from {company}. Thank you for staying "
-                        "in touch.", t, "unsubscribe", icon="done", note="You can close this page.")
+                        "in touch.", t, "unsubscribe", icon="done")
         return page(f"Subscribe to {company} emails?",
                     f"Get our latest updates at {email}. You can unsubscribe at any time.", t, "subscribe", ask=True,
-                    keep="Not now")
+                    keep="Not now", auto=True)
     if off:
         return page("You're unsubscribed", f"{email} doesn't receive campaign emails from {company}.", t,
                     "subscribe", icon="info")
     return page(f"Unsubscribe from {company} emails?",
                 f"We'll stop sending campaign emails to {email}. You can subscribe again at any time.",
-                t, "unsubscribe", ask=True, keep="Keep me subscribed")
+                t, "unsubscribe", ask=True, keep="Keep me subscribed", auto=True)
 
 
 @public.post("/unsubscribe", response_class=HTMLResponse, include_in_schema=False)
@@ -617,8 +651,8 @@ def unsubscribe(t: str = Query(""), form_t: str = Form("", alias="t"), action: s
         if not who.subscribed(db):
             _set_subscribed(db, who, True)
         return page("Thank you for subscribing!", f"You're all set. {email} will receive our latest updates from "
-                    f"{company}.", token, "unsubscribe", done=True, note="You can close this page.")
+                    f"{company}.", token, "unsubscribe", done=True)
     if not who.unsubscribed(db):
         _set_subscribed(db, who, False)
     return page("You've been unsubscribed", f"Thank you for letting us know. {email} won't receive any more campaign "
-                f"emails from {company}.", token, "subscribe", done=True, note="You can close this page.")
+                f"emails from {company}.", token, "subscribe", done=True)

@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, Query, status
 from datetime import datetime
 
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app import schemas
 from app.database import get_db
@@ -32,7 +32,7 @@ def list_accounts(
         query = query.where(Account.owner_id == owner_id)
     if search:
         query = query.where(Account.name.ilike(f"%{search.strip()}%"))
-    accounts = db.scalars(query.order_by(Account.name)).all()
+    accounts = db.scalars(query.options(joinedload(Account.owner)).order_by(Account.name)).all()
     latest = last_activity(db, [a.id for a in accounts])
     out = []
     for a in accounts:
@@ -103,6 +103,7 @@ def list_contacts(
     if search:
         like = f"%{search.strip()}%"
         query = query.where(or_(Contact.full_name.ilike(like), Contact.email.ilike(like)))
+    query = query.options(joinedload(Contact.account))  # the account name in the same query, not one query per contact
     return [contact_out(c) for c in db.scalars(query.order_by(Contact.last_name, Contact.first_name)).all()]
 
 

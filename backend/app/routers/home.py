@@ -9,7 +9,7 @@ from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.constants import LEAD_OPEN_STAGES, LEAD_STAGES, OPPORTUNITY_OPEN_STAGES, OPPORTUNITY_STAGES
 from app.database import get_db
@@ -92,18 +92,30 @@ def home_page(owner_id: int | None = Query(None, description="Only this salesper
     def amount(stage_names, field="expected_value") -> float:
         return float(sum(getattr(o, field) or 0 for o in quarter_opps if o.stage in stage_names))
 
+    def amounts(stage_names, field="expected_value") -> dict[str, float]:
+        """The same total split by currency (amounts are never converted), e.g. {"USD": 12000.0, "INR": 500000.0}."""
+        out: dict[str, float] = {}
+        for o in quarter_opps:
+            if o.stage in stage_names and getattr(o, field) is not None:
+                out[o.currency] = out.get(o.currency, 0) + float(getattr(o, field))
+        return out
+
     quarter_open = amount(OPPORTUNITY_OPEN_STAGES)
     quarter_won = amount(("Won",), "final_value")
+    open_by, won_by = amounts(OPPORTUNITY_OPEN_STAGES), amounts(("Won",), "final_value")
     quarter_lost = amount(("Lost",))
     key_deals = sorted(
         (o for o in my_opps if o.stage in OPPORTUNITY_OPEN_STAGES),
         key=lambda o: float(o.expected_value or 0), reverse=True,
     )[:5]
 
-    accounts = db.scalars(owned(select(Account), Account)).all()
+    # related deals and their tasks are loaded in a few queries, not one per account (thousands of accounts)
+    accounts = db.scalars(owned(select(Account), Account)
+                          .options(selectinload(Account.opportunities).selectinload(Opportunity.tasks))).all()
     contacts = db.scalars(owned(select(Contact), Contact).where(Contact.created_at >= now() - timedelta(days=90))).all()
     opps_by_contact: dict[int, list[Task]] = {}
-    for opp in db.scalars(select(Opportunity).where(Opportunity.primary_contact_id.is_not(None))).all():
+    for opp in db.scalars(select(Opportunity).where(Opportunity.primary_contact_id.is_not(None))
+                          .options(selectinload(Opportunity.tasks))).all():
         opps_by_contact.setdefault(opp.primary_contact_id, []).extend(opp.tasks)
     # Build Pipeline: counted in the database (there can be 100,000s of uploaded leads)
     recent_q = leads_q.where(Lead.created_at >= now() - timedelta(days=30))
@@ -160,10 +172,15 @@ def home_page(owner_id: int | None = Query(None, description="Only this salesper
                 "open": quarter_open,
                 "won": quarter_won,
                 "lost": quarter_lost,
+                # the same totals per currency: what the screen prints (the numbers above size the chart)
+                "by_currency": {
+                    "total_pipeline": {c: open_by.get(c, 0) + won_by.get(c, 0) for c in {*open_by, *won_by}},
+                    "open": open_by, "won": won_by, "lost": amounts(("Lost",)),
+                },
             },
             "key_deals": [
                 {"id": o.id, "name": o.name, "account_name": o.account.name if o.account else None, "stage": o.stage,
-                 "amount": float(o.expected_value) if o.expected_value is not None else None,
+                 "amount": float(o.expected_value) if o.expected_value is not None else None, "currency": o.currency,
                  "close_date": o.expected_close_date}
                 for o in key_deals
             ],
@@ -223,6 +240,13 @@ def team_charts(db: Session = Depends(get_db)):
     def per_person(query):
         return dict(db.execute(query).all())
 
+    def per_currency(query) -> dict:
+        """(key, currency, total) rows -> {key: {currency: total}}: amounts in different currencies are never added."""
+        out: dict = {}
+        for key, currency, value in db.execute(query).all():
+            out.setdefault(key, {})[currency] = float(value or 0)
+        return out
+
     open_leads = per_person(select(Lead.owner_id, func.count()).where(Lead.owner_id.in_(ids), Lead.stage.in_(LEAD_OPEN_STAGES))
                             .group_by(Lead.owner_id))
     converted = per_person(select(Lead.owner_id, func.count()).where(Lead.owner_id.in_(ids), Lead.stage == "Converted",
@@ -233,15 +257,29 @@ def team_charts(db: Session = Depends(get_db)):
     won = per_person(select(Opportunity.owner_id, func.sum(func.coalesce(Opportunity.final_value, Opportunity.expected_value)))
                      .where(Opportunity.owner_id.in_(ids), Opportunity.stage == "Won", Opportunity.closed_at >= month_start)
                      .group_by(Opportunity.owner_id))
+    closed_value = func.coalesce(Opportunity.final_value, Opportunity.expected_value)
+    pipeline_cur = per_currency(scoped(select(Opportunity.stage, Opportunity.currency, func.sum(Opportunity.expected_value)),
+                                       Opportunity).where(Opportunity.stage.in_(OPPORTUNITY_OPEN_STAGES))
+                                .group_by(Opportunity.stage, Opportunity.currency))
+    closed_cur = per_currency(scoped(select(Opportunity.stage, Opportunity.currency, func.sum(closed_value)), Opportunity)
+                              .where(Opportunity.stage.in_(("Won", "Lost")), Opportunity.closed_at >= month_start)
+                              .group_by(Opportunity.stage, Opportunity.currency))
+    open_cur = per_currency(select(Opportunity.owner_id, Opportunity.currency, func.sum(Opportunity.expected_value))
+                            .where(Opportunity.owner_id.in_(ids), Opportunity.stage.in_(OPPORTUNITY_OPEN_STAGES))
+                            .group_by(Opportunity.owner_id, Opportunity.currency))
+    won_cur = per_currency(select(Opportunity.owner_id, Opportunity.currency, func.sum(closed_value))
+                           .where(Opportunity.owner_id.in_(ids), Opportunity.stage == "Won", Opportunity.closed_at >= month_start)
+                           .group_by(Opportunity.owner_id, Opportunity.currency))
     return {
         "scope": scope,
         "month": today.strftime("%B %Y"),
         "leads_by_stage": [{"stage": s, "count": leads_by_stage.get(s, 0)} for s in LEAD_STAGES],
-        "pipeline_by_stage": [{"stage": s, "count": pipeline.get(s, (0, 0))[0], "value": pipeline.get(s, (0, 0))[1]}
-                              for s in OPPORTUNITY_OPEN_STAGES],
-        "won_lost_month": {k.lower(): {"count": closed.get(k, (0, 0))[0], "value": closed.get(k, (0, 0))[1]}
-                           for k in ("Won", "Lost")},
+        "pipeline_by_stage": [{"stage": s, "count": pipeline.get(s, (0, 0))[0], "value": pipeline.get(s, (0, 0))[1],
+                               "values": pipeline_cur.get(s, {})} for s in OPPORTUNITY_OPEN_STAGES],
+        "won_lost_month": {k.lower(): {"count": closed.get(k, (0, 0))[0], "value": closed.get(k, (0, 0))[1],
+                                       "values": closed_cur.get(k, {})} for k in ("Won", "Lost")},
         "people": [{"id": p.id, "name": p.full_name, "role": p.role, "open_leads": open_leads.get(p.id, 0),
                     "converted_this_month": converted.get(p.id, 0), "open_pipeline": float(open_value.get(p.id) or 0),
-                    "won_this_month": float(won.get(p.id) or 0)} for p in people],
+                    "won_this_month": float(won.get(p.id) or 0), "open_pipeline_values": open_cur.get(p.id, {}),
+                    "won_this_month_values": won_cur.get(p.id, {})} for p in people],
     }

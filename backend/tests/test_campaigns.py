@@ -294,7 +294,7 @@ def test_typed_in_emails_people_not_in_the_crm(client, sent):
     # ...and back again with Subscribe
     client.post("/api/public/unsubscribe", data={"t": token, "action": "subscribe"})
     assert client.post("/api/campaigns/preview", json={"emails": [{"email": "ravi.kumar@acme-retail.example"}]}).json()["eligible"] == 1
-    assert client.get("/api/public/unsubscribe", params={"t": "r99999.bad"}).text.count("<h1>This link isn't valid</h1>") == 1
+    assert client.get("/api/public/unsubscribe", params={"t": "r99999.bad"}).text.count(">This link isn't valid</h1>") == 1
 
 
 def test_unsubscribing_a_typed_address_also_unsubscribes_the_lead_with_it(client, sent):
@@ -449,13 +449,22 @@ def test_campaign_emails_have_a_subscribe_or_unsubscribe_button(client, sent):
     run_round()
     html = sent.items[0]["html"]
     assert ">Subscribe</a>" in html and f"unsubscribe?t={token}&amp;action=subscribe" in html
-    assert ">Unsubscribe</a>" in html and "Subscribe to keep getting our updates" in html
+    assert ">Unsubscribe</a>" in html and "You're receiving this email from" in html
+    assert "font-size:12px" in html and "padding:5px 14px" in html  # a small button, not a large block
+    assert "<table" not in html  # new Outlook puts an "expand table" arrow on tables
     assert "Unsubscribe: " not in html  # buttons, not raw links
     client.post("/api/public/unsubscribe", data={"t": token, "action": "subscribe"})
     make(client, [one["id"]])
     run_round()
     html = sent.items[1]["html"]
     assert ">Unsubscribe</a>" in html and "action=subscribe" not in html and "You're subscribed to emails" in html
+    # one click: the page opened from the button confirms by itself (scanners without scripts only see the question)
+    page = client.get("/api/public/unsubscribe", params={"t": token})
+    assert 'id="choice"' in page.text and ".submit()" in page.text and "Unsubscribing you" in page.text
+    assert client.get(f"/api/leads/{one['id']}").json()["unsubscribed_at"] is None  # opening it changes nothing by itself
+    assert '/api/public/logo.png' in page.text and "Email preferences" not in page.text and "close this page" not in page.text
+    logo = client.get("/api/public/logo.png")
+    assert logo.status_code == 200 and logo.headers["content-type"] == "image/png"
     # the text is kept as written, safely
     assert campaigns.email_html("Hi <Mia>,\n\nSee you\nsoon") .count("<p ") >= 3
     assert "&lt;Mia&gt;" in campaigns.email_html("Hi <Mia>")

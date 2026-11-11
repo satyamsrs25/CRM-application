@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { api } from "./api";
 import { LEAD_OPEN_STAGES, OPPORTUNITY_OPEN_STAGES, dateKey, homeDescription } from "./domain";
-import { compact, dateTime, greeting, shortDate, time } from "./format";
+import { compactMoney, compactMoneyMix, dateTime, greeting, shortDate, time } from "./format";
 import { Card, EmptyState, Icon, ObjectIcon, Ring, StageBadge } from "./ui";
 import { myOverdueTasks } from "./listHelpers";
 import { formatBusinessTime } from "./businessTime";
@@ -91,7 +91,8 @@ function assistantItems(data, user) {
 }
 
 // ---------- Whole team graphs: leads by stage, pipeline by stage, won vs lost this month, per salesperson ----------
-const money = (n) => `$${compact(n)}`;
+// Money totals come per currency ({USD: 12000, INR: 500000}): never added across currencies
+const money = (values) => compactMoneyMix(values);
 
 // One series of horizontal bars (one hue; the label on each row names it, the value sits at the bar's end)
 function BarList({ rows, format = (v) => v, label }) {
@@ -99,13 +100,13 @@ function BarList({ rows, format = (v) => v, label }) {
   return (
     <ul className="team-bars" aria-label={label}>
       {rows.map((r) => (
-        <li key={r.label} title={`${r.label}: ${format(r.value)}${r.note ? ` (${r.note})` : ""}`}>
+        <li key={r.label} title={`${r.label}: ${format(r.value, r)}${r.note ? ` (${r.note})` : ""}`}>
           <span className="team-bar-label">{r.label}</span>
           <span className="team-bar-track">
             <span className={`team-bar ${r.tone || ""}`} style={{ width: max ? `${Math.max((r.value / max) * 100, r.value ? 2 : 0)}%` : 0 }} />
           </span>
           <span className="team-bar-value">
-            {format(r.value)}
+            {format(r.value, r)}
             {r.note && <small>{r.note}</small>}
           </span>
         </li>
@@ -138,8 +139,8 @@ function TeamCharts() {
         <Card title="Open Pipeline by Stage" className="home-card">
           <BarList
             label="Open pipeline value by stage"
-            format={money}
-            rows={charts.pipeline_by_stage.map((r) => ({ label: r.stage, value: r.value, note: `${r.count} deal${r.count === 1 ? "" : "s"}` }))}
+            format={(_, r) => money(r.values)}
+            rows={charts.pipeline_by_stage.map((r) => ({ label: r.stage, value: r.value, values: r.values, note: `${r.count} deal${r.count === 1 ? "" : "s"}` }))}
           />
         </Card>
         <Card title={`Won vs Lost · ${charts.month}`} className="home-card">
@@ -150,8 +151,8 @@ function TeamCharts() {
           <BarList
             label="Won and lost deals this month"
             rows={[
-              { label: "Won", value: won.count, note: money(won.value), tone: "won" },
-              { label: "Lost", value: lost.count, note: money(lost.value), tone: "lost" },
+              { label: "Won", value: won.count, note: money(won.values), tone: "won" },
+              { label: "Lost", value: lost.count, note: money(lost.values), tone: "lost" },
             ]}
           />
         </Card>
@@ -179,10 +180,10 @@ function TeamCharts() {
                   <td>
                     <span className="team-inline-bar">
                       <span style={{ width: `${people[0].open_pipeline ? (p.open_pipeline / people[0].open_pipeline) * 100 : 0}%` }} />
-                      <b>{money(p.open_pipeline)}</b>
+                      <b>{money(p.open_pipeline_values)}</b>
                     </span>
                   </td>
-                  <td className="num">{money(p.won_this_month)}</td>
+                  <td className="num">{money(p.won_this_month_values)}</td>
                 </tr>
               ))}
             </tbody>
@@ -201,6 +202,8 @@ export default function SellerHome({ data, user, toggleTask, openTask, scope = "
   const who = team ? "owned by the team" : "owned by me";
   const myList = (collection, mineView, teamView) => list(collection, team ? teamView : mineView);
   const deals = home.close_deals;
+  // printed per currency (amounts in different currencies are never added); the plain numbers size the ring
+  const dealMoney = (key) => compactMoneyMix(deals.by_currency?.[key] ?? { USD: deals[key] });
   const myTasks = (data.home.todays_tasks || [])
     .map((t) => data.tasks.find((x) => x.id === String(t.id)))
     .filter(Boolean);
@@ -235,21 +238,21 @@ export default function SellerHome({ data, user, toggleTask, openTask, scope = "
           <p className="card-sub">Opportunities {who} and closing this quarter</p>
           <div className="ring-row">
             <Ring
-              label={`Total pipeline ${compact(deals.total_pipeline)}`}
+              label={`Total pipeline ${dealMoney("total_pipeline")}`}
               segments={[
                 { value: deals.open, color: COLORS.open },
                 { value: deals.won, color: COLORS.won },
                 { value: deals.lost, color: COLORS.lost },
               ]}
             >
-              <strong>{compact(deals.total_pipeline)}</strong>
+              <strong>{dealMoney("total_pipeline")}</strong>
               <span>Total Pipeline</span>
             </Ring>
             <Legend
               items={[
-                ["open", `${compact(deals.open)} Open`, myList("opportunities", "My Open Opportunities", "Open Opportunities")],
-                ["won", `${compact(deals.won)} Won`, myList("opportunities", "My Won Opportunities", "Won Opportunities")],
-                ["lost", `${compact(deals.lost)} Lost`, myList("opportunities", "My Lost Opportunities", "Lost Opportunities")],
+                ["open", `${dealMoney("open")} Open`, myList("opportunities", "My Open Opportunities", "Open Opportunities")],
+                ["won", `${dealMoney("won")} Won`, myList("opportunities", "My Won Opportunities", "Won Opportunities")],
+                ["lost", `${dealMoney("lost")} Lost`, myList("opportunities", "My Lost Opportunities", "Lost Opportunities")],
               ]}
             />
           </div>
@@ -300,7 +303,7 @@ export default function SellerHome({ data, user, toggleTask, openTask, scope = "
                     </small>
                   </div>
                   <div className="deal-amount">
-                    <b>{compact(d.amount)}</b>
+                    <b>{compactMoney(d.amount, d.currency)}</b>
                     <StageBadge stage={d.stage} />
                   </div>
                 </li>

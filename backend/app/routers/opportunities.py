@@ -9,11 +9,11 @@ from datetime import date, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import ValidationError
 from sqlalchemy import insert, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from starlette.datastructures import UploadFile
 
 from app import schemas
-from app.constants import OPPORTUNITY_FLOW, OPPORTUNITY_OPEN_STAGES, OPPORTUNITY_STAGES, STAGE_PROBABILITY
+from app.constants import DEFAULT_CURRENCY, OPPORTUNITY_FLOW, OPPORTUNITY_OPEN_STAGES, OPPORTUNITY_STAGES, STAGE_PROBABILITY
 from app.database import get_db
 from app.security import (acting_user, acting_user_id, check_owner_change, owner_for_new,
                           require_edit, require_view, visible)
@@ -70,7 +70,10 @@ def list_opportunities(
         query = query.where(Opportunity.account_id == account_id)
     if search:
         query = query.where(Opportunity.name.ilike(f"%{search.strip()}%"))
-    return [opportunity_out(o) for o in db.scalars(query.order_by(Opportunity.id.desc())).all()]
+    # the account, contact, lead and owner names come in the same query (not one query per opportunity)
+    query = query.options(joinedload(Opportunity.account), joinedload(Opportunity.primary_contact),
+                          joinedload(Opportunity.lead), joinedload(Opportunity.owner))
+    return [opportunity_out(o) for o in db.scalars(query.order_by(Opportunity.id.desc())).unique().all()]
 
 
 @router.get("/duplicate-check")
@@ -130,7 +133,7 @@ def create_opportunity(data: schemas.OpportunityCreate, db: Session = Depends(ge
         db.flush()
     opp = Opportunity(
         name=data.name.strip(), stage="Opportunity", probability=STAGE_PROBABILITY["Opportunity"],
-        expected_value=data.expected_value,
+        expected_value=data.expected_value, currency=data.currency or account.currency or DEFAULT_CURRENCY,
         expected_close_date=data.expected_close_date or (date.today() + timedelta(days=30)),
         account_id=account.id, primary_contact_id=contact.id, owner_id=owner_id,
     )
@@ -175,6 +178,8 @@ def update_opportunity(opportunity_id: int, data: schemas.OpportunityUpdate, db:
     require_edit(opp.owner_id, "opportunity")
     changes = data.model_dump(exclude_unset=True)
     changes.pop("changed_by_id", None)
+    if changes.get("currency") is None:
+        changes.pop("currency", None)  # left as it is
     actor = acting_user_id()
     check_owner_change(opp.owner_id, changes.get("owner_id"))
     old_owner = opp.owner_id

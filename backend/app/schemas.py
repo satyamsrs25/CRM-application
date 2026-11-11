@@ -19,6 +19,7 @@ RevisitReason = Literal["Bad timing", "Budget next period", "Asked to call back"
                         "Other"]
 Priority = Literal["Low", "Normal", "High"]
 Salutation = Literal["Mr.", "Ms.", "Mrs.", "Dr.", "Prof."]
+Currency = Literal["USD", "INR", "EUR", "CAD", "AUD", "AED"]  # constants.CURRENCIES
 UserRole = Literal["Salesperson", "Manager", "Admin"]
 LeadOpenStage = Literal["New", "Nurturing", "Revisit", "Demo"]      # constants.LEAD_FLOW
 OpportunityOpenStage = Literal["Opportunity", "Discovery", "Proposal"]            # constants.OPPORTUNITY_FLOW
@@ -252,7 +253,7 @@ class LeadLinks(BaseModel):
     linkedin_url: str | None = Field(None, max_length=300)
     company_website: str | None = Field(None, max_length=255)
     company_linkedin_url: str | None = Field(None, max_length=300)
-    annual_revenue: Decimal | None = Field(None, ge=0, le=Decimal("99999999999999"))  # turnover, USD
+    annual_revenue: Decimal | None = Field(None, ge=0, le=Decimal("99999999999999"))  # turnover, in `currency`
     employees: int | None = Field(None, ge=0, le=10_000_000)  # headcount
     location: str | None = Field(None, max_length=200)
 
@@ -284,6 +285,7 @@ class LeadCreate(LeadLinks):
     email: str | None = Field(None, max_length=255)
     phone: str | None = Field(None, max_length=30)
     source: LeadSource = "Other"
+    currency: Currency = "USD"  # of the turnover
     owner_id: int | None = None  # default: the logged-in user
     created_by_id: int | None = None  # ignored: the logged-in user creates it
     confirm_email_domain: bool = False  # the user checked the email is right though its domain differs from the website
@@ -310,6 +312,7 @@ class LeadUpdate(LeadLinks):
     email: str | None = Field(None, max_length=255)
     phone: str | None = Field(None, max_length=30)
     source: LeadSource | None = None
+    currency: Currency | None = None
     demo_date: datetime | None = None
     owner_id: int | None = None
     changed_by_id: int | None = None  # logged-in user (not saved; used for the assignment notification)
@@ -331,6 +334,7 @@ class LeadOut(Out):
     company_website: str | None = None
     company_linkedin_url: str | None = None
     annual_revenue: Decimal | None = None
+    currency: str = "USD"
     employees: int | None = None
     location: str | None = None
     untouched: bool = False  # uploaded and not worked on yet
@@ -549,6 +553,7 @@ class ConvertLead(NeedsTask):
     note: ConversionComment  # why the lead is converted: saved in the lead's and the new opportunity's stage history
     opportunity_name: str | None = Field(None, max_length=200)
     expected_value: float | None = Field(None, ge=0)
+    currency: Currency | None = None  # default: the lead's currency
     expected_close_date: date | None = None
     account_id: int | None = None
     changed_by_id: int | None = None
@@ -573,6 +578,7 @@ class AccountOut(Out):
     address: str | None
     linkedin_url: str | None = None
     annual_revenue: Decimal | None = None
+    currency: str = "USD"
     employees: int | None = None
     owner_id: int
     owner_name: str | None = None
@@ -677,6 +683,7 @@ class OpportunityOut(Out):
     stage: str
     expected_value: float | None
     final_value: float | None
+    currency: str = "USD"
     expected_close_date: date | None
     probability: int
     lost_reason: str | None
@@ -716,6 +723,7 @@ class OpportunityDetail(OpportunityOut):
 class OpportunityUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=200)
     expected_value: float | None = Field(None, ge=0)
+    currency: Currency | None = None
     expected_close_date: date | None = None
     probability: int | None = Field(None, ge=0, le=100)  # set automatically by stage; can be adjusted
     primary_contact_id: int | None = None
@@ -736,6 +744,7 @@ class OpportunityCreate(NeedsTask):
     name: str = Field(..., min_length=1, max_length=200)
     note: StageNote  # why the opportunity is opened: saved in its stage history
     expected_value: float | None = Field(None, ge=0)
+    currency: Currency | None = None  # default: the account's currency
     expected_close_date: date | None = None
     owner_id: int | None = None  # default: the logged-in user
     account_id: int | None = None

@@ -28,6 +28,7 @@ export default function EmailDraftAssistant({ target, settings, user, subject, m
   const refineButton = useRef(null);
   const refineBox = useRef(null);
   const menu = useRef(null);
+  const root = useRef(null);
   const request = useRef(null); // the request in progress: { id, controller }
   const requests = useRef(0);
   const mounted = useRef(true);
@@ -57,6 +58,12 @@ export default function EmailDraftAssistant({ target, settings, user, subject, m
     box.style.height = "auto";
     box.style.height = `${Math.min(box.scrollHeight, 96)}px`;
   }, [instructions, open]);
+
+  // The bar sits at the foot of the email dialog: keep its progress, result or error in view, so a click on the
+  // arrow never looks like nothing happened (the status line is below the bar).
+  useEffect(() => {
+    if (busy || notice || error) root.current?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+  }, [busy, notice, error]);
 
   useEffect(() => {
     if (!menuOpen) return undefined;
@@ -203,7 +210,7 @@ export default function EmailDraftAssistant({ target, settings, user, subject, m
   else if (open) status = "Enter to generate · Shift+Enter for a new line";
 
   return (
-    <div className="email-ai">
+    <div className="email-ai" ref={root}>
       <div id={`${id}-bar`} className="email-ai-bar" role="group" aria-label="Write with AI" aria-busy={busy} hidden={!open} onKeyDown={onBarKey}>
         <div className="email-ai-prompt">
         <Pen />
@@ -267,8 +274,16 @@ export default function EmailDraftAssistant({ target, settings, user, subject, m
           )}
         </div>
         ) : (
-          <button type="button" className="email-ai-submit" aria-label="Generate email draft" title="Generate email draft (Enter)" disabled={blocked} onClick={() => run(primaryAction())}>
-            <ArrowUp />
+          <button
+            type="button"
+            className="email-ai-submit"
+            aria-label={busy ? "Writing the draft" : "Generate email draft"}
+            aria-busy={busy}
+            title={unavailable || sampleMode ? "AI drafting isn't available on this server" : "Generate email draft (Enter)"}
+            disabled={blocked}
+            onClick={() => run(primaryAction())}
+          >
+            {busy ? <span className="email-ai-spinner" aria-hidden="true" /> : <ArrowUp />}
           </button>
         )}
         </div>

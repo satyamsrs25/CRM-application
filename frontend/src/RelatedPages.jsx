@@ -117,7 +117,7 @@ export function AccountPage({ id, data, user, openNew, openEmail, emailVersion }
                 ["LinkedIn", site(account.linkedin_url)],
                 ["Address", account.address],
                 ["Headcount", account.employees != null ? Number(account.employees).toLocaleString() : ""],
-                ["Turnover", account.annual_revenue != null ? `$${Number(account.annual_revenue).toLocaleString()}` : ""],
+                ["Turnover", amount(account.annual_revenue, account.currency)],
                 ["Created", dateTime(account.created_at)],
               ]}
             />
@@ -164,7 +164,7 @@ export function AccountPage({ id, data, user, openNew, openEmail, emailVersion }
                       <StageBadge stage={o.stage} />
                     </dd>
                     <dt>Amount:</dt>
-                    <dd>{amount(o.value)}</dd>
+                    <dd>{amount(o.value, o.currency)}</dd>
                     <dt>Close Date:</dt>
                     <dd>{shortDate(o.expected_close_date)}</dd>
                   </dl>
@@ -253,7 +253,7 @@ export function ContactPage({ id, data, openEmail, emailVersion }) {
                       <StageBadge stage={o.stage} />
                     </dd>
                     <dt>Amount:</dt>
-                    <dd>{amount(o.value)}</dd>
+                    <dd>{amount(o.value, o.currency)}</dd>
                   </dl>
                 </li>
               ))}

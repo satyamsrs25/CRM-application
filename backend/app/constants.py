@@ -32,6 +32,10 @@ TASK_STATUSES = ["Open", "Done", "Auto-closed"]
 TASK_PRIORITIES = ["Low", "Normal", "High"]
 
 USER_ROLES = ["Salesperson", "Manager", "Admin"]
+
+# Currency of a lead's turnover and an opportunity's amount (chosen per record; amounts are never converted)
+CURRENCIES = ["USD", "INR", "EUR", "CAD", "AUD", "AED"]
+DEFAULT_CURRENCY = "USD"
 SALUTATIONS = ["Mr.", "Ms.", "Mrs.", "Dr.", "Prof."]
 
 # Win probability (%) per opportunity stage, like Salesforce
