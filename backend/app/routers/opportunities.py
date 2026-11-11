@@ -33,6 +33,7 @@ from app.services import (
     now,
     record_stage_change,
     reassign_system_tasks,
+    require_stage_tasks_done,
     handover_lines,
     resolve_user_id,
     schedule_close_date_task,
@@ -213,6 +214,14 @@ def update_opportunity(opportunity_id: int, data: schemas.OpportunityUpdate, db:
     return opportunity_out(opp)
 
 
+def check_stage_work(db: Session, opp: Opportunity, stage: str | None, by: int) -> None:
+    """Moving forward (to a later stage, or to Won when stage is None) needs the current stage's tasks done
+    (services.require_stage_tasks_done). Going back is not limited."""
+    if stage is None or (stage in OPPORTUNITY_FLOW and opp.stage in OPPORTUNITY_FLOW
+                         and OPPORTUNITY_FLOW.index(stage) > OPPORTUNITY_FLOW.index(opp.stage)):
+        require_stage_tasks_done(db, opp, stage or "Won", by)
+
+
 def check_stage_change(opp: Opportunity, stage: str) -> int:
     """The deal is open, the stage is a new one and the user can edit the deal. Returns the user's id."""
     ensure_open(opp)
@@ -233,6 +242,7 @@ def move_stage(db: Session, opp: Opportunity, data: schemas.OpportunityStageChan
     of the system follow-up), old follow-ups closed and the owner's notification (the caller saves). Moving forward
     can't skip a stage: a skipped one must be confirmed as already done (saved in the history)."""
     stage, note = data.stage, data.note
+    check_stage_work(db, opp, stage, by)  # first: confirming skipped stages doesn't get round unfinished tasks
     if OPPORTUNITY_FLOW.index(stage) > OPPORTUNITY_FLOW.index(opp.stage):  # forward; going back is allowed
         opp.stage = confirm_skipped(db, flow=OPPORTUNITY_FLOW, current=opp.stage,
                                     target_index=OPPORTUNITY_FLOW.index(stage), completed=data.completed_stages,
@@ -264,7 +274,8 @@ def move_stage(db: Session, opp: Opportunity, data: schemas.OpportunityStageChan
 @router.put("/{opportunity_id}/stage", response_model=schemas.OpportunityDetail)
 def change_stage(opportunity_id: int, data: schemas.OpportunityStageChange, db: Session = Depends(get_db)):
     """Move between Opportunity, Discovery and Proposal. A note (saved in the stage history) and the user's new task are
-    required. Old follow-ups are auto-closed; the new task takes the place of the system follow-up."""
+    required. Moving forward is refused (409, with the list) while the current stage has open tasks: they are marked
+    done first. Going back closes the open follow-ups; the new task takes the place of the system follow-up."""
     opp = get_for_update(db, Opportunity, opportunity_id, "Opportunity")
     by = check_stage_change(opp, data.stage)
     move_stage(db, opp, data, stage_task_owner(db, data.task, opp.owner_id), by)
@@ -281,7 +292,8 @@ WON_FILES_STAGE = "Proposal"
 # notify_customer is still accepted (older pages send it) but ignored: the CRM never emails customers itself
 WON_FORM_FIELDS = {"final_value", "note", "task", "notify_customer", "completed_stages", "completed_note", "files"}
 FILES_FIELD ={"type": "array", "items": {"type": "string", "format": "binary"},
-               "description": f"1 to {STAGE_MAX_FILES} PDF, Word (.docx), JPG or PNG files, up to 20 MB each"}
+               "description": f"1 to {STAGE_MAX_FILES} PDF, Word (.docx), PowerPoint (.pptx), Excel (.xlsx), JPG "
+                              "or PNG files, up to 20 MB each"}
 TASK_FIELD = {"type": "string", "description": 'The new task as JSON, as in PUT /stage: {"title": ..., "due_date": ..., '
                                                '"priority", "reminder_at", "description", "owner_id" optional}'}
 STAGE_FILES_FORM = {"requestBody": {"required": True, "content": {"multipart/form-data": {"schema": {
@@ -378,10 +390,12 @@ async def change_stage_with_files(opportunity_id: int, request: Request, db: Ses
         except ValidationError as error:
             raise invalid_form(error)
         stage_task_owner(db, data.task, opp.owner_id)  # the assignee is checked before the files are read
+        check_stage_work(db, opp, data.stage, acting_user_id())  # so are the stage's open tasks
         checked = await checked_files(form, without="PUT /stage")
 
         opp = locked_opportunity(db, opportunity_id)
         by = check_stage_change(opp, data.stage)  # again: another save may have changed the deal meanwhile
+        check_stage_work(db, opp, data.stage, by)  # (and a task may have been added meanwhile)
         task_owner = stage_task_owner(db, data.task, opp.owner_id)
         await save_files(db, opp, data.stage, checked, by)
         move_stage(db, opp, data, task_owner, by)
@@ -405,6 +419,7 @@ def close_won(db: Session, opp: Opportunity, data: schemas.MarkWon, final_value:
     """Won: stage history, open tasks closed, the user's post-sale task (created after that, so it stays open on the
     won deal), the owner's notification and, if chosen, the customer's thank-you email (sent only after the save is
     committed; the caller saves)."""
+    check_stage_work(db, opp, None, by)  # first: confirming skipped stages doesn't get round unfinished tasks
     # Won comes after Proposal: every stage up to Proposal must be done (or confirmed as done)
     opp.stage = confirm_skipped(db, flow=OPPORTUNITY_FLOW, current=opp.stage, target_index=len(OPPORTUNITY_FLOW),
                                 completed=data.completed_stages, note=data.completed_note, by=by,
@@ -426,7 +441,8 @@ def close_won(db: Session, opp: Opportunity, data: schemas.MarkWon, final_value:
 @router.post("/{opportunity_id}/won", response_model=schemas.OpportunityDetail)
 def mark_won(opportunity_id: int, data: schemas.MarkWon, db: Session = Depends(get_db)):
     """Close as Won from any open stage. The closing note and a post-sale task (e.g. handover or onboarding) are
-    required; final_value defaults to the expected value."""
+    required; final_value defaults to the expected value. Refused (409, with the list) while the current stage has
+    open tasks: they are marked done first."""
     opp = get_for_update(db, Opportunity, opportunity_id, "Opportunity")
     final_value, by = check_won(opp, data)
     close_won(db, opp, data, final_value, stage_task_owner(db, data.task, opp.owner_id), by)
@@ -457,10 +473,12 @@ async def mark_won_with_files(opportunity_id: int, request: Request, db: Session
         except ValidationError as error:
             raise invalid_form(error)
         stage_task_owner(db, data.task, opp.owner_id)  # the assignee is checked before the files are read
+        check_stage_work(db, opp, None, acting_user_id())  # so are the stage's open tasks
         checked = await checked_files(form, without="POST /won")
 
         opp = locked_opportunity(db, opportunity_id)
         final_value, by = check_won(opp, data)  # again: another save may have changed the deal meanwhile
+        check_stage_work(db, opp, None, by)  # (and a task may have been added meanwhile)
         task_owner = stage_task_owner(db, data.task, opp.owner_id)
         await save_files(db, opp, WON_FILES_STAGE, checked, by)
         close_won(db, opp, data, final_value, task_owner, by)

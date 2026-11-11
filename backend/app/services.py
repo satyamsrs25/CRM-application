@@ -120,13 +120,19 @@ def record_stage_change(
     )
 
 
+def system_task(*kinds: str):
+    """SQL condition: one of the system's own tasks (is_auto) of these kinds, e.g. the close-date reminder. The system
+    names each one "<kind> - <record name>" (constants.py); a task a person adds is never is_auto, so it never matches."""
+    return Task.is_auto.is_(True) & or_(*(Task.title.startswith(f"{kind} - ") for kind in kinds))
+
+
 def auto_close_open_tasks(db: Session, *, lead_id: int | None = None, opportunity_id: int | None = None,
                           keep: tuple[str, ...] = ()) -> int:
     """Closes every Open task of a lead or an opportunity as Auto-closed. Returns how many.
     keep: system task titles to leave open (e.g. the close-date reminder survives Opportunity <-> Proposal)."""
     query = update(Task).where(Task.status == "Open")
     if keep:
-        query = query.where(not_(Task.is_auto.is_(True) & or_(*(Task.title.startswith(f"{t} - ") for t in keep))))
+        query = query.where(not_(system_task(*keep)))
     if lead_id is not None:
         query = query.where(Task.lead_id == lead_id)
     elif opportunity_id is not None:
@@ -460,6 +466,47 @@ def confirm_skipped(db: Session, *, flow: list[str], current: str, target_index:
                             changed_by_id=by, note=f"Confirmed as completed{': ' + note if note else ''}")
         previous = stage
     return previous
+
+
+# ---------- an opportunity moves forward only when its current stage's tasks are done ----------
+# Ticking a task only marks it Done; moving the deal on is always its own step (Change Stage, Mark as Won, Kanban,
+# Assistant). Every open task on an open opportunity is the work of its current stage: each stage change closes the
+# previous stage's follow-ups (auto_close_open_tasks) and adds the next stage's task (add_stage_task), and tasks added
+# by hand meanwhile belong to that stage too. Only date reminders are not stage work: they follow a date and stay open
+# from stage to stage (the close-date reminder; the demo preparation task on leads).
+DATE_REMINDER_TASKS = (CLOSE_DATE_TASK, DEMO_PREP_TASK)
+MAX_LISTED_TASKS = 5
+
+
+def is_date_reminder(task: Task) -> bool:
+    """The same test as system_task(*DATE_REMINDER_TASKS), for a task already loaded."""
+    return bool(task.is_auto) and any(task.title.startswith(f"{kind} - ") for kind in DATE_REMINDER_TASKS)
+
+
+def unfinished_stage_tasks(db: Session, opportunity_id: int) -> list[Task]:
+    """The open tasks of an opportunity's current stage (every open task except date reminders), soonest first."""
+    return db.scalars(select(Task).where(Task.opportunity_id == opportunity_id, Task.status == "Open",
+                                         not_(system_task(*DATE_REMINDER_TASKS)))
+                      .order_by(Task.due_date, Task.id)).all()
+
+
+def require_stage_tasks_done(db: Session, opp, target: str, by: int) -> None:
+    """Refuses (409) moving the deal forward to `target` (a later stage, or Won) while its current stage has open tasks.
+    Checked before anything is changed, so a refusal leaves the stage, tasks, history, notifications and files as
+    they were. Going back and Mark as Lost are not limited. by: the user asking (named "you" in the list)."""
+    tasks = unfinished_stage_tasks(db, opp.id)
+    if not tasks:
+        return
+    listed = "; ".join(
+        f'"{t.title}" (due {t.due_date:%d %b %Y}, '
+        f'{"you" if t.owner_id == by else (t.owner.full_name if t.owner else "another user")})'
+        for t in tasks[:MAX_LISTED_TASKS])
+    more = f"; and {len(tasks) - MAX_LISTED_TASKS} more" if len(tasks) > MAX_LISTED_TASKS else ""
+    count = f"{len(tasks)} open task{'s' if len(tasks) != 1 else ''}"
+    raise HTTPException(status_code=409, detail=(
+        f"Finish the {opp.stage} stage first: this opportunity has {count}: {listed}{more}. "
+        f"Mark each one as done in the Activity tab (Upcoming & Overdue) when the work is finished, then move it to "
+        f"{target} again. A task assigned to someone else is completed by them or a Manager. Nothing was changed."))
 
 
 def record_link(*, lead_id: int | None = None, opportunity_id: int | None = None) -> str:

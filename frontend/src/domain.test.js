@@ -60,6 +60,14 @@ import {
   ASSISTANT_ATTACH_HELP,
   homeDescription,
   demoDateMin,
+  opportunityMovesForward,
+  unfinishedStageTasks,
+  ATTACHMENT_EXTENSIONS,
+  ATTACHMENT_STAGES,
+  ATTACHMENT_UPLOAD_STAGES,
+  ATTACHMENT_TYPES_TEXT,
+  ATTACHMENT_LEGACY_TEXT,
+  PREVIEW_TYPES,
 } from "./domain.js";
 import { BUSINESS_TIMEZONE, BUSINESS_TZ_LABEL, businessNow, formatBusiness, formatBusinessTime, fromBusinessInput, toBusinessInput } from "./businessTime.js";
 import { attachedSummary, fileSize } from "./format.js";
@@ -78,6 +86,15 @@ import {
   isMyOpenTask,
   myOverdueTasks,
   OVERDUE_SHORTCUT_FILTERS,
+  boardPages,
+  boardQueryKey,
+  columnRange,
+  latestRequests,
+  withColumnPage,
+  LEAD_DATE_RANGES,
+  dateRangeBounds,
+  dateFilterOffered,
+  defaultSortDirection,
 } from "./listHelpers.js";
 import { demoEvent, foldIcsLine, googleCalendarUrl, icsContent, icsText, outlookCalendarUrl } from "./calendarLinks.js";
 
@@ -391,13 +408,18 @@ test("failed network requests never fall back to browser demo records", async (t
 test("attachment files are checked before upload (the backend checks again)", () => {
   const file = (name, size) => ({ name, size });
   assert.equal(ATTACHMENT_MAX_BYTES, 20 * 1024 * 1024);
-  for (const name of ["a.pdf", "b.DOCX", "c.jpg", "d.JPEG", "e.png"]) assert.equal(attachmentProblem(file(name, 10)), "");
+  for (const name of ["a.pdf", "b.DOCX", "c.jpg", "d.JPEG", "e.png", "f.pptx", "g.XLSX"])
+    assert.equal(attachmentProblem(file(name, 10)), "");
   assert.equal(attachmentProblem(file("max.pdf", ATTACHMENT_MAX_BYTES)), "");
   assert.match(attachmentProblem(file("big.pdf", ATTACHMENT_MAX_BYTES + 1)), /larger than 20 MB/);
+  assert.match(attachmentProblem(file("big.pptx", ATTACHMENT_MAX_BYTES + 1)), /larger than 20 MB/);
   assert.match(attachmentProblem(file("empty.png", 0)), /is empty/);
+  assert.match(attachmentProblem(file("empty.xlsx", 0)), /is empty/);
   assert.match(attachmentProblem(file("old.doc", 10)), /\.doc.*save it as \.docx/i);
-  for (const name of ["notes.txt", "page.html", "archive.zip", "pdf", ".pdf", "macro.docm"])
-    assert.match(attachmentProblem(file(name, 10)), /only PDF, Word \(\.docx\), JPG and PNG/);
+  assert.match(attachmentProblem(file("old.ppt", 10)), /old PowerPoint files \(\.ppt\).*save it as \.pptx/i);
+  assert.match(attachmentProblem(file("old.XLS", 10)), /old Excel files \(\.xls\).*save it as \.xlsx/i);
+  for (const name of ["notes.txt", "page.html", "archive.zip", "pdf", ".pdf", "macro.docm", "macro.xlsm", "show.ppsx"])
+    assert.match(attachmentProblem(file(name, 10)), /only PDF, Word \(\.docx\), PowerPoint \(\.pptx\), Excel \(\.xlsx\), JPG and PNG/);
 });
 test("attachments use their own endpoints and send the login only in a header", async (t) => {
   const calls = [];
@@ -1224,7 +1246,10 @@ test("Home overdue shortcut: the count and the Tasks page use one definition, an
   assert.match(page, /const viewTest = shortcut \? \(t\) => isMyOpenTask\(t, user\.id\)/);
   assert.match(source("./SellerHome.jsx"), /const overdue = myOverdueTasks\(data\.tasks, user\.id\);/);
   // Due Date > Overdue itself is unchanged (it still lists every task due before today), and so is the dropdown
-  assert.match(source("./Filters.jsx"), /case "overdue":\s*return \[null, today\];/);
+  // (the date ranges moved from Filters.jsx to listHelpers.js; Filters.rangeBounds uses them)
+  assert.match(source("./listHelpers.js"), /case "overdue":\s*return \[null, today\];/);
+  assert.equal(dateRangeBounds("overdue", "", "", new Date(2026, 10, 10, 15))[0], null);
+  assert.equal(dateRangeBounds("overdue", "", "", new Date(2026, 10, 10, 15))[1].getTime(), new Date(2026, 10, 10).getTime());
   assert.match(page, /\["My Tasks", \(t\) => mine\(t\)\],\s*\["Open Tasks", \(t\) => !t\.completed\],\s*\["Completed Tasks", \(t\) => t\.completed\],/);
 });
 
@@ -1286,4 +1311,198 @@ test("amounts show their own currency and totals are never added across currenci
   assert.equal(compactMoney(2550000, "EUR"), "€2.55M");
   assert.equal(compactMoneyMix({ INR: 500000, USD: 12000 }), "$12K + ₹500K");
   assert.equal(compactMoneyMix({}), "$0");
+});
+
+// ---------- vikram-fixes2: Opportunity stage tasks, PowerPoint / Excel attachments, Leads Kanban pages ----------
+
+test("opportunity moves forward only when its stage tasks are done (date reminders don't count)", () => {
+  assert.equal(opportunityMovesForward("Opportunity", "Discovery"), true);
+  assert.equal(opportunityMovesForward("Opportunity", "Proposal"), true); // skipping is still forward
+  assert.equal(opportunityMovesForward("Proposal", "Won"), true);
+  assert.equal(opportunityMovesForward("Proposal", "Discovery"), false); // going back is not limited
+  assert.equal(opportunityMovesForward("Won", "Won"), false); // closed deals don't move
+  const opp = { id: "7" };
+  const task = (id, extra) => ({ id, relatedType: "opportunities", relatedId: "7", completed: false, due_date: "2030-01-0" + id, ...extra });
+  const tasks = [
+    task(3, { title: "Send the revised quote" }),
+    task(1, { title: "Close date coming up - Deal", is_auto: true, is_date_reminder: true }), // a date reminder
+    task(2, { title: "Call the CFO" }),
+    task(4, { title: "Done already", completed: true }),
+    task(5, { relatedId: "8", title: "Another deal" }),
+    task(6, { relatedType: "leads", title: "A lead's task" }),
+  ];
+  assert.deepEqual(unfinishedStageTasks(tasks, opp).map((t) => t.id), [2, 3]); // soonest first
+  assert.deepEqual(unfinishedStageTasks([], opp), []);
+  // the API's flag reaches the page unchanged
+  assert.equal(normalizeTask({ id: 1, status: "Open", due_date: "2030-01-01T09:00:00", is_date_reminder: true }).is_date_reminder, true);
+});
+
+test("Change Stage, Mark as Won and the Kanban show the open tasks instead of a form that can't be saved", () => {
+  const modal = source("./Modal.jsx");
+  // forward moves of opportunities only (Mark as Won, Change Stage, Kanban drop all open this popup)
+  assert.match(modal, /const moveTarget = type === "won" \? "Won" : type === "stage" && modal\.collection === "opportunities" \? modal\.stage : null;/);
+  assert.match(modal, /opportunityMovesForward\(record\.stage, moveTarget\) \? unfinishedStageTasks\(data\.tasks, record\) : \[\]/);
+  assert.match(modal, /stageBlockers\.length > 0 \?/);
+  assert.match(modal, /Finish the \{record\.stage\} stage first/);
+  assert.match(modal, /Tick each task as done in the Activity tab \(Upcoming &amp; Overdue\)/);
+  assert.match(modal, /Nothing has been changed\./);
+  // ticking a task only completes it: App's toggleTask never changes the stage
+  const app = source("./App.jsx");
+  const toggle = app.slice(app.indexOf("const toggleTask"), app.indexOf("// Email composer"));
+  assert.match(toggle, /run\("completeTask", taskId\)/);
+  assert.doesNotMatch(toggle, /stage|won/i);
+});
+
+test("PowerPoint and Excel files: accepted types, legacy formats explained, no preview, upload once Won", () => {
+  assert.deepEqual(ATTACHMENT_EXTENSIONS, [".pdf", ".docx", ".pptx", ".xlsx", ".jpg", ".jpeg", ".png"]);
+  assert.equal(attachmentType("Deck.PPTX"), "application/vnd.openxmlformats-officedocument.presentationml.presentation");
+  assert.equal(attachmentType("Pricing.xlsx"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  // Office files download through the logged-in file request (no preview, no conversion service)
+  assert.deepEqual(PREVIEW_TYPES, ["application/pdf", "image/jpeg", "image/png"]);
+  // added while open and once Won; never after Lost. Deleting stays limited to open deals.
+  assert.deepEqual(ATTACHMENT_UPLOAD_STAGES, ["Opportunity", "Discovery", "Proposal", "Won"]);
+  assert.deepEqual(ATTACHMENT_STAGES, ["Opportunity", "Discovery", "Proposal"]);
+  assert.match(ATTACHMENT_TYPES_TEXT, /PowerPoint \(\.pptx\), Excel \(\.xlsx\)/);
+  assert.match(ATTACHMENT_LEGACY_TEXT, /\.ppt or \.xls files: save them as \.pptx or \.xlsx/);
+  // the popups take the same files, still five at a time
+  const file = (name) => ({ name, size: 10, lastModified: 1 });
+  const picked = pickStageFiles([], ["a.pptx", "b.xlsx", "c.pdf", "d.docx", "e.png", "f.jpg"].map(file));
+  assert.equal(picked.files.length, STAGE_FILES_MAX);
+  assert.match(picked.problems[0], /f\.jpg: up to 5 files/);
+  const attachments = source("./Attachments.jsx");
+  assert.match(attachments, /const canUpload = canEdit && ATTACHMENT_UPLOAD_STAGES\.includes\(opportunity\.stage\);/);
+  assert.match(attachments, /canEdit &&\s+ATTACHMENT_STAGES\.includes\(opportunity\.stage\) &&/); // delete: open deals only
+  assert.match(attachments, /\{ATTACHMENT_TYPES_TEXT\} • 20 MB per file\. \{ATTACHMENT_LEGACY_TEXT\}/);
+  assert.match(attachments, /\{ATTACHMENT_TYPES_TEXT\} • 20 MB per file • up to \{STAGE_FILES_MAX\} files\. \{ATTACHMENT_LEGACY_TEXT\}/);
+  assert.match(attachments, /"application\/vnd\.openxmlformats-officedocument\.presentationml\.presentation": "PowerPoint"/);
+  // an obvious route: Add Files in the Activity tab, for people who may edit an open or Won opportunity
+  const record = source("./RecordPage.jsx");
+  assert.match(record, /!lead && canEdit && ATTACHMENT_UPLOAD_STAGES\.includes\(item\.stage\)\s+\? \(\) => window\.dispatchEvent\(new Event\(PICK_ATTACHMENTS\)\)/);
+  assert.match(record, /<ObjectIcon type="note" size=\{18\} \/> Add Files/);
+});
+
+test("Leads Kanban pages: a new query starts every column at its first page, Previous / Next move one column", () => {
+  const base = { view: "all_open", stage: "", filters: {}, search: "", sort: { col: "created", dir: "desc" }, size: 15 };
+  const key = boardQueryKey(base);
+  for (const change of [{ view: "all" }, { stage: "Demo" }, { filters: { source: "Upload" } }, { search: "acme" },
+    { sort: { col: "name", dir: "desc" } }, { sort: { col: "created", dir: "asc" } }, { size: 25 }])
+    assert.notEqual(boardQueryKey({ ...base, ...change }), key, JSON.stringify(change));
+  let state = withColumnPage({ key: "", pages: {} }, key, "Demo", 2);
+  state = withColumnPage(state, key, "New", 6);
+  assert.deepEqual(boardPages(state, key), { Demo: 2, New: 6 });
+  assert.deepEqual(boardPages(state, boardQueryKey({ ...base, search: "acme" })), {}); // new query: first pages
+  assert.deepEqual(withColumnPage(state, "other", "Demo", 1), { key: "other", pages: { Demo: 1 } });
+  // 549 synthetic leads, 120 at Demo: every card is reachable
+  assert.deepEqual(columnRange(0, 15, 120), { pages: 8, range: "1–15 of 120", pageText: "Page 1 of 8" });
+  assert.deepEqual(columnRange(7, 15, 120), { pages: 8, range: "106–120 of 120", pageText: "Page 8 of 8" });
+  assert.equal(columnRange(1, 100, 101).range, "101–101 of 101"); // the 101st card has a page
+  assert.equal(columnRange(0, 15, 50001).pageText, "Page 1 of 3,334");
+  assert.equal(columnRange(0, 15, 0).range, "No leads");
+  assert.equal(clampPage(7, 104, 15), 6); // a stage change moved cards out: back to the last page
+});
+
+test("Leads Kanban: only the latest request of a column is shown", () => {
+  const requests = latestRequests();
+  const first = requests.start("Demo");
+  const second = requests.start("Demo"); // Next pressed again, or the search changed
+  const other = requests.start("New");
+  assert.equal(requests.isLatest("Demo", first), false); // the slow first answer is dropped
+  assert.equal(requests.isLatest("Demo", second), true);
+  assert.equal(requests.isLatest("New", other), true);
+  requests.forgetAll(); // a new board query: every earlier answer is dropped
+  assert.equal(requests.isLatest("Demo", second), false);
+  assert.equal(requests.isLatest("New", other), false);
+});
+
+test("Leads Kanban: every column pages through the server query, with the List page's filters and page sizes", () => {
+  const table = source("./LeadsTable.jsx");
+  assert.doesNotMatch(table, /BOARD_CARDS|limit: 100/); // no fixed first 100 cards
+  assert.match(table, /load\(\{ stage: column, offset: at \* cardSize, limit: cardSize \}\)/);
+  assert.match(table, /if \(!requests\.current\.isLatest\(column, id\)\) return;/);
+  assert.match(table, /const fixed = clampPage\(at, r\.total, cardSize\);/);
+  assert.match(table, /\{defs\.map\(\(def\) => \(\s+<FilterButton key=\{def\.key\} def=\{def\} values=\{filters\} onChange=\{onFilter\} \/>/);
+  assert.match(table, /\{PAGE_SIZES\.map\(\(n\) => \(/);
+  assert.match(table, /<span>Cards per column<\/span>/);
+  assert.match(table, /<span>Sort by<\/span>/);
+  // a saved stage change (refresh) reloads every column at its page; Try again too
+  assert.match(table, /const reload = `\$\{refresh\}\|\$\{again\}`;/);
+  const board = source("./LeadsKanban.jsx");
+  assert.match(board, /aria-label=\{`Previous page of \$\{stage\}`\}/);
+  assert.match(board, /aria-label=\{`Next page of \$\{stage\}`\}/);
+  assert.match(board, /<b>\{range\.range\}<\/b>/);
+  assert.match(board, /\{excluded \? stage : `\$\{stage\} \(\$\{column \? column\.total\.toLocaleString\(\) : "…"\}\)`\}/);
+  // drag and drop and the Change Status menu still open the usual popups (nothing moves until it's saved)
+  assert.match(board, /draggable=\{options\.length > 0\}/);
+  assert.match(board, /label="Change Status"/);
+  const filters = source("./Filters.jsx");
+  assert.match(filters, /export const FilterButton = \(props\) => <HeaderFilter \{\.\.\.props\} pill \/>;/);
+});
+
+// ---------- vikram-fixes2 follow-up: Leads date choices and the Kanban sort ----------
+
+test("Leads date choices: Today, Last week (Monday to Sunday) and Last month, in local time", () => {
+  assert.deepEqual(LEAD_DATE_RANGES, [["today", "Today"], ["lastweek", "Last week"], ["lastmonth", "Last month"]]);
+  const iso = ([start, end]) => [start, end].map((d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:00`);
+  const saved = process.env.TZ;
+  try {
+    for (const tz of ["Asia/Kolkata", "America/New_York"]) {
+      process.env.TZ = tz;
+      const at = (y, m, d, h = 15) => new Date(y, m - 1, d, h, 30);
+      // a Monday, a Wednesday and a Sunday of the week 9-15 Nov 2026: last week is Mon 2 - Sun 8 Nov (to Mon 9, exclusive)
+      for (const now of [at(2026, 11, 9, 0), at(2026, 11, 11), at(2026, 11, 15, 23)])
+        assert.deepEqual(iso(dateRangeBounds("lastweek", "", "", now)), ["2026-11-02 00:00", "2026-11-09 00:00"], `${tz} ${now}`);
+      // across a month and a year end, and over New York's clock change (1 Nov 2026): still midnight to midnight
+      assert.deepEqual(iso(dateRangeBounds("lastweek", "", "", at(2027, 1, 6))), ["2026-12-28 00:00", "2027-01-04 00:00"], tz);
+      assert.deepEqual(iso(dateRangeBounds("lastweek", "", "", at(2026, 11, 4))), ["2026-10-26 00:00", "2026-11-02 00:00"], tz);
+      // last month: the previous complete calendar month (also from the first and the last day of a month)
+      assert.deepEqual(iso(dateRangeBounds("lastmonth", "", "", at(2026, 11, 10))), ["2026-10-01 00:00", "2026-11-01 00:00"], tz);
+      assert.deepEqual(iso(dateRangeBounds("lastmonth", "", "", at(2027, 1, 1, 0))), ["2026-12-01 00:00", "2027-01-01 00:00"], tz);
+      assert.deepEqual(iso(dateRangeBounds("lastmonth", "", "", at(2026, 3, 31, 23))), ["2026-02-01 00:00", "2026-03-01 00:00"], tz);
+      assert.deepEqual(iso(dateRangeBounds("today", "", "", at(2026, 11, 10))), ["2026-11-10 00:00", "2026-11-11 00:00"], tz);
+      // custom: From and To days, the To day included
+      assert.deepEqual(iso(dateRangeBounds("custom", "2026-11-02", "2026-11-08")), ["2026-11-02 00:00", "2026-11-09 00:00"], tz);
+    }
+  } finally {
+    if (saved === undefined) delete process.env.TZ;
+    else process.env.TZ = saved;
+  }
+  // the chips and the summary name the new choices
+  const created = { key: "created", label: "Created", type: "date", ranges: LEAD_DATE_RANGES };
+  assert.equal(filterText(created, { created: "lastweek" }), "Created: Last week");
+  assert.equal(chipText(created, { created: "lastmonth" }), "Created: Last month");
+});
+
+test("Leads: a saved date filter the page no longer offers is not applied (no invisible filter)", () => {
+  const created = { key: "created", label: "Created", type: "date", ranges: LEAD_DATE_RANGES };
+  for (const removed of ["last7", "last30", "week", "month", "quarter", "year", "nonsense"])
+    assert.equal(dateFilterOffered(created, { created: removed }), false, removed);
+  for (const offered of ["today", "lastweek", "lastmonth"]) assert.equal(dateFilterOffered(created, { created: offered }), true);
+  assert.equal(dateFilterOffered(created, { created: "custom", created_from: "2026-11-01" }), true);
+  assert.equal(dateFilterOffered(created, { created: "custom" }), false); // a custom range without dates
+  // other lists keep their own choices
+  assert.equal(dateFilterOffered({ key: "created", type: "date" }, { created: "last7" }), true);
+  const list = source("./ListView.jsx");
+  assert.match(list, /\{ \.\.\.created, ranges: LEAD_DATE_RANGES \},\s+\{ \.\.\.modified, ranges: LEAD_DATE_RANGES \},/);
+  assert.match(list, /if \(f\.type === "date" && !dateFilterOffered\(f, values\)\) continue;/);
+  // the List headers and the Kanban buttons use the same menu: Any time, the choices, then Custom range
+  const filters = source("./Filters.jsx");
+  assert.match(filters, /def\.type === "date" \? def\.ranges \|\| \(def\.future \? FUTURE : PAST\)/);
+  assert.match(filters, /\{def\.type === "date" \? "Any time" : "All"\}/);
+  assert.match(filters, /<p className="th-menu-label">Custom range<\/p>/);
+  assert.match(filters, /max=\{custom\.to \|\| undefined\}/); // From can't be after To
+  assert.match(filters, /min=\{custom\.from \|\| undefined\}/);
+});
+
+test("Leads Kanban: Sort by only, each field in its default order; the summary names the order", () => {
+  assert.equal(defaultSortDirection("created"), "desc");
+  assert.equal(defaultSortDirection("modified"), "desc");
+  assert.equal(defaultSortDirection("name"), "asc");
+  assert.equal(defaultSortDirection("owner"), "asc");
+  assert.equal(sortText("Created", "created", defaultSortDirection("created")), "Sorted by Created, newest first");
+  assert.equal(sortText("Name", "name", defaultSortDirection("name")), "Sorted by Name, A–Z");
+  const table = source("./LeadsTable.jsx");
+  assert.doesNotMatch(table, /board-direction|Reverse the order/);
+  assert.match(table, /onChange=\{\(e\) => setSort\(\{ col: e\.target\.value, dir: defaultSortDirection\(e\.target\.value\) \}\)\}/);
+  assert.match(table, /const \[sort, setSort\] = useState\(\{ col: "created", dir: "desc" \}\);/); // the page still opens newest first
+  assert.match(table, /sort: sortText\(sortLabel, sort\.col, sort\.dir\)/); // the summary under the title
 });

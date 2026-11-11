@@ -28,6 +28,16 @@ def login_as(client, user_id: int):
     return client
 
 
+def finish_stage_tasks(client, opportunity_id: int) -> None:
+    """Ticks the open tasks of the deal's current stage as Done, as a salesperson does before moving it on: an
+    opportunity moves forward only when they are done (test_stage_tasks_before_progress.py has that rule's own tests).
+    For tests about other rules that move a deal forward. The close-date reminder is not stage work and stays open."""
+    for task in client.get(f"/api/opportunities/{opportunity_id}").json()["tasks"]:
+        if task["status"] == "Open" and not task["is_date_reminder"]:
+            res = client.put(f"/api/tasks/{task['id']}/complete")
+            assert res.status_code == 200, res.text
+
+
 @pytest.fixture
 def client():
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)

@@ -154,6 +154,8 @@ class TaskOut(Out):
     related_type: str | None = None
     related_to: str | None = None
     is_overdue: bool = False
+    # a date reminder (e.g. the close-date reminder): not stage work, so it never holds up moving a deal forward
+    is_date_reminder: bool = False
     created_at: datetime | None
 
 

@@ -2,7 +2,7 @@
 // column header, like Salesforce/Excel. The chosen values are kept per list in this browser.
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Icon } from "./ui";
-import { filterText, FUTURE_RANGES, PAST_RANGES } from "./listHelpers";
+import { dateRangeBounds, filterText, FUTURE_RANGES, PAST_RANGES } from "./listHelpers";
 
 // Date ranges. "past" fits created dates, "future" fits close and due dates (listHelpers.js, shared with the chips).
 const PAST = PAST_RANGES;
@@ -17,45 +17,8 @@ export const TASK_DUE_RANGES = [
   ["next7", "Next 7 days"],
 ];
 
-const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
-const addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
-
-// [start, end) in local time for a range key; custom uses the two date inputs (yyyy-mm-dd)
-export function rangeBounds(range, from, to) {
-  const today = startOfDay(new Date());
-  const weekStart = addDays(today, -today.getDay());
-  const q = Math.floor(today.getMonth() / 3) * 3;
-  switch (range) {
-    case "today":
-      return [today, addDays(today, 1)];
-    case "tomorrow":
-      return [addDays(today, 1), addDays(today, 2)];
-    case "week":
-      return [weekStart, addDays(weekStart, 7)];
-    case "last7":
-      return [addDays(today, -6), addDays(today, 1)];
-    case "last30":
-      return [addDays(today, -29), addDays(today, 1)];
-    case "next7":
-      return [today, addDays(today, 7)];
-    case "next30":
-      return [today, addDays(today, 30)];
-    case "overdue":
-      return [null, today];
-    case "month":
-      return [new Date(today.getFullYear(), today.getMonth(), 1), new Date(today.getFullYear(), today.getMonth() + 1, 1)];
-    case "quarter":
-      return [new Date(today.getFullYear(), q, 1), new Date(today.getFullYear(), q + 3, 1)];
-    case "year":
-      return [new Date(today.getFullYear(), 0, 1), new Date(today.getFullYear() + 1, 0, 1)];
-    case "custom": {
-      const day = (s) => (s ? new Date(`${s}T00:00:00`) : null);
-      return [day(from), to ? addDays(day(to), 1) : null];
-    }
-    default:
-      return [null, null];
-  }
-}
+// [start, end) in local time for a range key; custom uses the two date inputs (yyyy-mm-dd). See listHelpers.js.
+export const rangeBounds = (range, from, to, now) => dateRangeBounds(range, from, to, now);
 
 const toDate = (value) => (!value ? null : String(value).length === 10 ? new Date(`${value}T12:00:00`) : new Date(value));
 
@@ -124,8 +87,9 @@ export function filterSummary(defs, values) {
     .join(" • ");
 }
 
-// The dropdown arrow inside a column header and its menu
-function HeaderFilter({ def, values, onChange }) {
+// The dropdown arrow inside a column header and its menu. pill: a labelled button instead ("Lead Status: Demo ▾"), for
+// views without column headers (the Leads Kanban); the menu is the same.
+function HeaderFilter({ def, values, onChange, pill = false }) {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState(null);
   const [custom, setCustom] = useState({ from: "", to: "" });
@@ -145,7 +109,9 @@ function HeaderFilter({ def, values, onChange }) {
   useLayoutEffect(() => {
     if (!open || !pos || !menu.current) return;
     const width = menu.current.getBoundingClientRect().width;
-    const want = Math.max(8, Math.min(button.current.getBoundingClientRect().right - width, window.innerWidth - width - 8));
+    const r = button.current.getBoundingClientRect();
+    // a pill opens to the right of its left edge; a header arrow lines its menu up with its right edge
+    const want = Math.max(8, Math.min(pill ? r.left : r.right - width, window.innerWidth - width - 8));
     if (Math.abs(want - pos.left) > 0.5) setPos({ ...pos, left: want });
   }, [open, pos]);
   useEffect(() => {
@@ -187,14 +153,15 @@ function HeaderFilter({ def, values, onChange }) {
       <button
         ref={button}
         type="button"
-        className={`th-filter ${value ? "on" : ""} ${open ? "open" : ""}`}
+        className={`${pill ? "filter-pill" : "th-filter"} ${value ? "on" : ""} ${open ? "open" : ""}`}
         onClick={() => setOpen((o) => !o)}
-        aria-label={`Filter ${def.label}`}
+        aria-label={pill ? (value ? `${filterSummary([def], values)}. Change the ${def.label} filter` : `Filter by ${def.label}`) : `Filter ${def.label}`}
         aria-haspopup="menu"
         aria-expanded={open}
         title={value ? `Filtered: ${filterSummary([def], values)}` : `Filter by ${def.label}`}
       >
-        <Icon name="down" size={14} />
+        {pill && <span>{value ? filterSummary([def], values) : def.label}</span>}
+        <Icon name="down" size={pill ? 12 : 14} />
       </button>
       {open && pos && (
         <div ref={menu} className="th-menu" role="menu" style={pos}>
@@ -263,6 +230,9 @@ function HeaderFilter({ def, values, onChange }) {
     </>
   );
 }
+
+// The same filter menu behind a labelled button (Leads Kanban filter bar)
+export const FilterButton = (props) => <HeaderFilter {...props} pill />;
 
 // A column header: click the name to sort, the arrow to filter
 export function Th({ label, sorted, flip, onSort, filter, values, onChange, className = "" }) {

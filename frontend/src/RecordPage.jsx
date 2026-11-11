@@ -2,13 +2,13 @@ import React, { useState } from "react";
 import { AddToCalendar } from "./calendar";
 import { demoEvent } from "./calendarLinks";
 import { formatBusiness } from "./businessTime";
-import OpportunityAttachments from "./Attachments";
+import OpportunityAttachments, { PICK_ATTACHMENTS } from "./Attachments";
 import { EmailList, useEmails } from "./Email";
 import { canCreateSales, canEditRecord, canTransferLead } from "./permissions";
 import { amount, dateTime, shortDate } from "./format";
 import { ActionMenu, Card, Icon, ObjectIcon, PathBar, PhoneReveal, StageBadge } from "./ui";
 
-import { LEAD_FLOW, LEAD_OPTIONAL_STAGES, OPPORTUNITY_FLOW } from "./domain";
+import { ATTACHMENT_UPLOAD_STAGES, LEAD_FLOW, LEAD_OPTIONAL_STAGES, OPPORTUNITY_FLOW } from "./domain";
 
 // Unqualified comes first, as in the requirement: new leads start at New, and Unqualified is chosen (with a reason)
 // for a lead that isn't eligible
@@ -89,7 +89,7 @@ export function TaskLine({ task, toggleTask, setModal }) {
   );
 }
 
-function ActivityTab({ item, tasks, toggleTask, setModal, openTask, collection, emails, sendEmail }) {
+function ActivityTab({ item, tasks, toggleTask, setModal, openTask, collection, emails, sendEmail, addFiles }) {
   const open = tasks.filter((t) => !t.completed).sort((a, b) => a.due_date.localeCompare(b.due_date));
   const done = tasks.filter((t) => t.completed);
   const past = [
@@ -108,6 +108,12 @@ function ActivityTab({ item, tasks, toggleTask, setModal, openTask, collection, 
         <button className="sf-button" onClick={() => setModal({ type: "note", collection, record: item })}>
           <ObjectIcon type="note" size={18} /> New Note
         </button>
+        {/* opportunities: the proposal, pricing or signed order go to the Attachments card (open or Won deals) */}
+        {addFiles && (
+          <button className="sf-button" onClick={addFiles} title="Add files to this opportunity's Attachments">
+            <ObjectIcon type="note" size={18} /> Add Files
+          </button>
+        )}
       </div>
       <h3 className="activity-heading">Upcoming &amp; Overdue</h3>
       {open.length ? (
@@ -384,6 +390,11 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
               collection={collection}
               emails={emails}
               sendEmail={sendEmail}
+              addFiles={
+                !lead && canEdit && ATTACHMENT_UPLOAD_STAGES.includes(item.stage)
+                  ? () => window.dispatchEvent(new Event(PICK_ATTACHMENTS))
+                  : undefined
+              }
             />
           ) : lead ? (
             <>

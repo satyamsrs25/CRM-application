@@ -27,12 +27,15 @@ import {
   stageTaskNeeded,
   stageTaskPayload,
   stageTaskProblems,
+  opportunityMovesForward,
+  unfinishedStageTasks,
   UNQUALIFIED_REASONS,
   REVISIT_REASONS,
   demoDateMin,
 } from "./domain";
 import { can } from "./permissions";
 import { BUSINESS_TZ_LABEL, formatBusiness, fromBusinessInput, toBusinessInput } from "./businessTime";
+import { shortDate } from "./format";
 import { AmountField, Icon } from "./ui";
 
 const go = (path) => {
@@ -148,6 +151,11 @@ export default function Modal({ modal, close, data, run, notify, user }) {
   // ...and all of them but Lost a New Task (task_* fields, checked with the note before anything is sent)
   const taskNeeded = stageTaskNeeded(type, demoChoice);
   const [taskErrors, setTaskErrors] = useState({});
+  // An opportunity moves forward (a later stage or Won) only when its current stage's tasks are done; the server checks
+  // it too. The popup then lists the open tasks instead of asking for a note and a task that couldn't be saved.
+  const moveTarget = type === "won" ? "Won" : type === "stage" && modal.collection === "opportunities" ? modal.stage : null;
+  const stageBlockers =
+    record && moveTarget && opportunityMovesForward(record.stage, moveTarget) ? unfinishedStageTasks(data.tasks, record) : [];
   const attached = stageFilesOn && stageFiles.length;
   const attachedText = attached ? ` ${attached} file${attached === 1 ? " was" : "s were"} attached.` : "";
   const titles = {
@@ -670,7 +678,48 @@ export default function Modal({ modal, close, data, run, notify, user }) {
         <header className="modal-header">
           <h2 id="modal-title">{titles[type]}</h2>
         </header>
-        {/* New Account / New Contact check their fields themselves, so each message shows under its field */}
+        {stageBlockers.length > 0 ? (
+          <>
+            <div className="modal-body">
+              <div className="stage-blocked" role="alert">
+                <Icon name="warn" size={18} />
+                <div>
+                  <b>Finish the {record.stage} stage first</b>
+                  <p>
+                    This opportunity can move to {moveTarget} when the work of the {record.stage} stage is done.{" "}
+                    {stageBlockers.length === 1 ? "This task is" : `These ${stageBlockers.length} tasks are`} still open:
+                  </p>
+                  <ul className="stage-blocked-tasks">
+                    {stageBlockers.map((t) => (
+                      <li key={t.id}>
+                        <b>{t.title}</b>
+                        <small>
+                          Due {shortDate(t.due_date)} • {String(t.owner_id) === String(user?.id) ? "You" : t.owner || "Another user"}
+                        </small>
+                      </li>
+                    ))}
+                  </ul>
+                  <p>
+                    Tick each task as done in the Activity tab (Upcoming &amp; Overdue) when the work is finished, then
+                    move the opportunity again. A task assigned to someone else is completed by them or a Manager.
+                    Nothing has been changed.
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div className="modal-footer">
+              {window.location.hash !== `#/opportunities/${record.id}` && (
+                <a className="sf-button" href={`#/opportunities/${record.id}`} onClick={close}>
+                  Open the opportunity
+                </a>
+              )}
+              <button type="button" className="sf-button brand" onClick={close}>
+                OK
+              </button>
+            </div>
+          </>
+        ) : (
+        /* New Account / New Contact check their fields themselves, so each message shows under its field */
         <form
           onSubmit={submit}
           noValidate={newRecord}
@@ -682,7 +731,9 @@ export default function Modal({ modal, close, data, run, notify, user }) {
             <p className="modal-subtitle">
               {type === "convert"
                 ? "Creates an account (or uses an existing one), a contact and an opportunity. Open lead tasks are closed automatically."
-                : "Open follow-up tasks are closed automatically and the next follow-up task is created."}
+                : moveTarget && opportunityMovesForward(record.stage, moveTarget)
+                  ? "The tasks of this stage are done. Your new task becomes the next follow-up; the close-date reminder stays."
+                  : "Open follow-up tasks are closed automatically and the next follow-up task is created."}
             </p>
           )}
           {type === "account" && (
@@ -1119,6 +1170,7 @@ export default function Modal({ modal, close, data, run, notify, user }) {
             </button>
           </div>
         </form>
+        )}
       </section>
     </div>
   );

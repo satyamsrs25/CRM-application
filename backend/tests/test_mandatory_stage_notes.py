@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 
 from app import mailer
 from app.models import Account, Contact, Lead, Notification, Opportunity, OpportunityAttachment, StageHistory, Task, User
-from conftest import login_as
+from conftest import finish_stage_tasks, login_as
 from test_assistant import ai, call  # noqa: F401 (ai is a fixture: a scripted stand-in for the AI model)
 from test_opportunity_attachments import PDF, PRIYA, RAVI, add_salesperson, db_session, new_opportunity, pdf_file
 
@@ -239,6 +239,7 @@ def test_skipped_stages_keep_their_confirmation_and_the_note_goes_on_the_request
         ("Nurturing", "Demo", "Confirmed as completed"),
         ("Demo", "Converted", "Signed the letter of intent")]
     opp = res["opportunity"]
+    finish_stage_tasks(client, opp["id"])
     won = ok(client.post(f"/api/opportunities/{opp['id']}/won", json={"task": TASK, "completed_stages": ["Discovery", "Proposal"],
                                                                        "completed_note": "Sent by email",
                                                                        "note": "Contract signed", "notify_customer": False}))
@@ -252,7 +253,9 @@ def test_opportunity_notes_back_and_forth_won_and_lost(client, sent):
     oid = opp["id"]
     ok(client.put(f"/api/opportunities/{oid}/stage", json={"task": TASK, "stage": "Proposal", "completed_stages": ["Discovery"], "note": NOTE}))
     ok(client.put(f"/api/opportunities/{oid}/stage", json={"task": TASK, "stage": "Opportunity", "note": "Scope changed"}))
+    finish_stage_tasks(client, oid)
     ok(client.put(f"/api/opportunities/{oid}/stage", json={"task": TASK, "stage": "Proposal", "completed_stages": ["Discovery"], "note": "Revised proposal sent"}))
+    finish_stage_tasks(client, oid)
     sent.clear()
     won = ok(client.post(f"/api/opportunities/{oid}/won", json={"task": TASK, "note": "\n Contract signed \n", "notify_customer": True}))
     assert won["stage"] == "Won" and won["final_value"] == 1000
