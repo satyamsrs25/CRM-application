@@ -49,10 +49,13 @@ email, tasks and reminders, notifications, lead conversion, closing a deal, and 
 - Transfer a lead or opportunity (single or bulk, by the owner, a Manager or the Admin): it keeps its stage, and the
   new owner gets the open follow-up tasks, reminders and due dates, plus a notification with the stage, last note
   and open tasks. Every transfer is kept in Transfer History.
-- Opportunity attachments: PDF, Word (.docx), JPG and PNG files (20 MB each) added at the Opportunity and Proposal
-  stages, kept with their stage, and viewable after the deal closes. Files can also be chosen in the Change Stage
-  popup; they are saved together with the stage change and labelled with the new stage. Files chosen in the Mark as
-  Won popup are saved together with the win and labelled Proposal.
+- Opportunity attachments: PDF, Word (.docx), PowerPoint (.pptx), Excel (.xlsx), JPG and PNG files (20 MB each), each
+  checked by its content, added while the deal is open or once it is Won (labelled Won, with who added it), kept with
+  their stage, and viewable after the deal closes (Office files are downloaded, PDF and images open in the browser).
+  Files can't be deleted after Won / Lost, and none added after Lost. Older .doc, .ppt and .xls files are refused with
+  a request to save them as .docx, .pptx or .xlsx. Files can also be chosen in the Change Stage popup (up to 5); they
+  are saved together with the stage change and labelled with the new stage. Files chosen in the Mark as Won popup are
+  saved together with the win and labelled Proposal. **Add Files** in the opportunity's Activity tab opens the picker.
 - Lead research fields: LinkedIn profile, company website, company LinkedIn page (clickable, required with email),
   turnover, headcount and location.
 - LinkedIn autofill on New Lead: paste a LinkedIn profile URL and the empty fields are filled with the details Apollo
@@ -93,6 +96,8 @@ email, tasks and reminders, notifications, lead conversion, closing a deal, and 
   skipping the row, so the salesperson can fill it in later. A personal email (gmail.com...) is left blank; an email
   on a different company domain than the website is kept with a "Check" note.
 - The Leads list loads page by page (100 rows) with server-side search and sorting, so it stays fast with 100,000s of leads.
+  The Leads Kanban pages each status column the same way (Previous / Next per column, cards per column, the range and
+  the exact total), with the List page's filters (Lead Status, Source, Owner, Created, Last Modified) shown above it.
 - Column filters (the arrow in a column header) on Leads, Opportunities, Accounts, Contacts and Tasks: status/stage,
   source, owner, priority, type and date ranges (created, close date, due date).
 - Upload opportunities (deals) the same way; the company becomes an account and a contact is added when given.
@@ -225,6 +230,13 @@ Unqualified:  available from any open lead stage (reason required); the lead can
 **Stage order.** Stages cannot be skipped. Moving forward past a stage requires the user to confirm that stage as
 completed, with an optional note recorded in the stage history. Moving back and marking Lost are always allowed.
 Implemented in `backend/app/services.py` (`confirm_skipped`).
+
+**Opportunity stage tasks.** An opportunity moves forward (Change Stage, Mark as Won, the Kanban board, the AI
+Assistant, with or without files) only when the open tasks of its current stage are done; the popup lists them and the
+API refuses the change (409) with the list, changing nothing. Confirming a skipped stage doesn't get round it. Ticking
+a task only marks it Done; moving the deal on is always its own step. Date reminders (the close-date reminder) are
+not stage work and never hold a deal up. Moving back and Mark as Lost are not limited. Implemented in
+`backend/app/services.py` (`require_stage_tasks_done`).
 
 **Stage notes.** Every stage change a user makes needs a note: the Change Stage popup (path, Mark as Complete, Kanban),
 the Conversion Comment on Convert ("Enter a conversion comment."), the Closing Note on Won, the Lost Notes on Lost

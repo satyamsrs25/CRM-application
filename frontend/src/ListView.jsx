@@ -2,6 +2,7 @@ import { DownloadLeads, TransferHistory, UploadLeads } from "./LeadFiles";
 import { can, canCreateOpportunity, canCreateSales } from "./permissions";
 import LeadsTable from "./LeadsTable";
 import { applyFilters, filterSummary, opts, ownerOptions, Th, useFilters } from "./Filters";
+import { dateFilterOffered, LEAD_DATE_RANGES } from "./listHelpers";
 import { LEAD_OPEN_STAGES, LEAD_SOURCES, LEAD_STAGES, OPPORTUNITY_OPEN_STAGES, OPPORTUNITY_STAGES, UPLOAD_SOURCE } from "./domain";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { amount, compact, maskPhone, shortDate } from "./format";
@@ -138,12 +139,13 @@ function filterDefs(collection, data, user, viewName, fixedStage) {
   const distinct = (list) => [...new Set(list.filter(Boolean))].sort((a, b) => a.localeCompare(b));
   if (collection === "leads") {
     const st = stages(LEAD_STAGES, OPEN_LEAD);
+    // Created and Last Modified: Any time, Today, Last week, Last month or a custom range (List and Kanban)
     return [
       ...(st ? [{ key: "stage", label: "Lead Status", options: opts(st) }] : []),
       { key: "source", label: "Lead Source", options: opts([...LEAD_SOURCES, UPLOAD_SOURCE]) },
       ...owner,
-      created,
-      modified,
+      { ...created, ranges: LEAD_DATE_RANGES },
+      { ...modified, ranges: LEAD_DATE_RANGES },
     ];
   }
   if (collection === "opportunities") {
@@ -164,12 +166,14 @@ function filterDefs(collection, data, user, viewName, fixedStage) {
   return [{ key: "account", column: "Account Name", label: "Account", type: "text", placeholder: "Type part of the account name", get: (r) => r.account_name }, ...owner, created, modified];
 }
 
-// keep only filter values the current view offers (e.g. a "Lost" status left over from All Leads)
+// keep only filter values the current view offers (e.g. a "Lost" status left over from All Leads, or a date choice
+// such as "Last 7 days" that the Leads page no longer offers): nothing is ever filtered without a chip saying so
 function validFilters(defs, values) {
   const out = {};
   for (const f of defs) {
     const v = values[f.key];
     if (!v || (f.options && !f.options.some(([o]) => o === v))) continue;
+    if (f.type === "date" && !dateFilterOffered(f, values)) continue;
     out[f.key] = v;
     if (f.type === "date") for (const k of ["from", "to"]) if (values[`${f.key}_${k}`]) out[`${f.key}_${k}`] = values[`${f.key}_${k}`];
   }

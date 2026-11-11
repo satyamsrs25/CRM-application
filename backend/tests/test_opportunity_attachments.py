@@ -15,7 +15,7 @@ from app.main import app
 from app.models import ActivityLog, OpportunityAttachment
 from app.routers.attachments import MAX_FILE_BYTES, MAX_REQUEST_BYTES
 from app.security import make_token
-from conftest import login_as
+from conftest import finish_stage_tasks, login_as
 
 TASK = {"title": "Synthetic follow-up task", "due_date": "2030-01-15T10:00:00"}  # every stage change needs one
 
@@ -100,7 +100,9 @@ def new_opportunity(client, owner=RAVI) -> dict:
     res = client.post(f"/api/leads/{res.json()['id']}/convert", json={"task": TASK, "completed_stages": ["New", "Nurturing", "Demo"],
                                                                       "expected_value": 1000, "note": "Synthetic test note"})
     assert res.status_code == 200, res.text
-    return res.json()["opportunity"]
+    opportunity = res.json()["opportunity"]
+    finish_stage_tasks(client, opportunity["id"])  # its first task is done, so it can move on
+    return opportunity
 
 
 def url(opp_id, attachment_id=None, suffix=""):
@@ -124,9 +126,13 @@ def stored_rows():
 
 
 def move(client, opp_id, stage):
+    """Setup for tests about other rules: the deal goes to `stage` and that stage's task is done too (an opportunity
+    moves forward only when the tasks of its stage are done; test_stage_tasks_before_progress.py tests that)."""
+    finish_stage_tasks(client, opp_id)
     res = client.put(f"/api/opportunities/{opp_id}/stage", json={"task": TASK, "stage": stage, "note": "Synthetic test note",
                                                                  "completed_stages": ["Discovery"]})  # not about the order
     assert res.status_code == 200, res.text
+    finish_stage_tasks(client, opp_id)
 
 
 def add_salesperson(client, name="Sam Tester", email="sam@crm.test") -> int:
@@ -237,7 +243,7 @@ def test_one_file_per_request(client):
 
 @pytest.mark.parametrize("name, data, status, message", [
     ("old.doc", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 600, 415, "old Word files (.doc)"),
-    ("notes.txt", b"hello", 415, "only PDF, Word (.docx), JPG and PNG"),
+    ("notes.txt", b"hello", 415, "only PDF, Word (.docx), PowerPoint (.pptx), Excel (.xlsx), JPG and PNG"),
     ("setup.exe", b"MZ\x90\x00", 415, "only PDF"),
     ("page.html", b"<html><script>alert(1)</script></html>", 415, "only PDF"),
     ("no-extension", pdf_file(), 415, "only PDF"),
@@ -265,7 +271,7 @@ def test_unsupported_and_mismatched_files_are_refused(client, name, data, status
     (docx_file(main="application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml"), 415,
      "isn't a Word document"),  # .dotx
     (docx_file(main="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"), 415,
-     "isn't a Word document"),  # a spreadsheet package
+     "is really an Excel workbook (.xlsx)"),  # a spreadsheet package named .docx
     (docx_file(changes={"word/document.xml": None}), 415, "isn't a Word document"),  # the main part is missing
     (docx_file(changes={"_rels/.rels": None}), 415, "isn't a Word document"),
     (docx_file(changes={"_rels/.rels": RELS.replace("/officeDocument", "/other")}), 415, "isn't a Word document"),
@@ -362,7 +368,7 @@ def test_an_attachment_can_only_be_reached_through_its_own_opportunity(client):
 
 # ---------- stages ----------
 
-def test_files_keep_their_stage_and_are_read_only_after_won(client):
+def test_files_keep_their_stage_and_a_won_deal_takes_new_files_but_none_are_deleted(client):
     opp = new_opportunity(client)
     early = saved(client, opp["id"], "brief.pdf", pdf_file())
     move(client, opp["id"], "Proposal")
@@ -373,16 +379,18 @@ def test_files_keep_their_stage_and_are_read_only_after_won(client):
         "brief.pdf": "Opportunity", "proposal.docx": "Proposal"}
     move(client, opp["id"], "Proposal")
 
+    finish_stage_tasks(client, opp["id"])
     won = client.post(f"/api/opportunities/{opp['id']}/won", json={"task": TASK, "final_value": 900, "notify_customer": False, "note": "Synthetic test note"})
     assert won.status_code == 200 and won.json()["stage"] == "Won" and won.json()["probability"] == 100
-    blocked = upload(client, opp["id"], "late.pdf", pdf_file())
-    assert blocked.status_code == 409 and "Won" in blocked.json()["detail"]
-    assert client.delete(url(opp["id"], early["id"])).status_code == 409
-    for role in (RAVI, PRIYA, ASHA):  # nobody can change the files of a closed deal
-        assert upload(login_as(client, role), opp["id"], "late.pdf", pdf_file()).status_code == 409
+    # a Won deal takes new files (e.g. the signed order), labelled Won with who added them; no file can be deleted
+    late = saved(client, opp["id"], "late.pdf", pdf_file())
+    assert (late["stage"], late["uploaded_by_name"]) == ("Won", "Ravi Kumar")
+    for role in (RAVI, PRIYA, ASHA):  # nobody can delete the files of a closed deal
+        assert login_as(client, role).delete(url(opp["id"], early["id"])).status_code == 409
+        assert client.delete(url(opp["id"], late["id"])).status_code == 409
     login_as(client, RAVI)
     assert {a["filename"]: a["stage"] for a in client.get(url(opp["id"])).json()} == {
-        "brief.pdf": "Opportunity", "proposal.docx": "Proposal"}
+        "brief.pdf": "Opportunity", "proposal.docx": "Proposal", "late.pdf": "Won"}
     assert client.get(url(opp["id"], proposal["id"], "/file")).content == DOCX_SAMPLE
     history = [h["to_stage"] for h in client.get(f"/api/opportunities/{opp['id']}/history").json()]
     assert history == ["Opportunity", "Discovery", "Proposal", "Opportunity", "Discovery", "Proposal", "Won"]  # Discovery confirmed each time

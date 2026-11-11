@@ -1,6 +1,7 @@
 // The Leads list: every list view (All Open Leads, My Open Leads, Uploaded Leads...) is loaded from the server
 // page by page with search and sorting, so it stays fast with 100,000s of leads. Uploaded leads have Lead Source "Upload".
-// The Kanban view uses the same query: one request per status column, each with its own total.
+// The Kanban view uses the same query: one request per status column, each with its own total and its own page of
+// cards (Previous / Next per column, cards per page as on the List page). The filters, search and sort are shared.
 // Tick the checkboxes to transfer or delete several leads at once (the server checks each lead and skips the ones you can't change):
 // a selection bar takes the toolbar's place while leads are ticked.
 import React, { useEffect, useRef, useState } from "react";
@@ -9,13 +10,25 @@ import { leadBoardColumns, leadConvertChoice } from "./domain";
 import LeadsKanban from "./LeadsKanban";
 import { NewCampaign, queuedMessage } from "./CampaignsPage";
 import { can, canCreateSales } from "./permissions";
-import { DateCell, Icon, Pagination, PhoneReveal, StageBadge } from "./ui";
+import { DateCell, Icon, PAGE_SIZES, Pagination, PhoneReveal, StageBadge } from "./ui";
 import { dateTime } from "./format";
-import { rangeBounds, Th } from "./Filters";
-import { clampPage, filterChips, leadSelectionActions, leadsEmptyMessage, pageSummary, selectionSummary, sortText } from "./listHelpers";
+import { FilterButton, rangeBounds, Th } from "./Filters";
+import {
+  boardPages,
+  boardQueryKey,
+  clampPage,
+  defaultSortDirection,
+  filterChips,
+  latestRequests,
+  leadSelectionActions,
+  leadsEmptyMessage,
+  pageSummary,
+  selectionSummary,
+  sortText,
+  withColumnPage,
+} from "./listHelpers";
 
 const PAGE = 15; // leads per page to start with (Rows per page offers more; the server allows up to 500)
-const BOARD_CARDS = 100; // cards per Kanban column; the column says when there are more
 // [heading, sort key, column width]. The checkbox, row number and Name stay in view when the table scrolls sideways.
 const COLUMNS = [
   ["Name", "name", 180],
@@ -208,6 +221,13 @@ export default function LeadsTable({
   const [board, setBoard] = useState(null); // Kanban: { stage: { total, items } } for the columns this list can have
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  // Kanban: cards per column (the List page's choices), each column's page for the current board query, and the
+  // columns being loaded
+  const [cardSize, setCardSize] = useState(PAGE);
+  const [colPages, setColPages] = useState({ key: "", pages: {} });
+  const [busyCols, setBusyCols] = useState({});
+  const requests = useRef(latestRequests());
+  const loadedBoard = useRef({ key: null, reload: null, pages: {} });
   const [selected, setSelected] = useState(() => new Set());
   const [bulk, setBulk] = useState(null); // { type: "transfer" | "delete", ids }
   const [campaignFor, setCampaignFor] = useState(null); // lead ids for "Email" (a campaign to the selected leads)
@@ -228,7 +248,8 @@ export default function LeadsTable({
   useEffect(() => setPage(0), [view, stage, filterKey]);
   useEffect(() => setSelected(new Set()), [view, stage, filterKey, term, kanban]); // a new list starts with nothing ticked
 
-  useEffect(() => {
+  // GET /leads/page with the list view, filters, search and sort (the List page and every Kanban column)
+  const load = (extra) => {
     const params = new URLSearchParams({ view, sort: sort.col, direction: sort.dir });
     if (filters.source) params.set("source", filters.source);
     if (filters.owner) params.set("owner", filters.owner);
@@ -239,29 +260,70 @@ export default function LeadsTable({
       if (to) params.set(`${key}_to`, to.toISOString());
     }
     if (term) params.set("search", term);
-    const load = (extra) => apiRequest(`/leads/page?${new URLSearchParams([...params, ...Object.entries(extra)])}`);
+    return apiRequest(`/leads/page?${new URLSearchParams([...params, ...Object.entries(extra)])}`);
+  };
+
+  useEffect(() => {
+    if (kanban) return undefined;
     let current = true;
     setLoading(true);
     // a failed load shows the error with Try again, not the previous list's rows or an empty-list message
-    const failed = (err) => current && (setError(err.message), setLoading(false), kanban ? setBoard(null) : setResult(null));
-    if (kanban) {
-      const shown = columns.filter((c) => !c.excluded);
-      Promise.all(shown.map((c) => load({ stage: c.stage, offset: 0, limit: BOARD_CARDS })))
-        .then((pages) => current && (setBoard(Object.fromEntries(shown.map((c, i) => [c.stage, pages[i]]))), setError(""), setLoading(false)))
-        .catch(failed);
-    } else {
-      load({ ...(stage || filters.stage ? { stage: stage || filters.stage } : {}), offset: page * size, limit: size })
-        .then((r) => current && (setResult(r), setError(""), setLoading(false)))
-        .catch(failed);
-    }
+    load({ ...(stage || filters.stage ? { stage: stage || filters.stage } : {}), offset: page * size, limit: size })
+      .then((r) => current && (setResult(r), setError(""), setLoading(false)))
+      .catch((err) => current && (setError(err.message), setLoading(false), setResult(null)));
     return () => {
       current = false;
     };
   }, [kanban, view, stage, filterKey, term, sort, page, size, refresh, again]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const loaded = kanban ? board : result;
+  // Kanban: one request per shown column, for that column's page. A new board query (list view, filters, search, sort,
+  // cards per page) loads every column from its first page; Previous / Next loads only that column; a saved stage
+  // change (refresh) or Try again reloads every column at its page. Only the latest request of a column is shown.
+  const boardKey = boardQueryKey({ view, stage: stage || filters.stage, filters, search: term, sort, size: cardSize });
+  const pagesNow = boardPages(colPages, boardKey);
+  const shownColumns = columns.filter((c) => !c.excluded);
+  useEffect(() => {
+    if (!kanban) {
+      loadedBoard.current = { key: null, reload: null, pages: {} };
+      return;
+    }
+    const reload = `${refresh}|${again}`;
+    const last = loadedBoard.current;
+    const newQuery = last.key !== boardKey;
+    const everything = newQuery || last.reload !== reload;
+    const todo = shownColumns.filter((c) => everything || (last.pages[c.stage] || 0) !== (pagesNow[c.stage] || 0));
+    loadedBoard.current = { key: boardKey, reload, pages: pagesNow };
+    if (newQuery) {
+      requests.current.forgetAll(); // answers to the previous query are dropped
+      setBoard(null);
+    }
+    todo.forEach(({ stage: column }) => {
+      const at = pagesNow[column] || 0;
+      const id = requests.current.start(column);
+      setBusyCols((b) => ({ ...b, [column]: true }));
+      load({ stage: column, offset: at * cardSize, limit: cardSize })
+        .then((r) => {
+          if (!requests.current.isLatest(column, id)) return;
+          const fixed = clampPage(at, r.total, cardSize);
+          if (fixed !== at) {
+            // fewer cards than before (a stage change moved some out): show the column's last page instead
+            setColPages((state) => withColumnPage(state, boardKey, column, fixed));
+            return;
+          }
+          setBoard((b) => ({ ...(b || {}), [column]: { ...r, page: at } }));
+          setError("");
+        })
+        .catch((err) => requests.current.isLatest(column, id) && setError(err.message))
+        .finally(() => requests.current.isLatest(column, id) && setBusyCols((b) => ({ ...b, [column]: false })));
+    });
+  }, [kanban, boardKey, JSON.stringify(pagesNow), refresh, again]); // eslint-disable-line react-hooks/exhaustive-deps
+  const goToColumnPage = (column, at) => setColPages((state) => withColumnPage(state, boardKey, column, at));
+  const boardBusy = shownColumns.some((c) => busyCols[c.stage]);
+  const boardLoaded = !!board && shownColumns.every((c) => board[c.stage]);
+
+  const loaded = kanban ? boardLoaded : result;
   const total = kanban
-    ? columns.reduce((sum, c) => sum + (c.excluded ? 0 : board?.[c.stage]?.total || 0), 0)
+    ? shownColumns.reduce((sum, c) => sum + (board?.[c.stage]?.total || 0), 0)
     : result?.total ?? 0;
   const pages = Math.max(1, Math.ceil(total / size));
   // fewer leads than before (a delete, a transfer, another page size): a page past the end moves back to the last one
@@ -457,13 +519,62 @@ export default function LeadsTable({
             <span>
               <b>The leads couldn&apos;t be loaded.</b> {error}
             </span>
-            <button type="button" className="sf-button small" onClick={() => setAgain((n) => n + 1)} disabled={loading}>
-              {loading ? "Trying…" : "Try again"}
+            <button type="button" className="sf-button small" onClick={() => setAgain((n) => n + 1)} disabled={kanban ? boardBusy : loading}>
+              {(kanban ? boardBusy : loading) ? "Trying…" : "Try again"}
             </button>
           </div>
         )}
+        {kanban && (
+          // the List page's filters, as buttons (the board has no column headers), with the sort and cards per column
+          <div className="board-bar" role="group" aria-label="Kanban filters, sorting and cards per column">
+            <div className="board-filters">
+              <span className="board-bar-label">Filter</span>
+              {defs.map((def) => (
+                <FilterButton key={def.key} def={def} values={filters} onChange={onFilter} />
+              ))}
+              {chips.length > 0 && (
+                <button type="button" className="link board-clear" onClick={() => onFilter({})}>
+                  Clear filters
+                </button>
+              )}
+            </div>
+            <div className="board-options">
+              {/* the field only: each starts in its default order (dates newest first, text A–Z); the summary under
+                  the page title says the order in use */}
+              <label className="board-select">
+                <span>Sort by</span>
+                <select value={sort.col} onChange={(e) => setSort({ col: e.target.value, dir: defaultSortDirection(e.target.value) })}>
+                  {COLUMNS.map(([label, col]) => (
+                    <option key={col} value={col}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="board-select">
+                <span>Cards per column</span>
+                <select value={cardSize} onChange={(e) => setCardSize(Number(e.target.value))}>
+                  {PAGE_SIZES.map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          </div>
+        )}
         {kanban ? (
-          <LeadsKanban columns={columns} board={board} user={user} setModal={setModal} />
+          <LeadsKanban
+            columns={columns}
+            board={board}
+            user={user}
+            setModal={setModal}
+            size={cardSize}
+            pages={pagesNow}
+            busy={busyCols}
+            onPage={goToColumnPage}
+          />
         ) : (
           <>
             <div

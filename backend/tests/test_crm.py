@@ -1,4 +1,4 @@
-from conftest import login_as
+from conftest import finish_stage_tasks, login_as
 """Tests for the full CRM flow. Run from the backend folder:  pytest -v"""
 import itertools
 from datetime import datetime, timedelta
@@ -164,11 +164,13 @@ def test_convert_into_existing_account(client):
 
 def test_opportunity_proposal_won(client):
     oid = convert(client, new_lead(client)["id"], expected_value=180000)["opportunity"]["id"]
+    finish_stage_tasks(client, oid)  # each stage's task is done before the deal moves on
     prop = client.put(f"/api/opportunities/{oid}/stage", json={"task": TASK, "stage": "Proposal", "completed_stages": ["Discovery"], "note": "Synthetic test note"}).json()
     # the close-date reminder stays open across Opportunity -> Proposal
     assert sorted(t["title"] for t in open_tasks(prop)) == ["Close date coming up - Bright Future Coaching - Opportunity",
                                                             TASK["title"]]
     assert prop["probability"] == 75
+    finish_stage_tasks(client, oid)
     won = client.post(f"/api/opportunities/{oid}/won", json={"task": TASK, "completed_stages": ["Discovery", "Proposal"], "note": "Synthetic test note"}).json()
     assert won["stage"] == "Won" and won["final_value"] == 180000 and won["closed_at"] and won["probability"] == 100
     assert [t["title"] for t in open_tasks(won)] == [TASK["title"]]  # only the post-sale task stays open
@@ -178,6 +180,7 @@ def test_opportunity_proposal_won(client):
 
 def test_won_needs_a_value(client):
     oid = convert(client, new_lead(client)["id"])["opportunity"]["id"]
+    finish_stage_tasks(client, oid)
     assert client.post(f"/api/opportunities/{oid}/won", json={"task": TASK, "completed_stages": ["Discovery", "Proposal"], "note": "Synthetic test note"}).status_code == 400
     assert client.post(f"/api/opportunities/{oid}/won", json={"task": TASK, "completed_stages": ["Discovery", "Proposal"], "final_value": 5000, "note": "Synthetic test note"}).json()["final_value"] == 5000
 
@@ -236,6 +239,7 @@ def test_home_page(client):
     lost = new_lead(client, name="B")
     client.post(f"/api/leads/{lost['id']}/lost", json={"lost_reason": "Price", "lost_notes": "Synthetic test note"})
     won = convert(client, new_lead(client, name="C", company="Won Co")["id"], expected_value=100000)["opportunity"]["id"]
+    finish_stage_tasks(client, won)
     client.post(f"/api/opportunities/{won}/won", json={"task": TASK, "completed_stages": ["Discovery", "Proposal"], "final_value": 90000, "note": "Synthetic test note"})
     today = datetime.now().date().isoformat()
     convert(client, new_lead(client, name="D", company="Open Co")["id"], expected_value=40000, expected_close_date=today)

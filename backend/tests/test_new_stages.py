@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import get_args
 
 from app import constants, schemas
+from conftest import finish_stage_tasks
 
 TASK = {"title": "Synthetic follow-up task", "due_date": "2030-01-15T10:00:00"}
 NOTE = "Synthetic stage note"
@@ -136,6 +137,7 @@ def opportunity(client):
         "task": TASK, "note": NOTE, "expected_value": 1000, "completed_stages": ["Nurturing", "Demo"],
         "opportunity_name": f"Stage deal {next(DEALS)}"})
     assert res.status_code == 200, res.text
+    finish_stage_tasks(client, res.json()["opportunity"]["id"])  # its first task is done, so it can move on
     return res.json()["opportunity"]
 
 
@@ -159,8 +161,10 @@ def test_discovery_records_needs_budget_decision_maker_and_timeline(client):
     # editable afterwards with the deal
     edited = client.put(f"/api/opportunities/{opp['id']}", json={"discovery_budget": "$55k"}).json()
     assert edited["discovery_budget"] == "$55k"
+    finish_stage_tasks(client, opp["id"])
     proposal = stage("Proposal")
     assert proposal.status_code == 200 and proposal.json()["probability"] == 75
+    finish_stage_tasks(client, opp["id"])
     won = client.post(f"/api/opportunities/{opp['id']}/won", json={"task": TASK, "note": NOTE})
     assert won.status_code == 200, won.text
     assert to_stages(client, "opportunities", opp["id"]) == ["Opportunity", "Discovery", "Proposal", "Won"]

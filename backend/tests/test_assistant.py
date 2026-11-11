@@ -4,7 +4,7 @@ import json
 import pytest
 
 from app import assistant
-from conftest import login_as
+from conftest import finish_stage_tasks, login_as
 
 TASK = {"title": "Synthetic follow-up task", "due_date": "2030-01-15T10:00:00"}  # every stage change needs one
 
@@ -69,6 +69,7 @@ def test_won_waits_for_confirm(client, ai):
     lead = client.post("/api/leads", json={"last_name": "Iyer", "company": "Sunrise"}).json()
     opp = client.post(f"/api/leads/{lead['id']}/convert",
                       json={"task": TASK, "expected_value": 25000, "completed_stages": ["New", "Nurturing", "Demo"], "note": "Synthetic test note"}).json()["opportunity"]
+    finish_stage_tasks(client, opp["id"])  # its first task is done (an open one would hold up Won)
     script += [[call("mark_opportunity_won", opportunity_id=opp["id"], final_amount=24000,
                      completed_stages=["Discovery", "Proposal"], note="Synthetic test: contract signed",
                      task_title="Synthetic handover", task_due_date="2030-01-20T10:00")]]

@@ -1,10 +1,14 @@
-// Attachments card on the opportunity page: upload PDF / Word (.docx) / JPG / PNG files, open, download, delete.
+// Attachments card on the opportunity page: upload PDF / Word (.docx) / PowerPoint (.pptx) / Excel (.xlsx) / JPG / PNG
+// files, open, download, delete. Files can be added while the deal is open and once it is Won; deleted only while open.
 // Files are fetched with the login header and shown from a temporary blob: address (no file links with tokens).
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import {
   ATTACHMENT_EXTENSIONS,
+  ATTACHMENT_LEGACY_TEXT,
   ATTACHMENT_STAGES,
+  ATTACHMENT_TYPES_TEXT,
+  ATTACHMENT_UPLOAD_STAGES,
   PREVIEW_TYPES,
   STAGE_FILES_MAX,
   attachmentProblem,
@@ -22,9 +26,13 @@ const afterName = (r) =>
 const KIND = {
   "application/pdf": "PDF",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "Word",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation": "PowerPoint",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "Excel",
   "image/jpeg": "JPEG",
   "image/png": "PNG",
 };
+// "Add Files" in the opportunity's Activity tab opens this card's file chooser (same click, so the browser allows it)
+export const PICK_ATTACHMENTS = "salestrack:pick-attachments";
 
 // A preview tab keeps its blob: address until the tab is closed or goes to another page (checked every few
 // seconds), so reloading the preview keeps working. Everything left is freed when the app itself is closed.
@@ -60,9 +68,23 @@ export default function OpportunityAttachments({ opportunity, user, canEdit }) {
   const input = useRef(null);
 
   const id = opportunity.id;
-  const canUpload = canEdit && ATTACHMENT_STAGES.includes(opportunity.stage);
+  const won = opportunity.stage === "Won";
+  const canUpload = canEdit && ATTACHMENT_UPLOAD_STAGES.includes(opportunity.stage); // open, or Won
+  // deleting stays limited to open deals (closed records keep their files)
   const canDelete = (file) =>
-    canUpload && (file.uploaded_by_id === user?.id || ["Manager", "Admin"].includes(user?.role));
+    canEdit &&
+    ATTACHMENT_STAGES.includes(opportunity.stage) &&
+    (file.uploaded_by_id === user?.id || ["Manager", "Admin"].includes(user?.role));
+  const card = useRef(null);
+  useEffect(() => {
+    if (!canUpload) return undefined;
+    const pick = () => {
+      card.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+      input.current?.click();
+    };
+    window.addEventListener(PICK_ATTACHMENTS, pick);
+    return () => window.removeEventListener(PICK_ATTACHMENTS, pick);
+  }, [canUpload]);
 
   const load = useCallback(() => {
     setLoadError("");
@@ -132,7 +154,7 @@ export default function OpportunityAttachments({ opportunity, user, canEdit }) {
     }
   };
 
-  // PDF and images open in a new tab; Word files are downloaded (the computer opens them with Word).
+  // PDF and images open in a new tab; Word, PowerPoint and Excel files are downloaded (the computer opens them).
   const open = async (file) => {
     if (!PREVIEW_TYPES.includes(file.content_type)) return save(file);
     say("");
@@ -173,10 +195,10 @@ export default function OpportunityAttachments({ opportunity, user, canEdit }) {
     }
   };
 
-  const closed = !ATTACHMENT_STAGES.includes(opportunity.stage);
+  const closed = !ATTACHMENT_UPLOAD_STAGES.includes(opportunity.stage); // Lost
   return (
     <Card title={`Attachments (${files ? files.length : 0})`} icon="note" className="attachments-card">
-      <div className="attachments">
+      <div className="attachments" ref={card}>
         {canUpload ? (
           <div
             className={`dropzone attach-drop ${dragging ? "dragging" : ""}`}
@@ -200,7 +222,10 @@ export default function OpportunityAttachments({ opportunity, user, canEdit }) {
             >
               {uploading ? "Uploading…" : "Upload Files"}
             </button>
-            <span className="muted">or drop files here. PDF, Word (.docx), JPG or PNG • 20 MB per file</span>
+            <span className="muted">
+              or drop files here. {ATTACHMENT_TYPES_TEXT} • 20 MB per file. {ATTACHMENT_LEGACY_TEXT}
+              {won && " Files added now are labelled Won and can't be deleted later."}
+            </span>
             <input
               ref={input}
               type="file"
@@ -331,9 +356,9 @@ export default function OpportunityAttachments({ opportunity, user, canEdit }) {
   );
 }
 
-// Files chosen in the Change Stage popup (Opportunity / Proposal). Nothing is uploaded here: the popup sends them
-// with the stage change when it is saved. PDF and images can be checked first in a new tab, Word files downloaded,
-// straight from this computer.
+// Files chosen in the Change Stage popup (Opportunity / Discovery / Proposal) and the Mark as Won popup. Nothing is
+// uploaded here: the popup sends them with the stage change when it is saved (all or nothing). PDF and images can be
+// checked first in a new tab, Word, PowerPoint and Excel files downloaded, straight from this computer.
 export function StageFiles({ files, setFiles, stage, saving }) {
   const [problems, setProblems] = useState([]);
   const [dragging, setDragging] = useState(false);
@@ -395,7 +420,7 @@ export function StageFiles({ files, setFiles, stage, saving }) {
           Add Files
         </button>
         <span className="muted">
-          or drop files here. PDF, Word (.docx), JPG or PNG • 20 MB per file • up to {STAGE_FILES_MAX} files
+          or drop files here. {ATTACHMENT_TYPES_TEXT} • 20 MB per file • up to {STAGE_FILES_MAX} files. {ATTACHMENT_LEGACY_TEXT}
         </span>
         <input
           ref={input}

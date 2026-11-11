@@ -8,7 +8,7 @@ from app import mailer, scheduler
 from app.database import get_db
 from app.main import app
 from app.models import Task
-from conftest import login_as
+from conftest import finish_stage_tasks, login_as
 
 TASK = {"title": "Synthetic follow-up task", "due_date": "2030-01-15T10:00:00"}  # every stage change needs one
 
@@ -154,7 +154,9 @@ def test_every_step_sends_one_notification_and_email(client, outbox):
     assert client.put(f"/api/leads/{lid}/stage", json={"task": TASK, "stage": "Nurturing", "completed_stages": ["New"], "note": "Synthetic test note"}).status_code == 200
     assert client.put(f"/api/leads/{lid}/stage", json={"task": TASK, "completed_stages": ["New", "Nurturing"], "stage": "Demo", "demo_date": demo, "note": "Synthetic test note"}).status_code == 200
     opp = client.post(f"/api/leads/{lid}/convert", json={"task": TASK, "completed_stages": ["New", "Nurturing", "Demo"], "expected_value": 25000, "note": "Synthetic test note"}).json()["opportunity"]
+    finish_stage_tasks(client, opp["id"])  # each stage's task is done before the deal moves on
     assert client.put(f"/api/opportunities/{opp['id']}/stage", json={"task": TASK, "stage": "Proposal", "completed_stages": ["Discovery"], "note": "Synthetic test note"}).status_code == 200
+    finish_stage_tasks(client, opp["id"])
     assert client.post(f"/api/opportunities/{opp['id']}/won", json={"task": TASK, "completed_stages": ["Discovery", "Proposal"], "notify_customer": False, "note": "Synthetic test note"}).status_code == 200
 
     subjects = [m["subject"].removeprefix("[SalesTrack] ") for m in outbox]

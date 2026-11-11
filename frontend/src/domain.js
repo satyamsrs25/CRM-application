@@ -218,12 +218,33 @@ export function stageTaskPayload(values) {
   };
 }
 
+// An opportunity moves forward (to a later stage, or Won) only when its current stage's tasks are done; going back
+// and Mark as Lost are not limited. The backend checks the same rule (services.require_stage_tasks_done) and says which
+// tasks are open. Date reminders (the close-date reminder, is_date_reminder from the API) are not stage work.
+export const opportunityMovesForward = (from, to) =>
+  OPPORTUNITY_FLOW.includes(from) && (to === "Won" || OPPORTUNITY_FLOW.indexOf(to) > OPPORTUNITY_FLOW.indexOf(from));
+export const unfinishedStageTasks = (tasks, opportunity) =>
+  (tasks || [])
+    .filter(
+      (t) =>
+        t.relatedType === "opportunities" &&
+        String(t.relatedId) === String(opportunity?.id) &&
+        !t.completed &&
+        !t.is_date_reminder,
+    )
+    .sort((a, b) => String(a.due_date).localeCompare(String(b.due_date)));
+
 // Opportunity attachments. The backend checks the same rules again, and the real file content.
 export const ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024; // shown as "20 MB per file"
-export const ATTACHMENT_EXTENSIONS = [".pdf", ".docx", ".jpg", ".jpeg", ".png"];
-export const ATTACHMENT_STAGES = OPPORTUNITY_OPEN_STAGES; // files can't be added or deleted after Won / Lost
+export const ATTACHMENT_EXTENSIONS = [".pdf", ".docx", ".pptx", ".xlsx", ".jpg", ".jpeg", ".png"];
+export const ATTACHMENT_STAGES = OPPORTUNITY_OPEN_STAGES; // files can't be deleted after Won / Lost
+// files can be added while the deal is open and once it is Won (e.g. the signed order); never after Lost
+export const ATTACHMENT_UPLOAD_STAGES = [...OPPORTUNITY_OPEN_STAGES, "Won"];
 export const WON_FILES_STAGE = "Proposal"; // files added in the Mark as Won popup close the Proposal stage
-export const PREVIEW_TYPES = ["application/pdf", "image/jpeg", "image/png"]; // open in a new tab; Word files download
+// open in a new tab; Word, PowerPoint and Excel files are downloaded (no preview)
+export const PREVIEW_TYPES = ["application/pdf", "image/jpeg", "image/png"];
+export const ATTACHMENT_TYPES_TEXT = "PDF, Word (.docx), PowerPoint (.pptx), Excel (.xlsx), JPG or PNG";
+export const ATTACHMENT_LEGACY_TEXT = "Older .ppt or .xls files: save them as .pptx or .xlsx first.";
 const extension = (name) => {
   const dot = name.lastIndexOf(".");
   return dot > 0 ? name.slice(dot).toLowerCase() : "";
@@ -233,17 +254,21 @@ export const attachmentType = (name) =>
   ({
     ".pdf": "application/pdf",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
     ".png": "image/png",
   })[extension(name || "")] || "";
+// old binary Office formats and what to save them as
+const LEGACY_OFFICE = { ".doc": ["Word", ".docx"], ".ppt": ["PowerPoint", ".pptx"], ".xls": ["Excel", ".xlsx"] };
 export function attachmentProblem(file) {
   const name = file.name || "";
   const ext = extension(name);
-  if (ext === ".doc")
-    return `${name}: old Word files (.doc) can't be uploaded. Save it as .docx first.`;
+  if (LEGACY_OFFICE[ext])
+    return `${name}: old ${LEGACY_OFFICE[ext][0]} files (${ext}) can't be uploaded. Save it as ${LEGACY_OFFICE[ext][1]} first.`;
   if (!ATTACHMENT_EXTENSIONS.includes(ext))
-    return `${name}: only PDF, Word (.docx), JPG and PNG files can be uploaded.`;
+    return `${name}: only PDF, Word (.docx), PowerPoint (.pptx), Excel (.xlsx), JPG and PNG files can be uploaded.`;
   if (!file.size) return `${name} is empty.`;
   if (file.size > ATTACHMENT_MAX_BYTES) return `${name} is larger than 20 MB.`;
   return "";

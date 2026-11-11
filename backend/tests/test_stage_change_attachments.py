@@ -119,7 +119,7 @@ def test_size_limit_is_20_mib_per_file(client):
 
 @pytest.mark.parametrize("name, data, status, message", [
     ("old.doc", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 600, 415, "old Word files (.doc)"),
-    ("notes.txt", b"hello", 415, "only PDF, Word (.docx), JPG and PNG"),
+    ("notes.txt", b"hello", 415, "only PDF, Word (.docx), PowerPoint (.pptx), Excel (.xlsx), JPG and PNG"),
     ("empty.pdf", b"", 422, "empty.pdf is empty"),
     ("report.pdf", png_file(), 415, "is really a PNG image"),
     ("fake.png", b"GIF89a" + b"\x00" * 40, 415, "isn't a real PNG image"),
@@ -276,13 +276,13 @@ def test_mark_as_won_saves_the_amount_note_files_and_email_together(client, sent
     assert (body["stage"], body["probability"], body["final_value"]) == ("Won", 100, 1500.5)
     assert body["closed_at"] and body["history"][-1]["note"] == "Contract signed"
 
-    # the files are labelled Proposal (the stage being closed), can be opened, but no file can be added or deleted
+    # the files are labelled Proposal (the stage being closed) and can be opened; a Won deal still takes new files
+    # (labelled Won, see test_office_attachments.py) but none can be deleted
     files = client.get(url(opp["id"])).json()
     assert sorted((f["filename"], f["stage"], f["content_type"]) for f in files) == sorted(
         (name, "Proposal", kind) for name, _, kind in FOUR_FILES)
     for f in files:
         assert client.get(url(opp["id"], f["id"], "/file")).content == next(d for n, d, _ in FOUR_FILES if n == f["filename"])
-    assert saved_status(client, opp["id"]) == 409
     assert client.delete(url(opp["id"], files[0]["id"])).status_code == 409
 
     # no email to the customer (the CRM never emails customers itself); the owner hears about Won as before
@@ -467,4 +467,6 @@ def test_closed_deals_cant_be_won_with_files(client, sent, close):
     res = win(client, opp["id"], [("late.pdf", pdf_file(), PDF)], completed_stages=["Discovery", "Proposal"], notify_customer="true")
     assert res.status_code == 400 and "closed" in res.json()["detail"]
     assert state(opp["id"]) == before and sent == []
-    assert saved_status(client, opp["id"]) == 409  # the Attachments card stays closed too
+    # the Attachments card takes new files on a Won deal (labelled Won), none on a Lost one
+    closed_as = client.get(f"/api/opportunities/{opp['id']}").json()["stage"]
+    assert saved_status(client, opp["id"]) == (201 if closed_as == "Won" else 409)
