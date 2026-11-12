@@ -20,6 +20,7 @@ const LEAD_VIEWS = {
   "All Open Leads": "all_open",
   "My Open Leads": "my_open",
   "All Leads": "all",
+  "My Leads": "my",
   "Converted Leads": "converted",
   "Lost Leads": "lost",
   "Unqualified Leads": "unqualified",
@@ -41,6 +42,7 @@ function views(collection, user) {
       ["All Open Leads", (r) => OPEN_LEAD.includes(r.stage)],
       ["My Open Leads", (r) => mine(r) && OPEN_LEAD.includes(r.stage)],
       ["All Leads", () => true],
+      ["My Leads", mine],
       ["Converted Leads", (r) => r.stage === "Converted"],
       ["Lost Leads", (r) => r.stage === "Lost"],
       ["Unqualified Leads", (r) => r.stage === "Unqualified"],
@@ -257,6 +259,9 @@ export default function ListView({ collection, data, user, openNew, setModal, qu
   const stageFilter = params.get("stage");
   const allViews = views(collection, user);
   const listParam = params.get("list");
+  // opened from a Home pill: only the records with this activity, created in the last N days (Leads, Accounts, Contacts)
+  const activity = ["upcoming", "past", "none"].includes(params.get("activity")) ? params.get("activity") : null;
+  const days = activity && Number(params.get("days")) > 0 ? Number(params.get("days")) : null;
   const [viewName, setViewName] = useState(
     stageFilter
       ? `${stageFilter} ${LABEL[collection]}`
@@ -321,7 +326,9 @@ export default function ListView({ collection, data, user, openNew, setModal, qu
 
   const rows = useMemo(() => {
     const term = search.trim().toLowerCase();
-    const list = (collection === "leads" ? data.leads : applyFilters(data[collection].filter(filter), defs, active)).filter((r) => !term || cols.some(([, get]) => String(get(r)).toLowerCase().includes(term)));
+    const since = days ? Date.now() - days * 864e5 : null;
+    const fromHome = (r) => (!activity || r.activity === activity) && (!since || new Date(r.created_at).getTime() >= since);
+    const list = (collection === "leads" ? data.leads : applyFilters(data[collection].filter(filter), defs, active).filter(fromHome)).filter((r) => !term || cols.some(([, get]) => String(get(r)).toLowerCase().includes(term)));
     const get = cols[sort.col][1];
     return [...list].sort((a, b) => {
       const x = get(a), y = get(b);
@@ -502,6 +509,8 @@ export default function ListView({ collection, data, user, openNew, setModal, qu
       {collection === "leads" ? (
         <LeadsTable
           view={LEAD_VIEWS[viewName] || "all"}
+          activity={activity}
+          days={days}
           viewName={viewName}
           stage={fixedStage}
           filters={active}

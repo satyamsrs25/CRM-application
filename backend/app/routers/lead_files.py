@@ -22,7 +22,8 @@ from app.database import get_db
 from app.models import Account, ActivityLog, Contact, Lead, StageHistory, User
 from app.security import acting_user, can_view, require, team_ids, visible
 from app.serializers import lead_out
-from app.services import email_matches_website, is_personal_email, log_activity, notify, notify_data_owners, website_host
+from app.services import (activity_condition, email_matches_website, is_personal_email, log_activity, notify,
+                          notify_data_owners, now, website_host)
 
 router = APIRouter(prefix="/api/leads", tags=["Leads: upload and download"])
 
@@ -421,6 +422,7 @@ LIST_VIEWS = {
     "all_open": lambda q, me: q.where(Lead.stage.in_(LEAD_OPEN_STAGES)),
     "my_open": lambda q, me: q.where(Lead.stage.in_(LEAD_OPEN_STAGES), Lead.owner_id == me.id),
     "all": lambda q, me: q,
+    "my": lambda q, me: q.where(Lead.owner_id == me.id),
     "converted": lambda q, me: q.where(Lead.stage == "Converted"),
     "lost": lambda q, me: q.where(Lead.stage == "Lost"),
     "unqualified": lambda q, me: q.where(Lead.stage == "Unqualified"),
@@ -458,6 +460,8 @@ def leads_page(
     modified_from: datetime | None = Query(None, description="Last modified on or after (ISO date/time)"),
     modified_to: datetime | None = Query(None, description="Last modified before (ISO date/time)"),
     search: str | None = Query(None, description="Name, company, title, email, phone or location"),
+    activity: str | None = Query(None, description="Home's pills: upcoming, past or none (services.activity_condition)"),
+    created_days: int | None = Query(None, ge=1, le=3650, description="Created in the last N days (Home: 30)"),
     sort: str = Query("created", description=", ".join(SORTS)),
     direction: str = Query("desc", pattern="^(asc|desc)$"),
     offset: int = Query(0, ge=0),
@@ -483,6 +487,10 @@ def leads_page(
             query = query.where(Lead.owner_id == int(owner))
         else:
             raise HTTPException(status_code=400, detail="Unknown owner")
+    if activity:
+        query = query.where(activity_condition(Lead, activity))
+    if created_days:
+        query = query.where(Lead.created_at >= now() - timedelta(days=created_days))
     for column, start, end in ((Lead.created_at, created_from, created_to), (Lead.updated_at, modified_from, modified_to)):
         if start:
             query = query.where(column >= as_local(start))

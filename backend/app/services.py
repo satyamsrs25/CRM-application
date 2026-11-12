@@ -15,7 +15,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
-from sqlalchemy import not_, or_, select, update
+from sqlalchemy import and_, not_, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.constants import (
@@ -27,12 +27,55 @@ from app.constants import (
     WORKDAY_START_HOUR,
 )
 from app import mailer
-from app.models import ActivityLog, Lead, Notification, StageHistory, Task, User
+from app.models import Account, ActivityLog, Contact, Lead, Notification, Opportunity, StageHistory, Task, User
 from app.security import owner_for_new
 
 
 def now() -> datetime:
     return datetime.now().replace(microsecond=0)
+
+
+# ---------- Home's "Upcoming / Past / No Activity" (the same rule for the Home cards and the lists they open) ----------
+# Upcoming = has an open task due now or later; Past = has tasks, but none open and upcoming; No Activity = no tasks.
+# A lead's own tasks count; an account's and a contact's activity is the tasks of their opportunities.
+ACTIVITIES = ("upcoming", "past", "none")
+ACTIVITY_DAYS = {"leads": 30, "contacts": 90}  # Home counts leads and contacts created in the last N days
+
+
+def _tasks_of(model):
+    """The tasks that count as this record's activity, as a query to test with EXISTS."""
+    if model is Lead:
+        return select(Task.id).where(Task.lead_id == Lead.id)
+    link = Opportunity.account_id == Account.id if model is Account else Opportunity.primary_contact_id == Contact.id
+    return select(Task.id).join(Opportunity, Task.opportunity_id == Opportunity.id).where(link)
+
+
+def activity_condition(model, activity: str):
+    """WHERE condition for leads, accounts or contacts with this activity ("upcoming", "past" or "none")."""
+    tasks = _tasks_of(model)
+    has = tasks.exists()
+    upcoming = tasks.where(Task.status == "Open", Task.due_date >= now()).exists()
+    if activity == "upcoming":
+        return upcoming
+    if activity == "past":
+        return and_(has, not_(upcoming))
+    if activity == "none":
+        return not_(has)
+    raise HTTPException(status_code=400, detail=f"Unknown activity: use {', '.join(ACTIVITIES)}")
+
+
+def activity_of(db: Session, model, ids) -> dict[int, str]:
+    """{record id: "upcoming" | "past" | "none"} for these records, in two queries (lists show it per row)."""
+    ids = list(ids)
+    if not ids:
+        return {}
+    found = {}
+    for activity in ("upcoming", "past"):
+        for chunk in range(0, len(ids), 5000):
+            part = ids[chunk:chunk + 5000]
+            found.update({i: activity for i in db.scalars(
+                select(model.id).where(model.id.in_(part), activity_condition(model, activity)))})
+    return {i: found.get(i, "none") for i in ids}
 
 
 # ---------- demo dates: the business time zone ----------

@@ -197,6 +197,8 @@ function BulkDialog({ action, count, users, me, onClose, onDone }) {
 
 export default function LeadsTable({
   view,
+  activity = null, // Home's pills: "upcoming" | "past" | "none", with days = created in the last N days
+  days = null,
   viewName = "",
   stage,
   filters = {},
@@ -251,6 +253,8 @@ export default function LeadsTable({
   // GET /leads/page with the list view, filters, search and sort (the List page and every Kanban column)
   const load = (extra) => {
     const params = new URLSearchParams({ view, sort: sort.col, direction: sort.dir });
+    if (activity) params.set("activity", activity);
+    if (days) params.set("created_days", days);
     if (filters.source) params.set("source", filters.source);
     if (filters.owner) params.set("owner", filters.owner);
     for (const key of ["created", "modified"]) {
