@@ -10,7 +10,7 @@ from app.database import get_db
 from app.security import acting_user, can_view, owner_for_new, require_view, visible
 from app.models import Account, Contact, Email, Opportunity, Task
 from app.serializers import account_detail, account_out, contact_out
-from app.services import get_or_404, resolve_user_id
+from app.services import activity_of, get_or_404, resolve_user_id
 
 router = APIRouter(prefix="/api", tags=["Accounts and contacts"])
 
@@ -34,11 +34,13 @@ def list_accounts(
         query = query.where(Account.name.ilike(f"%{search.strip()}%"))
     accounts = db.scalars(query.options(joinedload(Account.owner)).order_by(Account.name)).all()
     latest = last_activity(db, [a.id for a in accounts])
+    activity = activity_of(db, Account, [a.id for a in accounts])
     out = []
     for a in accounts:
         row = account_out(a)
         stamps = [s for s in (a.updated_at, a.created_at, latest.get(a.id)) if s]
-        out.append(row.model_copy(update={"last_activity_at": max(stamps) if stamps else None}))
+        out.append(row.model_copy(update={"last_activity_at": max(stamps) if stamps else None,
+                                          "activity": activity.get(a.id)}))
     return out
 
 
@@ -104,7 +106,9 @@ def list_contacts(
         like = f"%{search.strip()}%"
         query = query.where(or_(Contact.full_name.ilike(like), Contact.email.ilike(like)))
     query = query.options(joinedload(Contact.account))  # the account name in the same query, not one query per contact
-    return [contact_out(c) for c in db.scalars(query.order_by(Contact.last_name, Contact.first_name)).all()]
+    contacts = db.scalars(query.order_by(Contact.last_name, Contact.first_name)).all()
+    activity = activity_of(db, Contact, [c.id for c in contacts])  # for Home's Grow Relationships pills
+    return [contact_out(c).model_copy(update={"activity": activity.get(c.id)}) for c in contacts]
 
 
 @router.post("/contacts", response_model=schemas.ContactOut, status_code=status.HTTP_201_CREATED)

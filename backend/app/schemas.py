@@ -587,6 +587,7 @@ class AccountOut(Out):
     created_at: datetime | None
     updated_at: datetime | None = None
     last_activity_at: datetime | None = None  # the latest change on the account, its contacts, deals, tasks or emails
+    activity: str | None = None  # lists: "upcoming" | "past" | "none" (Home's Plan Accounts pills, services.activity_of)
 
     @field_serializer("annual_revenue")
     def _revenue(self, value):
@@ -655,6 +656,7 @@ class ContactOut(Out):
     linkedin_url: str | None = None
     account_id: int
     account_name: str | None = None
+    activity: str | None = None  # lists: "upcoming" | "past" | "none" (Home's Grow Relationships pills)
     owner_id: int
     created_at: datetime | None
     updated_at: datetime | None = None

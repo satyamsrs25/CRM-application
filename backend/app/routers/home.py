@@ -9,14 +9,14 @@ from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
 from app.constants import LEAD_OPEN_STAGES, LEAD_STAGES, OPPORTUNITY_OPEN_STAGES, OPPORTUNITY_STAGES
 from app.database import get_db
 from app.security import acting_user, team_ids
 from app.models import Account, Contact, Lead, Opportunity, Task, User
 from app.serializers import task_out
-from app.services import BUSINESS_TIMEZONE, demo_instant, now
+from app.services import ACTIVITIES, ACTIVITY_DAYS, BUSINESS_TIMEZONE, activity_condition, demo_instant, now
 
 router = APIRouter(prefix="/api", tags=["Home"])
 
@@ -33,20 +33,6 @@ def this_quarter() -> tuple[date, date]:
     start = date(today.year, 3 * ((today.month - 1) // 3) + 1, 1)
     end = date(start.year + (start.month == 10), (start.month + 2) % 12 + 1, 1)
     return start, end
-
-
-def activity_split(task_lists: list[list[Task]]) -> dict:
-    """For each record: upcoming = has an open task due later; past = only past/finished tasks; none = no tasks."""
-    current = now()
-    split = {"upcoming_activity": 0, "past_activity": 0, "no_activity": 0}
-    for tasks in task_lists:
-        if any(t.status == "Open" and t.due_date >= current for t in tasks):
-            split["upcoming_activity"] += 1
-        elif tasks:
-            split["past_activity"] += 1
-        else:
-            split["no_activity"] += 1
-    return split
 
 
 @router.get("/home")
@@ -109,21 +95,16 @@ def home_page(owner_id: int | None = Query(None, description="Only this salesper
         key=lambda o: float(o.expected_value or 0), reverse=True,
     )[:5]
 
-    # related deals and their tasks are loaded in a few queries, not one per account (thousands of accounts)
-    accounts = db.scalars(owned(select(Account), Account)
-                          .options(selectinload(Account.opportunities).selectinload(Opportunity.tasks))).all()
-    contacts = db.scalars(owned(select(Contact), Contact).where(Contact.created_at >= now() - timedelta(days=90))).all()
-    opps_by_contact: dict[int, list[Task]] = {}
-    for opp in db.scalars(select(Opportunity).where(Opportunity.primary_contact_id.is_not(None))
-                          .options(selectinload(Opportunity.tasks))).all():
-        opps_by_contact.setdefault(opp.primary_contact_id, []).extend(opp.tasks)
-    # Build Pipeline: counted in the database (there can be 100,000s of uploaded leads)
-    recent_q = leads_q.where(Lead.created_at >= now() - timedelta(days=30))
-    has_task = select(Task.id).where(Task.lead_id == Lead.id).exists()
-    has_upcoming = select(Task.id).where(Task.lead_id == Lead.id, Task.status == "Open", Task.due_date >= now()).exists()
-    recent_total = count(recent_q)
-    recent_upcoming = count(recent_q.where(has_upcoming))
-    recent_with_tasks = count(recent_q.where(has_task))
+    # Plan Accounts, Grow Relationships, Build Pipeline: Upcoming / Past / No Activity, counted in the database with
+    # the same rule the lists use when a pill is clicked (services.activity_condition)
+    def activity_split(query, model) -> dict:
+        return {"total": count(query), **{f"{a}_activity" if a != "none" else "no_activity":
+                                          count(query.where(activity_condition(model, a))) for a in ACTIVITIES}}
+
+    accounts_split = activity_split(owned(select(Account), Account), Account)
+    contacts_split = activity_split(owned(select(Contact), Contact)
+                                    .where(Contact.created_at >= now() - timedelta(days=ACTIVITY_DAYS["contacts"])), Contact)
+    leads_split = activity_split(leads_q.where(Lead.created_at >= now() - timedelta(days=ACTIVITY_DAYS["leads"])), Lead)
 
     # Today's Events: demos booked for today in IST (demo times are IST; stored in server time)
     ist_today = datetime.now(BUSINESS_TIMEZONE).date()
@@ -189,14 +170,9 @@ def home_page(owner_id: int | None = Query(None, description="Only this salesper
                  "start_at": demo_instant(lead.demo_date)}
                 for lead in demos
             ],
-            "accounts": {"total": len(accounts), **activity_split([[t for o in a.opportunities for t in o.tasks] for a in accounts])},
-            "contacts": {"total": len(contacts), **activity_split([opps_by_contact.get(c.id, []) for c in contacts])},
-            "build_pipeline": {
-                "leads_last_30_days": recent_total,
-                "upcoming_activity": recent_upcoming,
-                "past_activity": recent_with_tasks - recent_upcoming,
-                "no_activity": recent_total - recent_with_tasks,
-            },
+            "accounts": accounts_split,
+            "contacts": contacts_split,
+            "build_pipeline": {"leads_last_30_days": leads_split.pop("total"), **leads_split},
             "recent_records": recent[:8],
         },
     }

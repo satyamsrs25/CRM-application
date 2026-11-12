@@ -35,8 +35,11 @@ function ViewButton({ href, children }) {
   );
 }
 
-// "Upcoming / Past / No Activity" ring used by the Accounts, Contacts and Leads cards
-function ActivityCard({ title, subtitle, stats, total, noun, href, button, listHref }) {
+// "Upcoming / Past / No Activity" ring used by the Accounts, Contacts and Leads cards. Each pill opens the list with
+// only those records: activity = upcoming | past | none, days = the card's "created in the last N days" (the backend's
+// services.activity_condition is the one rule for both the counts and the lists)
+function ActivityCard({ title, subtitle, stats, total, noun, href, button, listHref, days }) {
+  const pick = (activity) => `${listHref}&activity=${activity}${days ? `&days=${days}` : ""}`;
   return (
     <Card title={title} className="home-card" footer={<ViewButton href={href}>{button}</ViewButton>}>
       <p className="card-sub">{subtitle}</p>
@@ -54,9 +57,9 @@ function ActivityCard({ title, subtitle, stats, total, noun, href, button, listH
         </Ring>
         <Legend
           items={[
-            ["upcoming", `${stats.upcoming_activity} Upcoming Activity`, listHref],
-            ["past", `${stats.past_activity} Past Activity`, listHref],
-            ["none", `${stats.no_activity} No Activity`, listHref],
+            ["upcoming", `${stats.upcoming_activity} Upcoming Activity`, pick("upcoming")],
+            ["past", `${stats.past_activity} Past Activity`, pick("past")],
+            ["none", `${stats.no_activity} No Activity`, pick("none")],
           ]}
         />
       </div>
@@ -276,6 +279,7 @@ export default function SellerHome({ data, user, toggleTask, openTask, scope = "
           noun="Contacts"
           href="#/contacts"
           listHref={myList("contacts", "My Contacts", "All Contacts")}
+          days={90}
           button="View Contacts"
         />
         <ActivityCard
@@ -285,7 +289,8 @@ export default function SellerHome({ data, user, toggleTask, openTask, scope = "
           total={home.build_pipeline.leads_last_30_days}
           noun="Leads"
           href="#/leads"
-          listHref={myList("leads", "My Open Leads", "All Open Leads")}
+          listHref={myList("leads", "My Leads", "All Leads")}
+          days={30}
           button="View Leads"
         />
 
