@@ -1,13 +1,21 @@
-// Send Email (with attachments) from a lead, opportunity, contact or account, and the list of sent emails.
+// New Email from a lead, opportunity, contact or account, and the list of a record's emails.
+// The agreed workflow for individual emails: write the email here (or draft it with Help me write), review To, Cc,
+// Subject and Message, then "Open in Outlook" opens it in Outlook on the web (Microsoft 365) in a new tab. Attachments
+// are added and the email is sent from Outlook. The CRM itself sends nothing, saves nothing and changes no stage.
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import EmailDraftAssistant from "./EmailDraftAssistant";
-import { attachedSummary, dateTime, fileSize } from "./format";
+import { dateTime, fileSize } from "./format";
+import { addressProblem, draftForCopy, outlookHandoff } from "./outlookDraft";
+import { can } from "./permissions";
 import { Icon, ObjectIcon } from "./ui";
 
-const MAX_FILE = 10 * 1024 * 1024;
-const MAX_TOTAL = 25 * 1024 * 1024;
-const MAX_FILES = 10;
+// PRESERVED, intentionally disabled (CRM attachments of the individual email; see the preserved blocks below).
+// Restore these together with them:
+// import { attachedSummary } from "./format";
+// const MAX_FILE = 10 * 1024 * 1024;
+// const MAX_TOTAL = 25 * 1024 * 1024;
+// const MAX_FILES = 10;
 
 export const size = fileSize; // also used by the opportunity Attachments card
 
@@ -31,31 +39,48 @@ export function useEmails(field, id, version = 0) {
   return { emails, error, reload };
 }
 
-// "My Outlook": opens a new message in the user's own Outlook; the CRM only keeps a copy on the record.
-const composeUrl = (app, { to, cc, subject, body }) => {
-  const q = (params) =>
-    Object.entries(params)
-      .filter(([, v]) => v)
-      .map(([k, v]) => `${k}=${encodeURIComponent(v)}`)
-      .join("&");
-  return `https://outlook.office.com/mail/deeplink/compose?${q({ to, cc, subject, body })}`;
-};
-const APP_NAME = { outlook: "Outlook" };
+// PRESERVED, intentionally disabled: the old "My Outlook" link builder of the direct-send composer. Open in Outlook now
+// uses outlookDraft.js (the same Outlook on the web address, with each address list, line breaks and length checked).
+// const composeUrl = (app, { to, cc, subject, body }) => {
+//   const q = (params) =>
+//     Object.entries(params)
+//       .filter(([, v]) => v)
+//       .map(([k, v]) => `${k}=${encodeURIComponent(v)}`)
+//       .join("&");
+//   return `https://outlook.office.com/mail/deeplink/compose?${q({ to, cc, subject, body })}`;
+// };
+// const APP_NAME = { outlook: "Outlook" };
 
-export function EmailComposer({ target, user, onClose, onSent }) {
-  const [files, setFiles] = useState([]);
+// onSent is only used by the preserved direct-send path (App.jsx still passes it)
+export function EmailComposer({ target, user, onClose, onSent }) { // eslint-disable-line no-unused-vars
   const [sender, setSender] = useState(null);
-  // "crm": the app sends it from the CRM mailbox (SMTP). "mine": opens the user's own Gmail / Outlook.
-  const [via, setVia] = useState("crm");
-  const app = "outlook"; // "My email" always opens Outlook (company mail)
   useEffect(() => {
     api.emailSettings().then(setSender).catch(err => setSender({ ai_drafting_enabled: false, settings_error: err.message }));
   }, []);
   const [error, setError] = useState("");
-  const [sending, setSending] = useState(false);
+  // Nothing is sent from this window: Outlook sends the email. (The CRM sending state is in the preserved block below.)
+  const sending = false;
   const [aiBusy, setAiBusy] = useState(false);
   const [subject, setSubject] = useState(target.subject || "");
   const [message, setMessage] = useState(target.greeting || "");
+  // What happened with the last Open in Outlook: { kind: "opened" | "blocked" | "too-long", ... }; the draft stays here
+  const [handoff, setHandoff] = useState(null);
+  const [copied, setCopied] = useState("");
+  const canSend = can(user, "send_emails"); // the same permission the CRM needs to send or log an email
+  const ref = useRef(null);
+  const formRef = useRef(null);
+
+  /* PRESERVED, intentionally disabled: individual email sent by the CRM mailbox ("Send from: CRM mailbox / My Outlook")
+     with CRM attachments. The agreed workflow opens the draft in Outlook, where attachments are added and the email is
+     sent, so this composer no longer calls POST /api/emails. The backend endpoint and the mail services are unchanged
+     (campaigns, notifications and reminders use them). To restore: uncomment this block, the preserved submit handler
+     and the preserved JSX blocks below, remove "const sending = false", and point the form's onSubmit back to submit.
+
+  const [files, setFiles] = useState([]);
+  const [sending, setSending] = useState(false);
+  // "crm": the app sends it from the CRM mailbox (SMTP). "mine": opens the user's own Gmail / Outlook.
+  const [via, setVia] = useState("crm");
+  const app = "outlook"; // "My email" always opens Outlook (company mail)
   const fileInput = useRef(null);
   // Attachments: a compact "Attach files" button that opens the chooser / drop area; the chosen files stay listed
   // (with their count and sizes) whether it is open or closed
@@ -67,15 +92,6 @@ export function EmailComposer({ target, user, onClose, onSent }) {
     // the remove button goes away: keep the keyboard on the next file, or on Attach files
     requestAnimationFrame(() => (fileListRef.current?.querySelector("button") || attachButton.current)?.focus());
   };
-  const ref = useRef(null);
-  const formRef = useRef(null);
-
-  useEffect(() => {
-    ref.current?.querySelector("input[name=to]")?.focus();
-    const onKey = (e) => e.key === "Escape" && !sending && onClose();
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose, sending]);
 
   const addFiles = (list) => {
     setError("");
@@ -126,6 +142,70 @@ export function EmailComposer({ target, user, onClose, onSent }) {
       setSending(false);
     }
   };
+  end of the preserved direct-send code */
+
+  useEffect(() => {
+    ref.current?.querySelector("input[name=to]")?.focus();
+    const onKey = (e) => e.key === "Escape" && !sending && onClose();
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose, sending]);
+
+  // An edit makes the last Open in Outlook message out of date (the draft in Outlook is the earlier one)
+  const resetHandoff = () => {
+    setHandoff(null);
+    setCopied("");
+  };
+  useEffect(resetHandoff, [subject, message]);
+
+  const draftNow = () => ({
+    to: formRef.current?.elements.to?.value || "",
+    cc: formRef.current?.elements.cc?.value || "",
+    subject,
+    body: message,
+  });
+
+  // Opens the tab inside the click (so the browser allows it). Returns false when the browser blocked it.
+  const openTab = (url) => {
+    const tab = window.open(url, "_blank");
+    if (!tab) return false;
+    tab.opener = null; // Outlook's page gets no access back to the CRM
+    return true;
+  };
+
+  // Open in Outlook: checks the draft, then opens Outlook on the web with it. Never calls the CRM send endpoint, never
+  // marks anything sent or saves email history; the draft stays in this window.
+  const openInOutlook = (event) => {
+    event.preventDefault();
+    if (aiBusy) return;
+    setError("");
+    setCopied("");
+    if (!canSend) return setError("You don't have the Send emails permission. Ask your Admin or Manager.");
+    const draft = draftNow();
+    const problem = addressProblem(draft.to, "To", true) || addressProblem(draft.cc, "Cc");
+    if (problem) return setError(problem);
+    if (!draft.subject.trim()) return setError("Enter a subject.");
+    if (!draft.body.trim()) return setError("Enter a message.");
+    const plan = outlookHandoff(draft);
+    if (!plan.fits) return setHandoff({ kind: "too-long", plan, draft });
+    setHandoff(openTab(plan.url) ? { kind: "opened" } : { kind: "blocked", url: plan.url });
+  };
+
+  // When the draft is too long for a link: copy the message (or the whole draft), and open Outlook without it
+  const copyText = async (text, what) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(`${what} copied. Paste it into the Outlook message (Ctrl+V).`);
+    } catch {
+      const box = ref.current?.querySelector("#email-message");
+      box?.focus();
+      box?.select();
+      setCopied("Copying isn't allowed here. The message is selected: press Ctrl+C to copy it.");
+    }
+  };
+  const openWithoutMessage = () => {
+    if (!openTab(handoff.plan.partialUrl)) setHandoff({ ...handoff, blockedUrl: handoff.plan.partialUrl });
+  };
 
   return (
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && !sending && onClose()}>
@@ -136,7 +216,7 @@ export function EmailComposer({ target, user, onClose, onSent }) {
         <header className="modal-header">
           <h2 id="email-title">New Email</h2>
         </header>
-        <form ref={formRef} onSubmit={submit} autoComplete="off">
+        <form ref={formRef} onSubmit={openInOutlook} onInput={(e) => ["to", "cc"].includes(e.target.name) && resetHandoff()} autoComplete="off">
           <div className="modal-body">
             <div className="email-related">
               <ObjectIcon type={target.type} size={20} />
@@ -144,6 +224,8 @@ export function EmailComposer({ target, user, onClose, onSent }) {
                 Related to <b>{target.name}</b>
               </span>
             </div>
+            {/* PRESERVED, intentionally disabled: the "Send from" choice (CRM mailbox / My Outlook) and the CRM mailbox's
+                Reply-To field. Individual emails now always open in Outlook. Restore with the preserved code above.
             <fieldset className="send-from">
               <legend>Send from</legend>
               <label className={`send-option ${via === "crm" ? "on" : ""}`}>
@@ -174,6 +256,8 @@ export function EmailComposer({ target, user, onClose, onSent }) {
                 Opens {APP_NAME[app]} in a new tab. Add attachments there.
               </p>
             )}
+            end of the preserved "Send from" choice */}
+            <p className="field-hint send-note">Opens Outlook in a new tab. Add attachments there.</p>
             <label className="field">
               <span>
                 To <i>*</i>
@@ -198,6 +282,8 @@ export function EmailComposer({ target, user, onClose, onSent }) {
                 <EmailDraftAssistant target={target} settings={sender} user={user} subject={subject} message={message} sending={sending} recipients={() => formRef.current?.elements.to?.value || ""} onBusyChange={setAiBusy} onApply={draft => { setSubject(draft.subject); setMessage(draft.body); }} />
               </div>
             </div>
+            {/* PRESERVED, intentionally disabled: CRM attachments of the individual email (Attach files, the chooser and
+                drop area, the file input and the list of chosen files). Attachments are added in Outlook now.
             {via === "crm" && (
               <div
                 className="email-attach"
@@ -258,6 +344,60 @@ export function EmailComposer({ target, user, onClose, onSent }) {
                 )}
               </div>
             )}
+            end of the preserved CRM attachments */}
+            {handoff?.kind === "opened" && (
+              <p className="email-handoff done" role="status">
+                Outlook opened in a new tab with this draft. Add attachments and send it from Outlook. If Outlook asked you
+                to sign in and the draft isn&apos;t there, click Open in Outlook again. Your draft stays here until you close
+                this window.
+              </p>
+            )}
+            {handoff?.kind === "blocked" && (
+              <div className="email-handoff" role="alert">
+                <b>Your browser blocked the new tab.</b> Allow pop-ups for this site, or{" "}
+                <a href={handoff.url} target="_blank" rel="noopener noreferrer">
+                  open the draft in Outlook
+                </a>
+                . Your draft stays here.
+              </div>
+            )}
+            {handoff?.kind === "too-long" && (
+              <div className="email-handoff" role="alert">
+                <p>
+                  <b>This email is too long to open in Outlook in one step.</b> An Outlook link holds about{" "}
+                  {handoff.plan.limit.toLocaleString("en-US")} characters and this draft needs{" "}
+                  {handoff.plan.length.toLocaleString("en-US")}. Nothing has been cut, and your draft stays here.
+                </p>
+                <p>
+                  {handoff.plan.partialHasFields
+                    ? "Copy the message, open Outlook with To, Cc and Subject, then paste the message there."
+                    : "Copy the whole draft, open Outlook, then paste it there."}
+                </p>
+                <div className="email-handoff-actions">
+                  {handoff.plan.partialHasFields ? (
+                    <button type="button" className="sf-button small" onClick={() => copyText(handoff.draft.body, "Message")}>
+                      Copy message
+                    </button>
+                  ) : (
+                    <button type="button" className="sf-button small" onClick={() => copyText(draftForCopy(handoff.draft), "Draft")}>
+                      Copy draft
+                    </button>
+                  )}
+                  <button type="button" className="sf-button small" onClick={openWithoutMessage}>
+                    {handoff.plan.partialHasFields ? "Open Outlook without the message" : "Open Outlook"}
+                  </button>
+                </div>
+                {copied && <p role="status">{copied}</p>}
+                {handoff.blockedUrl && (
+                  <p>
+                    Your browser blocked the new tab.{" "}
+                    <a href={handoff.blockedUrl} target="_blank" rel="noopener noreferrer">
+                      Open Outlook
+                    </a>
+                  </p>
+                )}
+              </div>
+            )}
             {error && (
               <p className="form-error" role="alert">
                 {error}
@@ -266,10 +406,16 @@ export function EmailComposer({ target, user, onClose, onSent }) {
           </div>
           <div className="modal-footer">
             <button type="button" className="sf-button" onClick={onClose} disabled={sending}>
-              Cancel
+              {handoff?.kind === "opened" ? "Close" : "Cancel"}
             </button>
-            <button type="submit" className="sf-button brand" disabled={sending || aiBusy} aria-busy={sending}>
-              {sending ? "Sending…" : via === "mine" ? `Open in ${APP_NAME[app]}` : "Send"}
+            {/* the only action: nothing is sent from the CRM */}
+            <button
+              type="submit"
+              className="sf-button brand"
+              disabled={aiBusy || !canSend}
+              title={canSend ? "Open this draft in Outlook on the web in a new tab" : "You don't have the Send emails permission"}
+            >
+              Open in Outlook
             </button>
           </div>
         </form>
@@ -284,6 +430,8 @@ export function EmailItem({ email: initial }) {
   const [resending, setResending] = useState(false);
   const [resendError, setResendError] = useState("");
   useEffect(() => setEmail(initial), [initial]);
+  // An older entry saved when a draft was opened in Gmail / Outlook: the CRM never knew whether it was sent
+  const handoff = ["Gmail", "Outlook"].includes(email.status);
   // A failed email can be sent again (same text and attachments), e.g. after the mail server is fixed
   const resend = async () => {
     setResending(true);
@@ -306,10 +454,10 @@ export function EmailItem({ email: initial }) {
           {email.subject}
         </button>
         <small>
-          {email.sent_by_name} to {email.to_address}
+          {email.sent_by_name} {handoff ? "opened a draft to" : "to"} {email.to_address}
           {email.attachments.length ? ` • ${email.attachments.length} attachment${email.attachments.length > 1 ? "s" : ""}` : ""}
           {email.status === "Failed" ? " • Not sent" : ""}
-          {["Gmail", "Outlook"].includes(email.status) ? ` • Opened in ${email.status}` : ""}
+          {handoff ? ` • Draft opened in ${email.status}; sending not confirmed` : ""}
         </small>
         {open && (
           <div className="email-open">
@@ -333,7 +481,7 @@ export function EmailItem({ email: initial }) {
         )}
       </div>
       <span className="email-side">
-        <span className="due">{dateTime(email.sent_at)}</span>
+        <span className="due" title={handoff ? "When the draft was opened" : undefined}>{dateTime(email.sent_at)}</span>
         {email.status === "Failed" && (
           <button className="sf-button small" onClick={resend} disabled={resending} aria-busy={resending}>
             {resending ? "Sending…" : "Resend"}

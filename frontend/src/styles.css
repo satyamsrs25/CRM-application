@@ -6897,3 +6897,29 @@ p.list-state {
   background: #f3f6fb;
   text-decoration: none;
 }
+
+/* New Email: what happened with Open in Outlook (opened, blocked tab, too long for a link); the draft stays here */
+.email-handoff {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid #f2cf8f;
+  border-radius: 8px;
+  background: #fff8ea;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.email-handoff p {
+  margin: 0;
+}
+.email-handoff.done {
+  border-color: #a9cdf2;
+  background: #eaf4fe;
+}
+.email-handoff-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}

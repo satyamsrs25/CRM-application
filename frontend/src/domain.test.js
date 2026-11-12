@@ -97,6 +97,7 @@ import {
   defaultSortDirection,
 } from "./listHelpers.js";
 import { demoEvent, foldIcsLine, googleCalendarUrl, icsContent, icsText, outlookCalendarUrl } from "./calendarLinks.js";
+import { addressProblem, draftForCopy, OUTLOOK_COMPOSE_URL, OUTLOOK_URL_LIMIT, outlookComposeUrl, outlookHandoff, splitAddresses } from "./outlookDraft.js";
 
 test("lead form uses backend fields and only requires last name and company", () => {
   assert.deepEqual(
@@ -1041,31 +1042,143 @@ test("the sort order is described in words under the list title", () => {
   assert.equal(sortText(undefined, "x", "asc"), "");
 });
 
-test("New Email: Attach files is a compact toggle; attached files stay listed with their count and sizes when it closes", () => {
+// The code that runs: comments removed (JSX {/* */} blocks, /* */ blocks and whole-line // comments)
+const activeCode = (text) =>
+  text.replace(/\{\/\*[\s\S]*?\*\/\}/g, "").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+
+test("New Email: the CRM attachment controls and direct send are preserved in comments, not active", () => {
+  // the shared size helpers stay (the opportunity Attachments card and the email list use them)
   assert.equal(attachedSummary([]), "No files attached");
   assert.equal(attachedSummary([{ size: 220 * 1024 }]), "1 file attached · 220 KB of 25 MB");
   assert.equal(attachedSummary([{ size: 1.4 * 1024 * 1024 }, { size: 220 * 1024 }]), "2 files attached · 1.6 MB of 25 MB");
   assert.equal(fileSize(500), "1 KB");
   assert.equal(fileSize(10 * 1024 * 1024), "10.0 MB");
   const email = source("./Email.jsx");
-  // a disclosure button: state and target for assistive technology
-  assert.match(email, /aria-expanded=\{attachOpen\}/);
-  assert.match(email, /aria-controls="email-attach-panel"/);
-  assert.match(email, /const \[attachOpen, setAttachOpen\] = useState\(false\);/); // starts closed
-  assert.match(email, /<div id="email-attach-panel" className="dropzone email-attach-panel" hidden=\{!attachOpen\}>/);
-  // the attached files are listed outside the part that closes, so closing it never hides them
-  const panelEnd = email.indexOf("</div>", email.indexOf('id="email-attach-panel"'));
-  assert.ok(email.indexOf('className="file-list"') > panelEnd);
-  // the file input stays mounted while closed, and the limits, validation and sending are unchanged
-  assert.ok(email.indexOf('type="file"') > panelEnd);
-  assert.match(email, /const MAX_FILE = 10 \* 1024 \* 1024;\s*const MAX_TOTAL = 25 \* 1024 \* 1024;\s*const MAX_FILES = 10;/);
-  assert.match(email, /if \(f\.size > MAX_FILE\)/);
-  assert.match(email, /if \(next\.length > MAX_FILES\) return setError/);
-  assert.match(email, /files\.forEach\(\(f\) => form\.append\("files", f, f\.name\)\);/);
-  assert.match(email, /aria-label=\{`Remove \$\{f\.name\}`\}/);
+  const active = activeCode(email);
+  // preserved for restoration: the attachment controls, their limits and handlers, the Send from choice and the send call
+  for (const kept of ['aria-controls="email-attach-panel"', 'type="file"', "const [attachOpen, setAttachOpen] = useState(false);",
+    "// const MAX_FILE = 10 * 1024 * 1024;", "if (f.size > MAX_FILE)", 'files.forEach((f) => form.append("files", f, f.name));',
+    "<legend>Send from</legend>", "<b>CRM mailbox</b>", 'name="reply_to"', "const email = await api.sendEmail(form);"])
+    assert.ok(email.includes(kept), kept);
+  assert.match(email, /PRESERVED, intentionally disabled/);
+  // ...but none of it runs: no attachment button, file picker or drop area, no mailbox choice, no CRM send
+  for (const gone of ['type="file"', "Attach files", "email-attach", "onDrop", "dropzone", "Choose files", "Send from", 'name="via"',
+    "CRM mailbox", "reply_to", "api.sendEmail(", "setSending(", "attachedSummary("])
+    assert.ok(!active.includes(gone), gone);
   // stage-change and campaign attachments are separate components and untouched by this
   assert.doesNotMatch(source("./Modal.jsx"), /email-attach/);
   assert.doesNotMatch(source("./CampaignsPage.jsx"), /email-attach/);
+});
+
+test("New Email: one Open in Outlook action, the attachments hint, AI drafting and editable fields; nothing is sent", () => {
+  const active = activeCode(source("./Email.jsx"));
+  assert.equal((active.match(/type="submit"/g) || []).length, 1);
+  assert.match(active, /title=\{canSend \? "Open this draft in Outlook on the web in a new tab"[^}]*\}\s*>\s*Open in Outlook\s*<\/button>/);
+  assert.equal((active.match(/Opens Outlook in a new tab\. Add attachments there\./g) || []).length, 1);
+  assert.doesNotMatch(active, /CRM files|attachments will|files will be added/i); // nothing suggests CRM files go to Outlook
+  // the form opens Outlook; the handler never calls the API, so nothing is sent, marked Sent or saved as history
+  assert.match(active, /<form ref=\{formRef\} onSubmit=\{openInOutlook\}/);
+  const handler = active.slice(active.indexOf("const openInOutlook"), active.indexOf("const copyText"));
+  assert.match(handler, /outlookHandoff\(draft\)/);
+  assert.doesNotMatch(handler, /api\.|fetch\(|onSent|onClose/); // the composer and its draft stay open
+  assert.match(handler, /addressProblem\(draft\.to, "To", true\) \|\| addressProblem\(draft\.cc, "Cc"\)/);
+  assert.match(handler, /if \(!canSend\) return setError/); // the Send emails permission still applies
+  // the new tab is opened inside the click; a blocked tab is detected and offered as a link
+  assert.match(active, /const tab = window\.open\(url, "_blank"\);\s*if \(!tab\) return false;\s*tab\.opener = null;/);
+  assert.match(active, /handoff\?\.kind === "blocked"/);
+  assert.match(active, /handoff\?\.kind === "too-long"/);
+  // Help me write stays, with the same props; To, Cc, Subject and Message stay editable
+  assert.match(active, /<EmailDraftAssistant target=\{target\} settings=\{sender\} user=\{user\} subject=\{subject\} message=\{message\} sending=\{sending\} recipients=\{[^}]+\} onBusyChange=\{setAiBusy\} onApply=\{draft => \{ setSubject\(draft\.subject\); setMessage\(draft\.body\); \}\} \/>/);
+  assert.match(active, /<input name="to" defaultValue=\{target\.email \|\| ""\}/);
+  assert.match(active, /<input name="cc" /);
+  assert.doesNotMatch(active, /readOnly/);
+  assert.match(active, /disabled=\{aiBusy \|\| !canSend\}/); // not while a draft is being written
+  // older history entries saved by the previous handoff say what really happened
+  assert.match(active, /\{handoff \? ` • Draft opened in \$\{email\.status\}; sending not confirmed` : ""\}/);
+  // the backend send endpoint and the shared mail services are not removed
+  const router = readFileSync(new URL("../../backend/app/routers/emails.py", import.meta.url), "utf8");
+  assert.match(router, /@router\.post\("", response_model=schemas\.EmailOut/);
+  assert.match(router, /error = mailer\.send\(/);
+});
+
+test("Open in Outlook link: encoding, several recipients, line breaks, Unicode and the length limit", () => {
+  const draft = {
+    to: " ana@acme.example ",
+    cc: "raj@acme.example; mei@acme.example, ops+crm@acme.example",
+    subject: "Q4 pricing & next steps #2 (100% + 5%)",
+    body: "Hi Ana,\r\n\r\nPrices: A&B + C = 100% #1.\nनमस्ते — café ✓ 🎉\rThanks,\nRavi",
+  };
+  const url = outlookComposeUrl(draft);
+  // the one compose link Outlook on the web supports (the older /owa/?path=/mail/action/compose is redirected to it)
+  assert.equal(OUTLOOK_COMPOSE_URL, "https://outlook.office.com/mail/deeplink/compose");
+  assert.ok(url.startsWith(`${OUTLOOK_COMPOSE_URL}?to=`));
+  const query = url.slice(url.indexOf("?") + 1);
+  assert.doesNotMatch(query, /[ #+\n\r]|%(?![0-9A-F]{2})/); // nothing that could end or change the link
+  assert.match(query, /%26/); // &
+  assert.match(query, /%2B/); // + (never read as a space)
+  assert.match(query, /%23/); // #
+  assert.match(query, /%25/); // %
+  assert.match(query, /%0A/); // line break
+  const params = new URL(url).searchParams;
+  assert.equal(params.get("to"), "ana@acme.example");
+  assert.equal(params.get("cc"), "raj@acme.example,mei@acme.example,ops+crm@acme.example");
+  assert.equal(params.get("subject"), "Q4 pricing & next steps #2 (100% + 5%)");
+  assert.equal(params.get("body"), "Hi Ana,\n\nPrices: A&B + C = 100% #1.\nनमस्ते — café ✓ 🎉\nThanks,\nRavi");
+  assert.deepEqual([...params.keys()], ["to", "cc", "subject", "body"]);
+  // empty fields are left out; a broken emoji half doesn't break the link
+  assert.deepEqual([...new URL(outlookComposeUrl({ to: "a@b.co", cc: " ", subject: "Hi", body: "x" })).searchParams.keys()], ["to", "subject", "body"]);
+  assert.doesNotThrow(() => outlookComposeUrl({ to: "a@b.co", subject: "Hi", body: "half \ud83d emoji" }));
+  // short drafts open whole
+  const ok = outlookHandoff(draft);
+  assert.equal(ok.fits, true);
+  assert.equal(ok.url, url);
+  assert.equal(OUTLOOK_URL_LIMIT, 4000);
+  // a long draft is never cut: it doesn't fit, and To, Cc and Subject can still open while the message is copied
+  const long = { ...draft, body: "We reviewed the proposal in detail. ".repeat(150) };
+  const plan = outlookHandoff(long);
+  assert.equal(plan.fits, false);
+  assert.equal(plan.url, null);
+  assert.ok(plan.length > OUTLOOK_URL_LIMIT);
+  assert.equal(plan.partialHasFields, true);
+  assert.deepEqual([...new URL(plan.partialUrl).searchParams.keys()], ["to", "cc", "subject"]);
+  assert.equal(new URL(outlookComposeUrl(long)).searchParams.get("body"), long.body); // the full link still carries all of it
+  // Unicode counts as it is encoded: 600 Hindi letters are too long for one link
+  assert.equal(outlookHandoff({ to: "a@b.co", subject: "Hi", body: "न".repeat(600) }).fits, false);
+  // the limit is exact
+  const base = outlookComposeUrl({ to: "a@b.co", subject: "Hi", body: "" }).length + "&body=".length;
+  assert.equal(outlookHandoff({ to: "a@b.co", subject: "Hi", body: "x".repeat(OUTLOOK_URL_LIMIT - base) }).fits, true);
+  assert.equal(outlookHandoff({ to: "a@b.co", subject: "Hi", body: "x".repeat(OUTLOOK_URL_LIMIT - base + 1) }).fits, false);
+  // even To and Subject too long: Outlook opens empty and the whole draft is copied instead
+  const huge = outlookHandoff({ to: "a@b.co", subject: "Hi", cc: Array.from({ length: 300 }, (_, i) => `person${i}@example.com`).join(","), body: "x" });
+  assert.equal(huge.partialHasFields, false);
+  assert.equal(huge.partialUrl, OUTLOOK_COMPOSE_URL);
+  assert.equal(draftForCopy(draft), "To: ana@acme.example\nCc: raj@acme.example, mei@acme.example, ops+crm@acme.example\nSubject: Q4 pricing & next steps #2 (100% + 5%)\n\nHi Ana,\n\nPrices: A&B + C = 100% #1.\nनमस्ते — café ✓ 🎉\nThanks,\nRavi");
+});
+
+test("Open in Outlook: addresses are checked like the API before Outlook opens", () => {
+  assert.deepEqual(splitAddresses(" a@x.co ;b@y.co,, c@z.co "), ["a@x.co", "b@y.co", "c@z.co"]);
+  assert.equal(addressProblem("", "To", true), "Enter at least one recipient.");
+  assert.equal(addressProblem(" ", "Cc"), "");
+  assert.equal(addressProblem("ana@acme.example, raj@acme.example", "To", true), "");
+  assert.equal(addressProblem("ana@acme", "To", true), "Check the To address: ana@acme");
+  assert.equal(addressProblem("x, y@z.co, w w@z.co", "Cc"), "Check the Cc addresses: x, w w@z.co");
+});
+
+test("Help me write: an unrelated request shows exactly 'Ask relevant to CRM' and keeps the subject, message and request", () => {
+  const text = source("./EmailDraftAssistant.jsx");
+  const keptMessage = new Function(`${text.slice(text.indexOf("const NOT_CRM"), text.indexOf("export default function"))}; return keptMessage;`)();
+  assert.equal(keptMessage("Ask relevant to CRM"), "Ask relevant to CRM"); // nothing added
+  assert.equal(keptMessage("Cannot reach the AI service."), "Cannot reach the AI service. Your email is unchanged.");
+  assert.equal(keptMessage("AI drafting took too long. Your email is unchanged; please try again."), "AI drafting took too long. Your email is unchanged; please try again.");
+  // the backend refuses with the same words, for generation and refinement
+  const backend = readFileSync(new URL("../../backend/app/ai_email.py", import.meta.url), "utf8");
+  assert.match(backend, /^NOT_CRM = "Ask relevant to CRM"/m);
+  // only a successful draft fills the subject and message and clears the request; an error changes none of them
+  const run = text.slice(text.indexOf("const run = async"), text.indexOf("const cancel = "));
+  const failure = run.slice(run.indexOf("} catch (err) {"), run.indexOf("} finally {"));
+  assert.doesNotMatch(failure, /onApply|setInstructions|setSubject|setMessage|setHistory/);
+  assert.ok(run.indexOf("onApply(applied)") < run.indexOf("} catch (err) {"));
+  assert.ok(run.indexOf('setInstructions("")') < run.indexOf("} catch (err) {"));
 });
 
 test("Manage Access: Status is a column filter (All, Active, Inactive), off by default and removable", () => {

@@ -38,18 +38,32 @@ def completed(text=None):
     return {"status": "completed", "output": [{"type": "message", "content": [{"type": "output_text", "text": text or model_reply("Next steps after our demo", "Hi Jack,\n\nThank you for your time. When would you like to discuss next steps?")}]}]}
 
 
+def scope_call(req):
+    """True for the scope check (the short classification sent before a draft), on either provider."""
+    payload = json.loads(req.content)
+    system = payload.get("instructions") or (payload.get("messages") or [{}])[0].get("content")
+    return system == ai_email.SCOPE_INSTRUCTIONS
+
+
 @pytest.fixture
 def provider(monkeypatch):
+    """MOCKED provider (no AI service is called). Drafting requests are captured in [0]; scope checks in
+    reply["scope_requests"] and answered with reply["scope"] ("crm_email" unless a test says otherwise)."""
     monkeypatch.setenv("EMAIL_DRAFT_MODE", "openai")
     monkeypatch.setenv("OPENAI_API_KEY", "test-key-not-a-real-key")
     captured = []
-    reply = {"status": 200, "json": completed()}
+    reply = {"status": 200, "json": completed(), "scope": "crm_email", "scope_requests": []}
     real_client = httpx.AsyncClient
 
     def handler(req):
-        captured.append(req)
+        scope = scope_call(req)
+        (reply["scope_requests"] if scope else captured).append(req)
         if reply.get("error"):
             raise reply["error"]
+        if scope and reply["status"] == 200:
+            verdict = reply.get("scope_text") or json.dumps({"scope": reply["scope"]})
+            local = req.url.host != "api.openai.com"
+            return httpx.Response(200, json={"done": True, "message": {"content": verdict}} if local else completed(verdict))
         return httpx.Response(reply["status"], json=reply["json"])
 
     monkeypatch.setattr(ai_email.httpx, "AsyncClient", lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw))
@@ -615,8 +629,8 @@ def test_refine_keeps_the_facts_the_subject_and_one_signature(client, record, pr
 def test_clearly_unrelated_requests_are_refused_before_any_call_whatever_the_action_or_stage(client, record, provider, instructions, extra):
     response = client.post('/api/emails/draft', json=request(
         record, instructions=instructions, current_subject='Kept', current_body=DRAFT, **extra))
-    assert response.status_code == 422 and response.json()['detail'] == ai_email.OUT_OF_SCOPE
-    assert not provider[0]
+    assert response.status_code == 422 and response.json()['detail'] == ai_email.NOT_CRM == 'Ask relevant to CRM'
+    assert not provider[0] and not provider[1]['scope_requests']
 
 
 def test_a_customer_note_that_mentions_leave_is_left_to_the_model(client, record, provider):
@@ -629,10 +643,11 @@ def test_a_customer_note_that_mentions_leave_is_left_to_the_model(client, record
                                    {'action': 'custom', 'email_stage': 'Proposal'}, {'option_id': 'discover_needs'},
                                    {'action': 'formalize', 'instructions': ''}])
 def test_the_models_unsupported_outcome_holds_for_every_action_and_stage(client, record, provider, extra):
+    # MOCKED: the scope check lets it through, and the drafting model's own scope outcome still refuses it
     provider[1]['json'] = completed(model_reply('Heater repair', 'Dear landlord, the heater is broken.', outcome='unsupported'))
     response = client.post('/api/emails/draft', json={**request(
         record, instructions='Write to my landlord about the broken heater.', current_subject='Kept', current_body=DRAFT), **extra})
-    assert response.status_code == 422 and response.json()['detail'] == ai_email.OUT_OF_SCOPE
+    assert response.status_code == 422 and response.json()['detail'] == ai_email.NOT_CRM
     assert 'landlord' not in response.text and len(provider[0]) == 1  # the model's text is never returned
 
 
@@ -686,6 +701,12 @@ def test_a_draft_returns_only_the_email_text_and_changes_nothing_on_the_record(c
 def test_instructions_state_the_scope_recipient_and_untrusted_text():
     for phrase in ('"unsupported"', '"needs_context"', 'manager', 'untrusted data', 'meeting links'):
         assert phrase in ai_email.INSTRUCTIONS
+    # an unrelated request is never answered with the stage's sales email, on any drafting prompt
+    for prompt in (ai_email.INSTRUCTIONS, ai_email.EDIT_INSTRUCTIONS, ai_email.LOCAL_DRAFT_INSTRUCTIONS):
+        prompt = ' '.join(prompt.split())
+        assert 'question or task for the assistant' in prompt and 'request with a sales email' in prompt
+        assert '[Your Name]' in prompt  # the only sender placeholder, filled by the server
+    assert 'untrusted data' in ai_email.SCOPE_INSTRUCTIONS and '"unrelated"' in ai_email.SCOPE_INSTRUCTIONS
 
 
 @pytest.mark.parametrize("code,expected", [("expired_secret_key", "has expired"), ("invalid_api_key", "rejected the API key")])
@@ -856,3 +877,144 @@ def test_admin_can_draft_and_refine_another_users_lead(client, record, provider,
     after = client.get(f"/api/leads/{record['id']}").json()
     assert (after['owner_id'], after['stage']) == (before['owner_id'], before['stage'])
     assert client.get('/api/emails', params={'lead_id': record['id']}).json() == []
+
+
+# ---------- strict CRM scope: a separate check before any draft (every AI reply here is MOCKED) ----------
+
+GENERIC_SALES = model_reply('Let’s connect', 'Hi Jack,\n\nThank you for your interest. I would love to learn more about your '
+                                             'business needs.\n\nWould you be available for a brief introductory conversation?')
+
+
+@pytest.mark.parametrize('body', [STARTER, DRAFT])
+@pytest.mark.parametrize('instructions', ['what is algebra', 'what is alzebra', 'What is the capital of France?'])
+def test_an_unrelated_question_is_refused_even_when_the_draft_model_would_return_a_sales_email(client, record, provider, instructions, body):
+    # MOCKED: the scope check answers "unrelated"; the drafting model would have returned a generic sales introduction
+    provider[1].update(scope='unrelated', json=completed(GENERIC_SALES))
+    assert not ai_email.OFF_TOPIC.search(instructions)  # no keyword decides this: the scope check does
+    response = client.post('/api/emails/draft', json=request(
+        record, action='custom', instructions=instructions, current_subject='Kept subject', current_body=body))
+    assert response.status_code == 422 and response.json() == {'detail': 'Ask relevant to CRM'}
+    assert not provider[0]  # the drafting model is never asked, so no default sales email can be returned
+    [check] = provider[1]['scope_requests']
+    question = json.loads(json.loads(check.content)['input'])
+    assert question['user_request'] == instructions
+    assert question['task'] == ('change_existing_email' if body == DRAFT else 'new_email')
+    assert question['existing_message'] == (ai_email.without_signature(DRAFT, 'Ravi Kumar', 'ravi@crm.test') if body == DRAFT else '')
+
+
+def test_a_misleading_generic_sales_reply_is_never_applied_to_an_unrelated_request(client, record, provider):
+    # MOCKED: both layers. The scope check is final, so a "draft" outcome with a sales email can't get through
+    provider[1].update(scope='unrelated', json=completed(GENERIC_SALES))
+    before = client.get(f"/api/leads/{record['id']}").json()
+    response = client.post('/api/emails/draft', json=request(record, action='custom', instructions='what is alzebra', current_body=STARTER))
+    assert response.status_code == 422 and 'Let’s connect' not in response.text and 'introductory' not in response.text
+    assert client.get(f"/api/leads/{record['id']}").json() == before
+    assert client.get('/api/emails', params={'lead_id': record['id']}).json() == []
+
+
+@pytest.mark.parametrize('action', ['formalize', 'friendly', 'shorten'])
+def test_refinement_of_text_that_is_not_a_customer_email_is_refused(client, record, provider, action):
+    provider[1]['scope'] = 'unrelated'  # MOCKED
+    notes = 'Hi Jack,\n\nWhat is algebra? Explain it with three worked examples for my homework.'
+    response = client.post('/api/emails/draft', json=request(record, action=action, instructions='', current_body=notes))
+    assert response.status_code == 422 and response.json()['detail'] == 'Ask relevant to CRM'
+    assert not provider[0]
+    question = json.loads(json.loads(provider[1]['scope_requests'][0].content)['input'])
+    assert question['task'] == 'change_existing_email' and question['user_request'] == ai_email.REFINE_REQUESTS[action]
+    assert 'What is algebra?' in question['existing_message']
+
+
+@pytest.mark.parametrize('ask', [
+    {'action': 'custom', 'instructions': 'Invite Jack to a product demo next week.', 'current_body': STARTER},
+    {'action': 'custom', 'instructions': 'make it shorter', 'current_body': DRAFT},
+    {'action': 'custom', 'instructions': 'Thank them for the demo and mention our algebra tutoring module.', 'current_body': STARTER},
+    {'action': 'shorten', 'instructions': '', 'current_body': DRAFT},
+])
+def test_crm_requests_pass_the_scope_check_and_are_drafted(client, record, provider, ask):
+    response = client.post('/api/emails/draft', json=request(record, current_subject='Your proposal', **ask))  # MOCKED replies
+    assert response.status_code == 200, response.text
+    assert len(provider[1]['scope_requests']) == 1 and len(provider[0]) == 1
+    check = json.loads(provider[1]['scope_requests'][0].content)
+    assert check['store'] is False and check['text']['format']['strict'] is True
+    assert check['text']['format']['schema'] == ai_email.SCOPE_SCHEMA and check['model'] == json.loads(provider[0][0].content)['model']
+    assert 'jack@bluebird.example' not in check['input'] and 'ravi@crm.test' not in check['input']
+    revising = ask['current_body'] == DRAFT
+    assert response.json()['draft_type'] == ('revision' if revising else 'new')
+    if ask['instructions'] == 'make it shorter':
+        assert json.loads(check['input'])['task'] == 'change_existing_email'
+        assert sent_input(provider)['user_request'] == 'make it shorter'
+
+
+@pytest.mark.parametrize('ask', [
+    {'action': 'stage', 'instructions': '', 'current_body': STARTER},
+    {'action': 'meeting', 'instructions': ''},
+    {'option_id': 'introduce', 'instructions': ''},
+    {'action': 'custom', 'instructions': 'Please draft an email.', 'current_body': STARTER},
+])
+def test_requests_written_by_the_server_need_no_scope_check(client, record, provider, ask):
+    response = client.post('/api/emails/draft', json=request(record, **ask))
+    assert response.status_code == 200, response.text
+    assert not provider[1]['scope_requests'] and len(provider[0]) == 1
+
+
+@pytest.mark.parametrize('verdict', ['not JSON', json.dumps({'scope': 'maybe'}), json.dumps({'scope': 'crm_email', 'extra': 1}), ''])
+def test_a_scope_check_without_a_clear_answer_keeps_the_email(client, record, provider, verdict):
+    provider[1]['scope_text'] = verdict or json.dumps({})  # MOCKED unusable classification
+    response = client.post('/api/emails/draft', json=request(record, action='custom', current_body=STARTER))
+    assert response.status_code == 502 and 'unchanged' in response.json()['detail']
+    assert not provider[0]  # never treated as in scope
+
+
+def test_scope_check_errors_use_the_same_safe_messages(client, record, provider):
+    provider[1].update(status=401, json={"error": {"code": "expired_secret_key", "message": "PRIVATE_PROVIDER_DETAIL"}})
+    response = client.post('/api/emails/draft', json=request(record, action='custom', current_body=STARTER))
+    assert response.status_code == 502 and 'has expired' in response.json()['detail']
+    assert 'PRIVATE_PROVIDER_DETAIL' not in response.text
+    assert len(provider[1]['scope_requests']) == 1 and not provider[0]
+
+
+def test_ollama_checks_the_scope_with_the_local_model(client, record, provider, monkeypatch):
+    monkeypatch.setenv('EMAIL_DRAFT_MODE', 'ollama')
+    monkeypatch.setenv('OLLAMA_BASE_URL', 'http://host.docker.internal:11434/')
+    monkeypatch.setattr(ai_email, 'api_key', lambda: pytest.fail('Local drafting must not read the OpenAI key'))
+    provider[1]['scope'] = 'unrelated'  # MOCKED
+    response = client.post('/api/emails/draft', json=request(record, action='custom', instructions='what is algebra', current_body=STARTER))
+    assert response.status_code == 422 and response.json()['detail'] == 'Ask relevant to CRM'
+    [check] = provider[1]['scope_requests']
+    payload = json.loads(check.content)
+    assert str(check.url) == 'http://host.docker.internal:11434/api/chat' and 'authorization' not in check.headers
+    assert payload['format'] == ai_email.SCOPE_SCHEMA and payload['options']['num_ctx'] == 8192
+    assert json.loads(payload['messages'][1]['content'])['user_request'] == 'what is algebra'
+    assert not provider[0]
+
+
+# ---------- sender details: the signed-in sender's name, never a placeholder or an invented company ----------
+
+@pytest.mark.parametrize('text,expected', [
+    ("I'm [Your Name] from [Your Company].", "I'm Ravi Kumar."),
+    ('My name is [Your Name] and I am the [Your Title] at [Your Company].', 'My name is Ravi Kumar.'),
+    ("I'm [Your Name], [Your Position] at [Your Company].", "I'm Ravi Kumar."),
+    ('At [Your Company], we help teams plan their next steps.', 'We help teams plan their next steps.'),
+    ('[Your Company] would be glad to help.', 'Our team would be glad to help.'),
+    ('Thank you for your interest in [Your Company].', 'Thank you for your interest.'),
+    ('Reach me at [Your Email] or reply here. – [Sender Name]', 'Reach me at ravi@crm.test or reply here. – Ravi Kumar'),
+    ('This is {Your Full Name} following up.', 'This is Ravi Kumar following up.'),
+    ('Hi [First Name], could [Client Company] share the date?', 'Hi [First Name], could [Client Company] share the date?'),  # customer side: kept
+    ('Thanks for the call. We discussed the 25 seats.', 'Thanks for the call. We discussed the 25 seats.'),
+])
+def test_sender_placeholders_are_filled_or_removed(text, expected):
+    assert ai_email.without_sender_placeholders(text, 'Ravi Kumar', 'ravi@crm.test') == expected
+
+
+def test_a_draft_never_returns_sender_placeholders(client, record, provider):
+    provider[1]['json'] = completed(model_reply(  # MOCKED reply with the placeholders a model tends to write
+        'Introduction from [Your Company]',
+        "Hi Jack,\n\nI'm [Your Name] from [Your Company]. I'd welcome a short call about your priorities.\n\n"
+        'Best regards,\n[Your Name]\n[Your Title]\n[Your Company]'))
+    response = client.post('/api/emails/draft', json=request(record, action='custom', instructions='Introduce myself to Jack.', current_body=STARTER))
+    assert response.status_code == 200, response.text
+    draft = response.json()
+    assert draft['subject'] == 'Introduction'
+    assert draft['body'] == ("Hi Jack,\n\nI'm Ravi Kumar. I'd welcome a short call about your priorities.\n\n"
+                             'Best regards,\nRavi Kumar\nravi@crm.test')
+    assert '[' not in draft['body'] and 'Company' not in draft['body']
