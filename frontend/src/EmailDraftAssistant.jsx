@@ -9,9 +9,12 @@ import { draftContent, emailWritingAction, toRecordContact } from "./domain";
 
 const REFINE = [["formalize", "Formalize"], ["friendly", "Friendly"], ["shorten", "Shorten"]];
 const DESCRIBE_FIRST = "Describe the email you need first. Formalize, Friendly, and Shorten refine an existing draft.";
-// Server messages that already say the email was kept, or that ask for more, are shown as they are.
+// Server messages that already say the email was kept, or that ask for more, are shown as they are. A request that
+// isn't about this CRM email gets exactly "Ask relevant to CRM" (backend/app/ai_email.py, NOT_CRM); the subject,
+// message and request stay as they were.
+const NOT_CRM = "Ask relevant to CRM";
 const keptMessage = (text) =>
-  /unchanged|kept|helps with CRM|sales context|describe the email/i.test(text) ? text : `${text} Your email is unchanged.`;
+  text === NOT_CRM || /unchanged|kept|helps with CRM|sales context|describe the email/i.test(text) ? text : `${text} Your email is unchanged.`;
 
 export default function EmailDraftAssistant({ target, settings, user, subject, message, sending, recipients, onApply, onBusyChange }) {
   const [open, setOpen] = useState(false); // closed until the pen is clicked

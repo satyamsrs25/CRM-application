@@ -113,7 +113,11 @@ email, tasks and reminders, notifications, lead conversion, closing a deal, and 
 **Notifications and email**
 - In-app notifications (bell and pop-ups) with a 30-day history, plus due-date reminders.
 - Per-user email notification preferences.
-- Send emails with attachments from any record, through the CRM mailbox or the user's own Outlook. Every email is logged on the record.
+- Write an email from any record (or draft it with **Help me write**), review To, Cc, Subject and Message, then
+  **Open in Outlook** opens it in Outlook on the web in a new tab, where attachments are added and it is sent. The CRM
+  doesn't send it or log it as sent. A draft too long for an Outlook link is never cut: the composer offers to copy the
+  message. (Sending individual emails from the CRM mailbox with CRM attachments is disabled and preserved in
+  `frontend/src/Email.jsx` for restoration; the API endpoint is unchanged.)
 - Automatic no-reply emails to customers when a lead is created, won or lost (optional per action).
 
 **Administration**
@@ -345,24 +349,32 @@ After generation, the bar shows **Describe your change**, **Polish**, the refine
 - **Start over:** **×** moves from the editing bar to the writing bar; a second **×** returns to **Help me write**.
   The current email stays intact until another draft succeeds. **Escape** closes the bar.
 - **CRM emails only:** introductions and outreach, follow-ups, demo scheduling, discovery questions, proposals,
-  negotiation, closure and customer handover. An unrelated request (a leave request, a poem…) keeps your email and
-  shows "This assistant helps with CRM and sales emails. Describe a customer follow-up, demo, proposal, or related
-  message." A basic request such as "can you write an email" uses the saved sales stage to create a starting draft.
-  Other requests without a clear purpose ask for more context. Writing by hand is always available.
+  negotiation, closure and customer handover. A request that isn't about writing this email (a general question such
+  as "what is algebra", a leave request, a poem…), or a refinement of text that isn't a customer email, shows
+  "Ask relevant to CRM" and keeps your subject, message and request as they were. A basic request such as "can you
+  write an email" uses the saved sales stage to create a starting draft. Other requests without a clear purpose ask for
+  more context. Writing by hand is always available.
+- **Sender details:** the signed-in user's name and email fill any "[Your Name]"-style placeholder. The CRM doesn't
+  know your company or job title, so drafts don't name, describe or invent them.
 
 Example: "Follow up on the demo and ask about their timeline."
 
 A draft fills only the subject and message. To, Cc, attachments, the related record, its owner and stage don't change,
-and nothing is sent: **Send** / **Open in Outlook** stays a separate action. The subject and message stay editable
+and nothing is sent: **Open in Outlook** stays a separate action. The subject and message stay editable
 while a draft is written; if you edit them, change To, close the bar or the composer, or press Cancel, that answer is
 not applied. **Undo** / **Redo** restore the subject and message together and turn off once you edit the email
 yourself. Errors, timeouts and refusals keep your email as it was. Always review the draft before sending.
 
 How the server enforces this (`app/ai_email.py`, `POST /api/emails/draft`):
-- One provider request per draft, with no separate classification call. The model must answer with structured JSON:
-  `outcome` (`draft`, `unsupported` or `needs_context`), `subject` and `body`. Only a valid `draft` reaches the
-  composer; `unsupported` and `needs_context` return 422 with the messages above, whatever action or stage the client
-  sent. Clearly personal requests (leave or vacation requests, poems…) are refused before any call.
+- Scope first: whenever the request carries text the user wrote (a typed request, or Formalize/Friendly/Shorten of
+  the current draft), a short separate scope check with the same provider and model classifies it as a CRM email or
+  unrelated before anything is drafted. Unrelated returns 422 "Ask relevant to CRM" and the drafting model is never
+  called, so its sales context can't turn a general question into a stage introduction. Menu options, stage buttons
+  and a plain "write an email" are written by the server and need no check. Clearly personal requests (leave or
+  vacation requests, poems…) are refused before any call.
+- The drafting model must then answer with structured JSON: `outcome` (`draft`, `unsupported` or `needs_context`),
+  `subject` and `body`. Only a valid `draft` reaches the composer; `unsupported` ("Ask relevant to CRM") and
+  `needs_context` return 422, whatever action or stage the client sent.
 - The server decides whether it is a new email or a revision (`draft_type`), keeps the user's subject unless the
   request mentions the subject, adds the sender's signature once, replaces web links the user didn't supply with
   `[link]`, and rejects replies that are empty or only a greeting and signature.
@@ -411,7 +423,7 @@ Keep Ollama running. The first draft can take up to two minutes while the model 
 The model stays loaded for 30 minutes after each draft to reduce reload delays; it continues
 to use memory during that time. Adjust `OLLAMA_KEEP_ALIVE` to change this idle period.
 Drafts use the same CRM context, validation, subject handling and signature rules as OpenAI drafts.
-Nothing is sent or saved until you send the email. To switch back, set `EMAIL_DRAFT_MODE=openai`
+Nothing is sent or saved by the CRM; you send the email from Outlook. To switch back, set `EMAIL_DRAFT_MODE=openai`
 and configure a valid `OPENAI_API_KEY`. For a backend running directly on your Mac, use
 `OLLAMA_BASE_URL=http://localhost:11434`.
 
