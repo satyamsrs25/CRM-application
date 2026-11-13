@@ -1199,18 +1199,16 @@ test("Manage Access: Status is a column filter (All, Active, Inactive), off by d
   assert.match(filters, /e\.key === "Escape" && \(setOpen\(false\), button\.current\?\.focus\(\{ preventScroll: true \}\)\)/);
 });
 
-test("Home: the line under the greeting matches each role's data; Salesperson wording is unchanged", () => {
-  const admin = "Monitor sales performance, account activity and follow-ups across teams.";
-  assert.equal(homeDescription("Admin", true), admin);
-  assert.equal(homeDescription("Admin", false), admin); // the Admin has no scope switch and always sees every record
-  // Whole team loads every record; the Team Performance section shows the Manager's own Salespeople
-  assert.equal(homeDescription("Manager", true), "Track the whole team's pipeline and upcoming follow-ups, and your salespeople's performance.");
-  assert.equal(homeDescription("Manager", false), "Review your opportunities, accounts and upcoming follow-ups.");
-  assert.equal(homeDescription("Salesperson", true), "The team's deals, accounts and follow-ups at a glance.");
-  assert.equal(homeDescription("Salesperson", false), "Your deals, accounts and follow-ups for today.");
+test("Home: one short, simple line under the greeting for each role", () => {
+  assert.equal(homeDescription("Admin", true), "Company-wide sales at a glance.");
+  assert.equal(homeDescription("Admin", false), "Company-wide sales at a glance."); // the Admin always sees every record
+  assert.equal(homeDescription("Manager", true), "Your team's sales at a glance."); // My Team
+  assert.equal(homeDescription("Manager", false), "Your sales and follow-ups for today."); // Me
+  assert.equal(homeDescription("Salesperson", false), "Your sales and follow-ups for today.");
   const home = source("./SellerHome.jsx");
   assert.match(home, /<h1>\{greeting\(\)\.replace\(/); // the time-based greeting stays
-  assert.match(home, /<p>\{homeDescription\(user\.role, team\)\}<\/p>/);
+  assert.match(home, /<p>\{homeDescription\(user\.role, teamView\)\}<\/p>/);
+  assert.doesNotMatch(home, /My Sales Desk|Team Command Center|Company Control Tower/); // no tagline
 });
 
 test("column filter menus keep their own option layout inside table headers (no horizontal scrollbar)", () => {
@@ -1357,7 +1355,8 @@ test("Home overdue shortcut: the count and the Tasks page use one definition, an
   assert.doesNotMatch(page, /setStored\(\{ due: "overdue" \}\)/); // the saved filters are not overwritten
   assert.match(page, /const filterValues = shortcut \? shortcutFilters : stored;/);
   assert.match(page, /const viewTest = shortcut \? \(t\) => isMyOpenTask\(t, user\.id\)/);
-  assert.match(source("./SellerHome.jsx"), /const overdue = myOverdueTasks\(data\.tasks, user\.id\);/);
+  // Home's Suggested Actions is gone: overdue tasks are listed first in Action Items > Today (from the API)
+  assert.doesNotMatch(source("./SellerHome.jsx"), /myOverdueTasks/);
   // Due Date > Overdue itself is unchanged (it still lists every task due before today), and so is the dropdown
   // (the date ranges moved from Filters.jsx to listHelpers.js; Filters.rangeBounds uses them)
   assert.match(source("./listHelpers.js"), /case "overdue":\s*return \[null, today\];/);
@@ -1618,4 +1617,61 @@ test("Leads Kanban: Sort by only, each field in its default order; the summary n
   assert.match(table, /onChange=\{\(e\) => setSort\(\{ col: e\.target\.value, dir: defaultSortDirection\(e\.target\.value\) \}\)\}/);
   assert.match(table, /const \[sort, setSort\] = useState\(\{ col: "created", dir: "desc" \}\);/); // the page still opens newest first
   assert.match(table, /sort: sortText\(sortLabel, sort\.col, sort\.dir\)/); // the summary under the title
+});
+
+test("Home period: Past 1 week counts up to now, a custom range has an end", async () => {
+  const { PERIODS, DEFAULT_PERIOD, periodRange, periodQuery, periodLabel, localIso } = await import("./homePeriod.js");
+  assert.deepEqual(PERIODS, [["7d", "Past 1 week"], ["custom", "Custom range"]]);
+  assert.deepEqual(DEFAULT_PERIOD, { preset: "7d" });
+  const now = new Date(2026, 10, 12, 15, 30, 0); // Nov 12, 2026 3:30 PM
+  assert.equal(localIso(periodRange({ preset: "7d" }, now).start), "2026-11-05T15:30:00");
+  assert.equal(localIso(periodRange({ preset: "1m" }, now).start), "2026-11-05T15:30:00"); // an older choice: 1 week
+  assert.equal(periodQuery({ preset: "7d" }, now), "start=2026-11-05T15%3A30%3A00");
+  const custom = { preset: "custom", from: "2026-01-01T09:00", to: "2026-02-01T18:00" };
+  assert.equal(periodQuery(custom, now), "start=2026-01-01T09%3A00%3A00&end=2026-02-01T18%3A00%3A00");
+  // a custom range that ends before it starts falls back to Past 1 week
+  assert.equal(localIso(periodRange({ ...custom, to: "2025-01-01T00:00" }, now).start), "2026-11-05T15:30:00");
+  assert.equal(periodLabel("2026-11-05T15:30:00", "2026-11-12T15:30:00"), "Nov 5 – Nov 12, 2026");
+});
+
+test("Home: one dashboard per role, each card with its permission", async () => {
+  const fs = await import("node:fs");
+  const home = fs.readFileSync(new URL("./SellerHome.jsx", import.meta.url), "utf8");
+  for (const title of ["Action Needed", "Scheduled Demos", "Overall Value", "Closing Soon", "Follow-up Radar", "My Scorecard",
+    "Recent Activity", "Team Performance", "Win/Loss Analysis", "Lead Sources"])
+    assert.ok(home.includes(title), title);
+  for (const old of ["Top Opportunities", "Suggested Actions", "Campaign Performance", "Lead Funnel", "Coaching Alerts",
+    "Data Health", "Open deals by stage", "in this period", "My Pipeline", "Team Leaderboard", "Team Comparison", "manager_id"])
+    assert.ok(!home.includes(old), old);
+  for (const card of ["action_items", "meetings", "pipeline", "follow_up_radar", "scorecard", "recent_activity", "win_loss",
+    "team_performance"])
+    assert.ok(home.includes(`shows("${card}")`), card);
+  // the Admin's own cards (every record, no team picker); Closing Soon is the Admin's only
+  assert.match(home, /isAdmin && charts\.lead_sources/);
+  assert.match(home, /isAdmin && charts\.closing_soon && <ClosingSoonCard/);
+  assert.match(home, /isAdmin && <RadarCard/);
+  assert.match(home, /isAdmin && charts\.recent_records && <RecentCard/); // not on the Manager's My Team view
+  assert.match(home, /!isAdmin && shows\("team_performance"\)/);
+  assert.equal(home.match(/<Section title="Today"/g).length, 2);
+  assert.equal(home.match(/<Section title="Upcoming"/g).length, 2);
+});
+
+
+test("Lead transfer requests, the lead list's Created By / Transferred To, and duplicate warnings", () => {
+  const table = source("./LeadsTable.jsx");
+  assert.match(table, /\["Created By", "created_by", \d+\]/);
+  assert.match(table, /\["Transferred To", "transferred", \d+\]/);
+  assert.match(table, /l\.last_transferred_to/);
+  const api = source("./api.js");
+  for (const path of ["/transfer-requests`", "/transfer-requests?box=", "/cancel`", "/accounts/duplicates?", "/contacts/duplicates?"])
+    assert.ok(api.includes(path), path);
+  const record = source("./RecordPage.jsx");
+  assert.match(record, /label: "Request Transfer"/); // anyone but the Admin, on someone else's open lead
+  assert.match(record, /user\.role !== "Admin" && item\.owner_id !== user\.id/);
+  const modal = source("./Modal.jsx");
+  assert.match(modal, /Request Transfer from \{askFor\.owner_name\}/); // from the "email already in the CRM" message
+  assert.match(modal, /\(dupes\.length > 0 && newRecord\)/); // New Account / Contact: no save over a duplicate
+  const page = source("./TransferRequests.jsx");
+  for (const tab of ["To Approve", "My Requests", "All"]) assert.ok(page.includes(`"${tab}"`), tab);
+  assert.match(source("./App.jsx"), /section === "transfer-requests"/);
 });

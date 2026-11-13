@@ -155,7 +155,7 @@ def test_accounts_list_shows_the_last_activity(client, outbox):
     assert row["last_activity_at"] is not None
 
 
-# ---------- Home > Whole team graphs ----------
+# ---------- Home > My Team cards ----------
 
 def test_team_charts(client, outbox):
     login_as(client, RAVI).post("/api/leads", json={"first_name": "Mira", "last_name": "Shah", "company": "Brightline",
@@ -163,14 +163,13 @@ def test_team_charts(client, outbox):
     assert client.get("/api/home/team-charts").status_code == 403  # Salespeople: no team dashboard
     everyone = login_as(client, PRIYA).get("/api/home/team-charts").json()
     assert everyone["scope"] == "all"
-    assert {r["stage"]: r["count"] for r in everyone["leads_by_stage"]}["New"] == 1
+    assert {p["name"]: p["open_leads"] for p in everyone["people"]}["Ravi Kumar"] == 1
     assert [p["name"] for p in everyone["people"]] == ["Priya Sharma", "Ravi Kumar"]
     # once Priya has a team, she sees her team only
     kiran = add_user(client, "Kiran Rao", "kiran@crm.test").json()
     team = client.get("/api/home/team-charts").json()
     assert team["scope"] == "team" and {p["name"] for p in team["people"]} == {"Priya Sharma", "Kiran Rao"}
-    assert {r["stage"]: r["count"] for r in team["leads_by_stage"]}["New"] == 0
-    assert set(team["won_lost_month"]) == {"won", "lost"}
+    assert sum(p["open_leads"] for p in team["people"]) == 0 and set(team["pipeline"]) >= {"open", "won", "lost"}
 
 
 def test_a_team_members_own_download_is_in_team_activity_not_the_bell(client, outbox):

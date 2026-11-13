@@ -34,7 +34,11 @@ def lead_out(lead: Lead) -> schemas.LeadOut:
         update={
             "owner_name": lead.owner.full_name if lead.owner else None,
             "opportunity_id": lead.opportunity.id if lead.opportunity else None,
+            "created_by_name": lead.created_by.full_name if lead.created_by else None,
+            # the latest transfer: to whom and when (Transferred To / Transferred At in the list)
             "last_transferred_at": lead.transfers[-1].transferred_at if lead.transfers else None,
+            "last_transferred_to": lead.transfers[-1].to_user.full_name if lead.transfers and lead.transfers[-1].to_user
+            else None,
             "demo_at": demo_instant(lead.demo_date),
         }
     )

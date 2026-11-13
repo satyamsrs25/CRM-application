@@ -243,7 +243,7 @@ def test_home_page(client):
     client.post(f"/api/opportunities/{won}/won", json={"task": TASK, "completed_stages": ["Discovery", "Proposal"], "final_value": 90000, "note": "Synthetic test note"})
     today = datetime.now().date().isoformat()
     convert(client, new_lead(client, name="D", company="Open Co")["id"], expected_value=40000, expected_close_date=today)
-    later = (datetime.now() + timedelta(days=200)).date().isoformat()  # next quarter or later: not in Close Deals
+    later = (datetime.now() + timedelta(days=200)).date().isoformat()  # created now: in the period, whatever its close date
     convert(client, new_lead(client, name="F", company="Later Co")["id"], expected_value=5000, expected_close_date=later)
     demo = new_lead(client, name="E", company="Demo Co")
     client.put(f"/api/leads/{demo['id']}/stage", json={"task": TASK, "completed_stages": ["New", "Nurturing"], "stage": "Demo", "demo_date": tonight_ist().isoformat(), "note": "Synthetic test note"})
@@ -256,12 +256,12 @@ def test_home_page(client):
     assert home["won_vs_lost"][0] == {"outcome": "Won", "deals": 1, "value": 90000}
     cards = home["seller_home"]
     deals = cards["close_deals"]
-    assert (deals["total_pipeline"], deals["open"], deals["won"], deals["lost"]) == (130000, 40000, 90000, 0)
-    assert [d["name"] for d in cards["key_deals"]] == ["Open Co - Opportunity", "Later Co - Opportunity"]
+    # Overall Value: opportunities created in the period (default: the past 7 days), by their stage now
+    assert (deals["total_pipeline"], deals["open"], deals["won"], deals["lost"]) == (135000, 45000, 90000, 0)
     assert [(e["type"], e["name"]) for e in cards["todays_events"]] == [("Demo", "E")]
     assert cards["accounts"]["total"] == 3 and cards["contacts"]["total"] == 3
-    assert cards["build_pipeline"]["leads_last_30_days"] == 6
-    assert cards["recent_records"]
+    assert cards["build_pipeline"]["total"] == 6
+    assert cards["scorecard"]["won"] == 1 and cards["scorecard"]["lost"] == 0 and cards["scorecard"]["win_rate"] == 100
     assert login_as(client, 1).get("/api/home", params={"owner_id": 1}).json()["summary"]["total_leads"] == 0
 
 

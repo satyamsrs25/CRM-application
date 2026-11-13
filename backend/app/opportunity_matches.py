@@ -1,8 +1,10 @@
 """Keeps accounts, contacts and opportunities free of duplicates when an opportunity is created (converting a lead, or
-"New Opportunity" on the Opportunities or Account page).
+"New Opportunity" on the Opportunities or Account page), and when an account or a contact is created by hand.
 
-- A company has one account: the same company name (case, punctuation and "Inc", "LLC"... ignored) reuses it.
-- A person has one contact per account: the same email, or the same name (first + last), reuses it.
+- A company has one account: the same company name (case, punctuation and "Inc", "LLC"... ignored) or the same
+  company website (https, www and the page ignored: acme.com) reuses it, or stops a second one being created.
+- A person has one contact: an email belongs to one contact only (on any account). On an account, the same email or
+  the same name (first + last) reuses the contact.
 - One person at one company can't have the same open opportunity twice, so two salespeople never work the same deal.
   "The same opportunity" = the same opportunity name (case and punctuation ignored) for that contact and account.
 """
@@ -16,6 +18,7 @@ from app.constants import OPPORTUNITY_OPEN_STAGES
 from app.models import Account, Contact, Opportunity
 from app.routers.lead_files import company_key
 from app.security import acting_user, can_view
+from app.services import website_host
 
 
 def name_key(text: str | None) -> str:
@@ -23,16 +26,65 @@ def name_key(text: str | None) -> str:
     return " ".join(re.sub(r"[^a-z0-9& ]", " ", (text or "").lower()).split())
 
 
-def find_account(db: Session, company: str | None) -> Account | None:
-    """The existing account for this company name, if there is one (the oldest, if there are several)."""
+def find_account(db: Session, company: str | None, website: str | None = None) -> Account | None:
+    """The existing account for this company name or company website, if there is one (the oldest, if several)."""
     wanted = company_key(company)
-    if len(wanted) < 2:
+    if len(wanted) >= 2:
+        like = f"%{wanted.split()[0]}%"
+        for account in db.scalars(select(Account).where(Account.name.ilike(like)).order_by(Account.id)).all():
+            if company_key(account.name) == wanted:
+                return account
+    return find_account_by_website(db, website)
+
+
+def find_account_by_website(db: Session, website: str | None) -> Account | None:
+    """The account with the same website: 'https://www.Acme.com/about' and 'acme.com' are the same."""
+    host = website_host(website)
+    if "." not in host:
         return None
-    like = f"%{wanted.split()[0]}%"
-    for account in db.scalars(select(Account).where(Account.name.ilike(like)).order_by(Account.id)).all():
-        if company_key(account.name) == wanted:
+    for account in db.scalars(select(Account).where(Account.website.ilike(f"%{host}%")).order_by(Account.id)).all():
+        if website_host(account.website) == host:
             return account
     return None
+
+
+def find_contact_by_email(db: Session, email: str | None) -> Contact | None:
+    """The contact with this email on any account (an email belongs to one contact only)."""
+    email = (email or "").strip().lower()
+    if not email:
+        return None
+    return db.scalars(select(Contact).where(func.lower(Contact.email) == email).order_by(Contact.id)).first()
+
+
+def whose(record) -> str:
+    """'yours' or 'owned by Priya Sharma' (for the messages below)."""
+    if record.owner_id == acting_user().id:
+        return "yours"
+    return f"owned by {record.owner.full_name}" if record.owner else "owned by another user"
+
+
+def ensure_new_account(db: Session, name: str | None, website: str | None) -> None:
+    """Refuses a second account for the same company (the same name, or the same website)."""
+    same_name = find_account(db, name)
+    account = same_name or find_account_by_website(db, website)
+    if account is None:
+        return
+    why = "name" if same_name is not None else f"website ({website_host(account.website)})"
+    raise HTTPException(status_code=409, detail=(
+        f'The account "{account.name}" ({whose(account)}) already has this company {why}. '
+        "Use that account instead of creating a second one, or ask its owner or a Manager."))
+
+
+def ensure_email_free_for_contact(db: Session, email: str | None, account: Account | None = None) -> None:
+    """Refuses a contact whose email already belongs to a contact on another account (on the same account, the
+    existing contact is reused instead)."""
+    contact = find_contact_by_email(db, email)
+    if contact is None or (account is not None and contact.account_id == account.id):
+        return
+    raise HTTPException(status_code=409, detail=(
+        f"This email already belongs to the contact {contact.full_name} at "
+        f"{contact.account.name if contact.account else 'another account'} ({whose(contact)}). "
+        "One person has one contact: use that contact, or check the email."))
 
 
 def find_contact(db: Session, account_id: int | None, *, email: str | None = None, first_name: str | None = None,

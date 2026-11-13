@@ -39,7 +39,6 @@ def now() -> datetime:
 # Upcoming = has an open task due now or later; Past = has tasks, but none open and upcoming; No Activity = no tasks.
 # A lead's own tasks count; an account's and a contact's activity is the tasks of their opportunities.
 ACTIVITIES = ("upcoming", "past", "none")
-ACTIVITY_DAYS = {"leads": 30, "contacts": 90}  # Home counts leads and contacts created in the last N days
 
 
 def _tasks_of(model):

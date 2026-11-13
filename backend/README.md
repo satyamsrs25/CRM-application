@@ -178,6 +178,8 @@ All APIs start with `/api`.
 | Home | GET /home |
 | Leads list | GET /leads (filters: stage, source, owner_id, search) |
 | New lead | POST /leads |
+| Lead transfer requests (ask for someone else's lead; the owner, the owner's Manager or the Admin approves or rejects; nothing moves without approval) | POST /leads/{id}/transfer-requests, GET /leads/{id}/transfer-requests, GET /transfer-requests?box=to_approve\|mine\|all, POST /transfer-requests/{id}/approve, /reject (reason required), /cancel |
+| No duplicate accounts / contacts (one account per company name or website, one contact per email) | GET /accounts/duplicates?name=&website=, GET /contacts/duplicates?email=&account_id=&first_name=&last_name= (POST /accounts and /contacts refuse duplicates with 409) |
 | Lead page | GET /leads/{id} (details, tasks, notes and history together) |
 | Edit lead | PUT /leads/{id} |
 | New lead: LinkedIn autofill | GET /leads/enrichment (is it on?), POST /leads/enrichment (`{"linkedin_url": ...}`) |
@@ -207,13 +209,18 @@ All APIs start with `/api`.
 
 The responses already include names next to the ids (owner_name, account_name, primary_contact_name and so on), so the screens don't need extra calls just to show a name.
 
-`GET /home?owner_id=` returns the Seller Home cards for one user, like Salesforce:
+Home has one dashboard per role. `start`/`end` = the period (default: the past 7 days up to now).
 
-- Close Deals: my opportunities closing this quarter (open, won and lost amounts)
-- Plan My Accounts / Grow Relationships (contacts from the last 90 days) / Build Pipeline (leads from the last 30 days), each split into upcoming, past and no activity
-- Key Deals: my biggest open opportunities
-- Today's Events: demos booked for today
-- Recent Records
+`GET /home?owner_id=&start=&end=` returns the Salesperson's cards (also a Manager's Me view; `owner_id` = one user's records):
+
+- Action Needed: my tasks, Today (overdue first) and Upcoming (the next 7 days)
+- Scheduled Demos: my demos, Today and Upcoming (the next 7 days)
+- Overall Value: opportunities created in the period (open, won and lost amounts)
+- Follow-up Radar: leads, accounts and contacts created in the period, split into upcoming, past and no activity (the Admin's Follow-up Radar uses it too, for every record)
+- My Scorecard: deals won and lost, win rate, leads converted and average deal size in the period
+- Recent Activity: the leads, opportunities, accounts and contacts changed last
+
+`GET /home/team-charts?start=&end=` returns the team cards: Overall Value, Win/Loss Analysis (with the top lost reasons) and Team Performance. A Manager gets their own team (My Team view). The Admin gets every record, plus Lead Sources, Closing Soon (open opportunities closing in the next 30 days) and Recent Activity. The Admin chooses which cards Managers and Salespeople see with the "Home dashboard" permissions.
 
 ## Folder structure
 

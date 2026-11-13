@@ -39,6 +39,9 @@ const COLUMNS = [
   ["Status", "stage", 124],
   ["Source", "source", 104],
   ["Owner", "owner", 144],
+  ["Created By", "created_by", 144],
+  // who the lead was last transferred to, and when (empty when it never changed owner)
+  ["Transferred To", "transferred", 200],
   ["Created", "created", 108],
   ["Last Modified", "modified", 124],
 ];
@@ -197,8 +200,9 @@ function BulkDialog({ action, count, users, me, onClose, onDone }) {
 
 export default function LeadsTable({
   view,
-  activity = null, // Home's pills: "upcoming" | "past" | "none", with days = created in the last N days
-  days = null,
+  activity = null, // Home's pills: "upcoming" | "past" | "none"
+  createdFrom = null, // Home's period: created_at in [createdFrom, createdTo)
+  createdTo = null,
   viewName = "",
   stage,
   filters = {},
@@ -254,7 +258,8 @@ export default function LeadsTable({
   const load = (extra) => {
     const params = new URLSearchParams({ view, sort: sort.col, direction: sort.dir });
     if (activity) params.set("activity", activity);
-    if (days) params.set("created_days", days);
+    if (createdFrom) params.set("created_from", createdFrom);
+    if (createdTo) params.set("created_to", createdTo);
     if (filters.source) params.set("source", filters.source);
     if (filters.owner) params.set("owner", filters.owner);
     for (const key of ["created", "modified"]) {
@@ -665,6 +670,17 @@ export default function LeadsTable({
                       </td>
                       <Cell title={l.uploaded_from ? `Uploaded from ${l.uploaded_from}` : l.source}>{l.source}</Cell>
                       <Cell className="strong">{l.owner_name || ""}</Cell>
+                      <Cell>{l.created_by_name || ""}</Cell>
+                      <Cell
+                        className="transferred"
+                        title={l.last_transferred_to ? `Transferred to ${l.last_transferred_to} on ${dateTime(l.last_transferred_at)}` : "Not transferred"}
+                      >
+                        {l.last_transferred_to && (
+                          <>
+                            {l.last_transferred_to} <small className="muted">{dateTime(l.last_transferred_at)}</small>
+                          </>
+                        )}
+                      </Cell>
                       <Cell className="date" title={dateTime(l.created_at)}>
                         <DateCell value={l.created_at} />
                       </Cell>

@@ -446,17 +446,11 @@ export function leadConvertChoice(leads, rights) {
   return { action: leadStageAction(lead, "Converted", { canEdit, canConvert: true }) };
 }
 
-// The line under the Home greeting: what the dashboard shows for this role and view (backend/app/routers/home.py).
-// "Whole team" loads every record (not only a Manager's direct reports); a Manager's Team Performance section shows
-// their own Salespeople (everyone, until they have a team). The Admin always sees every record and no scope switch.
+// The short line under the Home greeting, for this role and view (My Team or Me). The Admin always sees every record.
 export function homeDescription(role, team) {
-  if (role === "Admin") return "Monitor sales performance, account activity and follow-ups across teams.";
-  if (role === "Manager")
-    return team
-      ? "Track the whole team's pipeline and upcoming follow-ups, and your salespeople's performance."
-      : "Review your opportunities, accounts and upcoming follow-ups.";
-  if (team) return "The team's deals, accounts and follow-ups at a glance.";
-  return "Your deals, accounts and follow-ups for today.";
+  if (role === "Admin") return "Company-wide sales at a glance.";
+  if (team) return "Your team's sales at a glance.";
+  return "Your sales and follow-ups for today.";
 }
 
 // The earliest demo date and time the pickers accept: now, to the minute, in IST (demo times are IST whatever the

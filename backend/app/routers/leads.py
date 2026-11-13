@@ -19,7 +19,8 @@ from app.security import (acting_user, acting_user_id, forbid_admin_create, owne
 from app.models import (Account, Contact, Email, EmailAttachment, Lead, LeadTransfer, Note, Notification, Opportunity,
                         StageHistory, Task, User)
 from app.serializers import account_out, contact_out, history_out, lead_detail, lead_out, opportunity_out, task_out
-from app.opportunity_matches import default_name, ensure_no_duplicate, find_account, find_contact
+from app.opportunity_matches import (default_name, ensure_email_free_for_contact, ensure_no_duplicate, find_account,
+                                     find_contact)
 from app.services import (
     add_stage_task,
     assignment_notice,
@@ -105,6 +106,7 @@ def find_duplicates(db: Session, email: str | None, exclude_lead_id: int | None 
     for lead in db.scalars(query.order_by(Lead.id.desc())).all():
         found.append({"type": "Lead", "id": lead.id, "name": lead.name, "company": lead.company, "stage": lead.stage,
                       "open": lead.stage in LEAD_OPEN_STAGES, "owner_name": lead.owner.full_name if lead.owner else None,
+                      "owner_id": lead.owner_id,  # someone else's open lead can be asked for (transfer request)
                       "can_open": lead.owner_id == me.id or me.sees_team})
     for contact in db.scalars(select(Contact).where(func.lower(Contact.email) == email)).all():
         found.append({"type": "Contact", "id": contact.id, "name": contact.full_name,
@@ -158,7 +160,7 @@ def create_lead(data: schemas.LeadCreate, db: Session = Depends(get_db)):
     actor_id = acting_user_id()
     check_lead_email(db, data.email, data.company_website, confirmed=data.confirm_email_domain)
     lead = Lead(**data.model_dump(exclude={"owner_id", "created_by_id", "confirm_email_domain"}),
-                owner_id=owner_id, stage=LEAD_START)
+                owner_id=owner_id, created_by_id=acting_user_id(), stage=LEAD_START)
     db.add(lead)
     db.flush()
     db.refresh(lead)  # loads "name", which the database builds from first + last name
@@ -607,7 +609,7 @@ def convert_lead(lead_id: int, data: schemas.ConvertLead, db: Session = Depends(
     if data.account_id is not None:
         account = get_or_404(db, Account, data.account_id, "Account")
     else:
-        account = find_account(db, lead.company or lead.name)
+        account = find_account(db, lead.company or lead.name, lead.company_website)  # same name or same website
     reused_account = account is not None
     if account is None:
         account = Account(
@@ -620,6 +622,8 @@ def convert_lead(lead_id: int, data: schemas.ConvertLead, db: Session = Depends(
 
     contact = find_contact(db, account.id, email=lead.email, first_name=lead.first_name, last_name=lead.last_name)
     reused_contact = contact is not None
+    if contact is None:  # a new contact: its email can't already belong to a contact on another account
+        ensure_email_free_for_contact(db, lead.email, account)
     opportunity_name = (data.opportunity_name or "").strip() or default_name(account.name)
     # the same person at the same company can't have the same open opportunity twice (one salesperson per deal)
     ensure_no_duplicate(db, account, contact, opportunity_name)

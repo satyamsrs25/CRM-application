@@ -37,6 +37,7 @@ import { can } from "./permissions";
 import { BUSINESS_TZ_LABEL, formatBusiness, fromBusinessInput, toBusinessInput } from "./businessTime";
 import { shortDate } from "./format";
 import { AmountField, Icon } from "./ui";
+import { RequestTransferDialog } from "./TransferRequests";
 
 const go = (path) => {
   window.location.hash = path;
@@ -120,6 +121,53 @@ export default function Modal({ modal, close, data, run, notify, user }) {
         <small className="field-hint">You can still save. Check with the owner so two people don't work the same company.</small>
       </div>
     );
+  // New Account / New Contact: the account with this company name or website, or the contact with this email, already
+  // exists. Looked up when a field is left; saving is blocked (the server refuses it too): use the existing record.
+  const [dupes, setDupes] = useState([]);
+  const dupeCheck = useRef(0); // only the latest lookup counts (an earlier, slower one can answer last)
+  const checkDupes = (e) => {
+    const form = e.currentTarget.closest("form");
+    if (!form) return;
+    const v = Object.fromEntries(new FormData(form));
+    const lookup =
+      type === "account"
+        ? api.accountDuplicates((v.name || "").trim(), (v.website || "").trim())
+        : api.contactDuplicates({ email: (v.email || "").trim(), account_id: v.account_id, first_name: (v.first_name || "").trim(), last_name: (v.last_name || "").trim() });
+    const mine = ++dupeCheck.current;
+    lookup
+      .then((res) => mine === dupeCheck.current && setDupes(res.matches || []))
+      .catch(() => mine === dupeCheck.current && setDupes([]));
+  };
+  const WHY = { name: "the same name", website: "the same website", email: "this email", lead: "this email (an open lead: convert it instead)" };
+  const dupeBox = () =>
+    dupes.length > 0 && (
+      <div className="company-box" role="alert">
+        <b>
+          <Icon name="warn" size={14} /> Already in the CRM
+        </b>
+        <ul>
+          {dupes.map((m, i) => (
+            <li key={i}>
+              {m.id ? (
+                <a href={`#/${m.type === "Lead" ? "leads" : type === "account" ? "accounts" : "contacts"}/${m.id}`} target="_blank" rel="noreferrer">
+                  {m.name}
+                </a>
+              ) : (
+                <span>{m.name}</span>
+              )}
+              <small>
+                {" "}
+                {m.type || "Account"} with {WHY[m.why]}
+                {m.account ? ` • ${m.account}` : ""} • Owner: {m.mine ? "You" : m.owner}
+              </small>
+            </li>
+          ))}
+        </ul>
+        <small className="field-hint">
+          Use the existing {type === "account" ? "account" : "record"} instead of creating a duplicate, or ask its owner or a Manager.
+        </small>
+      </div>
+    );
   // Cancel Demo: "reschedule" (pick a new date, stay at Demo) or "nurturing" (cancel, back to Revisit)
   const [demoChoice, setDemoChoice] = useState("reschedule");
   // New Opportunity / Convert: the same open opportunity already exists (saving is blocked until it's changed)
@@ -136,13 +184,19 @@ export default function Modal({ modal, close, data, run, notify, user }) {
   const noteField = stageNoteField(type, demoChoice);
   const [noteError, setNoteError] = useState(false);
   const [emailError, setEmailError] = useState(""); // lead email already in the CRM, or not on the company domain
+  // that email is someone else's open lead: ask for it to be transferred instead (the owner, their Manager or the Admin approves)
+  const [askFor, setAskFor] = useState(null);
+  const [asking, setAsking] = useState(false);
   // New Account / New Contact: required fields left empty (or an invalid email), shown under each field
   const [fieldErrors, setFieldErrors] = useState({});
   const newRecord = type === "account" || type === "contact";
   const fieldError = (name) => (name === "email" && emailError) || fieldErrors[name] || "";
   const errorId = (name) => (name === "email" && emailError ? "email-error" : `${name}-field-error`);
   const clearError = (name) => {
-    if (name === "email" && emailError) setEmailError("");
+    if (name === "email" && emailError) {
+      setEmailError("");
+      setAskFor(null);
+    }
     if (fieldErrors[name]) setFieldErrors(({ [name]: _, ...rest }) => rest);
   };
   // an email on another domain than the website is asked about once; saving again with the same pair saves it
@@ -248,6 +302,11 @@ export default function Modal({ modal, close, data, run, notify, user }) {
         <small id={errorId(name)} className="field-error">
           {fieldError(name)}
         </small>
+      )}
+      {name === "email" && askFor && (
+        <button type="button" className="sf-button small request-transfer" onClick={() => setAsking(true)}>
+          Request Transfer from {askFor.owner_name}
+        </button>
       )}
     </label>
   );
@@ -551,8 +610,11 @@ export default function Modal({ modal, close, data, run, notify, user }) {
           if (others.length) {
             // emails are unique: say who has it (the name only if this user may open that record)
             const m = others[0];
+            const requestable = m.type === "Lead" && m.open && m.owner_id !== user?.id && user?.role !== "Admin";
+            setAskFor(requestable ? m : null);
             return emailProblem(
-              `This email is already in the CRM${m.can_open ? ` (${m.type}: ${m.name}, owner ${m.owner_name})` : ""}. Use a different email.`,
+              `This email is already in the CRM${m.can_open ? ` (${m.type}: ${m.name}, owner ${m.owner_name})` : ` (owner ${m.owner_name})`}. ` +
+                (requestable ? "Ask for that lead to be transferred to you, or use a different email." : "Use a different email."),
             );
           }
         }
@@ -737,7 +799,7 @@ export default function Modal({ modal, close, data, run, notify, user }) {
             </p>
           )}
           {type === "account" && (
-            <div className="form-grid">
+            <div className="form-grid" onBlur={checkDupes}>
               {field("Account Name", "name", "text", true, "")}
               {field("Industry", "industry", "text", true, "")}
               {field("Phone", "phone", "tel", true, "")}
@@ -746,8 +808,9 @@ export default function Modal({ modal, close, data, run, notify, user }) {
               {owner()}
             </div>
           )}
+          {(type === "account" || type === "contact") && dupeBox()}
           {type === "contact" && (
-            <div className="form-grid">
+            <div className="form-grid" onBlur={checkDupes}>
               {select("Salutation", "salutation", SALUTATIONS, "")}
               {field("First Name", "first_name", "text", false, "")}
               {field("Last Name", "last_name", "text", true, "")}
@@ -1137,7 +1200,9 @@ export default function Modal({ modal, close, data, run, notify, user }) {
             <button
               type="submit"
               className={`sf-button ${type === "delete" ? "danger" : "brand"}`}
-              disabled={submitting || (blocked && (type === "newOpportunity" || type === "convert"))}
+              disabled={
+                submitting || (blocked && (type === "newOpportunity" || type === "convert")) || (dupes.length > 0 && newRecord)
+              }
               aria-busy={submitting}
             >
               {submitting
@@ -1172,6 +1237,17 @@ export default function Modal({ modal, close, data, run, notify, user }) {
         </form>
         )}
       </section>
+      {asking && askFor && (
+        <RequestTransferDialog
+          lead={{ id: askFor.id, name: askFor.can_open ? askFor.name : "the existing lead", owner_name: askFor.owner_name }}
+          onClose={() => setAsking(false)}
+          onDone={() => {
+            setAsking(false);
+            close();
+            notify?.(`Transfer requested. ${askFor.owner_name}, their Manager or the Admin will approve or reject it.`);
+          }}
+        />
+      )}
     </div>
   );
 }

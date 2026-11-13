@@ -120,6 +120,8 @@ def create_opportunity(data: schemas.OpportunityCreate, db: Session = Depends(ge
         contact = matches.find_contact(db, account.id, email=data.contact_email, first_name=data.contact_first_name,
                                        last_name=data.contact_last_name)
     reused_contact = contact is not None
+    if contact is None:  # a new contact: its email can't already belong to a contact on another account
+        matches.ensure_email_free_for_contact(db, data.contact_email, account)
     matches.ensure_no_duplicate(db, account, contact, data.name)
     if account is None:
         account = Account(name=data.account_name.strip(), owner_id=owner_id)

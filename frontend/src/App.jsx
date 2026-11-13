@@ -10,7 +10,9 @@ import Modal from "./Modal";
 import RecordPage from "./RecordPage";
 import { AccountPage, ContactPage } from "./RelatedPages";
 import SellerHome from "./SellerHome";
+import { loadPeriod, savePeriod } from "./homePeriod";
 import TasksPage from "./TasksPage";
+import TransferRequestsPage from "./TransferRequests";
 import ManageAccess, { ChangePassword, MyProfile } from "./UsersPage";
 import { can, canManageAccess } from "./permissions";
 import { Icon } from "./ui";
@@ -118,7 +120,13 @@ function Workspace({ user, onLogout, onUserChanged }) {
       /* ignore */
     }
   };
-  const { data, run, error, loading, saving, reload, hasLoaded } = useWorkspace(section, id, user.id, homeScope);
+  // Home's period selector (remembered in this browser)
+  const [homePeriod, setHomePeriodState] = useState(loadPeriod);
+  const setHomePeriod = (value) => {
+    setHomePeriodState(value);
+    savePeriod(value);
+  };
+  const { data, run, error, loading, saving, reload, hasLoaded } = useWorkspace(section, id, user.id, homeScope, homePeriod);
   const [modal, setModal] = useState(null);
   const [toast, setToast] = useState("");
   const [composer, setComposer] = useState(null);
@@ -189,6 +197,8 @@ function Workspace({ user, onLogout, onUserChanged }) {
         openTask={openTask}
         scope={homeScope}
         setScope={setHomeScope}
+        period={homePeriod}
+        setPeriod={setHomePeriod}
         teamDashboard={teamDashboard && !isAdmin}
       />
     );
@@ -207,6 +217,7 @@ function Workspace({ user, onLogout, onUserChanged }) {
         setModal={setModal}
         openEmail={openEmail}
         emailVersion={emailVersion}
+        reload={reload}
       />
     ) : (
       <ListView key={route} collection={section} data={data} user={user} openNew={openNew} setModal={setModal} query={query} notify={notify} reload={reload} />
@@ -226,6 +237,7 @@ function Workspace({ user, onLogout, onUserChanged }) {
   else if (["users", "permissions", "activity", "team-activity"].includes(section) && canManageAccess(user))
     page = <ManageAccess tab={section === "users" ? "people" : section} user={user} data={data} reload={reload} notify={notify} onSelfChanged={onUserChanged} />;
   else if (section === "assistant") page = <AssistantPage user={user} reload={reload} />;
+  else if (section === "transfer-requests") page = <TransferRequestsPage user={user} reload={reload} />;
   else if (section === "campaigns") page = <CampaignsPage key={id || "list"} id={id} user={user} data={data} notify={notify} />;
   else if (section === "tasks")
     page = (

@@ -19,7 +19,7 @@ from app.database import Base, SessionLocal, engine, get_db
 from app import mailer, scheduler, schemas
 from app.security import authenticate, ensure_default_admin, require_admin
 from app.routers import (accounts, activity, assistant, attachments, auth, campaigns, emails, home, lead_enrichment,
-                         lead_files, leads, opportunities, opportunity_files, tasks, user_files)
+                         lead_files, leads, opportunities, opportunity_files, tasks, transfer_requests, user_files)
 from app import campaigns as campaign_sender
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:     %(name)s - %(message)s")
@@ -50,6 +50,18 @@ def upgrade_database() -> None:
             transferred_by_id INT NOT NULL REFERENCES users(id), note VARCHAR(300),
             transferred_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)"""))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_lead_transfers_lead ON lead_transfers (lead_id)"))
+        # who added each lead (older leads: their first owner) and requests to have someone else's lead transferred
+        conn.execute(text("ALTER TABLE leads ADD COLUMN IF NOT EXISTS created_by_id INT REFERENCES users(id)"))
+        conn.execute(text("""UPDATE leads l SET created_by_id = COALESCE((SELECT t.from_user_id FROM lead_transfers t
+            WHERE t.lead_id = l.id ORDER BY t.id LIMIT 1), l.owner_id) WHERE l.created_by_id IS NULL"""))
+        conn.execute(text("""CREATE TABLE IF NOT EXISTS lead_transfer_requests (
+            id SERIAL PRIMARY KEY, lead_id INT NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+            requested_by_id INT NOT NULL REFERENCES users(id), owner_id INT NOT NULL REFERENCES users(id),
+            reason VARCHAR(300) NOT NULL, status VARCHAR(10) NOT NULL DEFAULT 'Pending'
+              CHECK (status IN ('Pending','Approved','Rejected','Cancelled')),
+            decided_by_id INT REFERENCES users(id), decision_note VARCHAR(300), decided_at TIMESTAMP,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)"""))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_lead_transfer_requests_lead ON lead_transfer_requests (lead_id)"))
         for table, column, kind in (
             ("leads", "linkedin_url", "VARCHAR(300)"), ("leads", "company_website", "VARCHAR(255)"),
             ("leads", "company_linkedin_url", "VARCHAR(300)"), ("leads", "annual_revenue", "NUMERIC(16,2)"),
@@ -212,7 +224,8 @@ app.include_router(campaigns.public)
 # /leads/{id}
 for router in (user_files.router, emails.router, home.router, lead_files.router, lead_enrichment.router,
                campaigns.router, campaigns.leads_router, leads.router, opportunity_files.router,
-               opportunities.router, attachments.router, tasks.router, accounts.router, activity.router, assistant.router):
+               opportunities.router, attachments.router, tasks.router, accounts.router, activity.router, assistant.router,
+               transfer_requests.router):
     app.include_router(router, dependencies=[Depends(authenticate)])
 
 

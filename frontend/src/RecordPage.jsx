@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { AddToCalendar } from "./calendar";
 import { demoEvent } from "./calendarLinks";
 import { formatBusiness } from "./businessTime";
@@ -7,6 +7,8 @@ import { EmailList, useEmails } from "./Email";
 import { canCreateSales, canEditRecord, canTransferLead } from "./permissions";
 import { amount, dateTime, shortDate } from "./format";
 import { ActionMenu, Card, Icon, ObjectIcon, PathBar, PhoneReveal, StageBadge } from "./ui";
+import { RequestTransferDialog, TransferRequestList } from "./TransferRequests";
+import { api } from "./api";
 
 import { ATTACHMENT_UPLOAD_STAGES, LEAD_FLOW, LEAD_OPTIONAL_STAGES, OPPORTUNITY_FLOW } from "./domain";
 
@@ -152,10 +154,17 @@ function ActivityTab({ item, tasks, toggleTask, setModal, openTask, collection, 
   );
 }
 
-export default function RecordPage({ collection, item, data, user, openLead, openTask, toggleTask, convert, setModal, openEmail, emailVersion }) {
+export default function RecordPage({ collection, item, data, user, openLead, openTask, toggleTask, convert, setModal, openEmail, emailVersion, reload }) {
   const lead = collection === "leads";
   const [tab, setTab] = useState("activity");
   const { emails } = useEmails(lead ? "lead_id" : "opportunity_id", item?.id, emailVersion);
+  // lead transfer requests: asking for someone else's lead, and approving requests for this one
+  const [requests, setRequests] = useState([]);
+  const [asking, setAsking] = useState(false);
+  const loadRequests = () => {
+    if (lead && item?.id) api.leadTransferRequests(item.id).then(setRequests).catch(() => setRequests([]));
+  };
+  useEffect(loadRequests, [lead, item?.id, item?.owner_id]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!item)
     return (
       <div className="page">
@@ -173,6 +182,10 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
   const canConvert = canEdit && canCreateSales(user); // Lead conversion is reserved for Managers and Salespeople
   const canTransfer = lead && canTransferLead(user, item); // Admin: any lead; owner with "Transfer leads": their own
   const transfers = (lead && item.transfers) || [];
+  // anyone but the Admin (who transfers directly) can ask for an open lead they don't own; approval is required
+  const canRequest =
+    lead && !closed && user.role !== "Admin" && item.owner_id !== user.id &&
+    !requests.some((r) => r.status === "Pending" && r.requested_by_id === user.id);
   const tasks = data.tasks.filter((t) => t.relatedId === item.id && t.relatedType === collection);
   const edit = () => (lead ? openLead(item) : setModal({ type: "opportunity", record: item }));
   // the pencils on the Details tab follow the same rule as Actions > Edit (none for a view-only user)
@@ -289,6 +302,7 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
                   label: "Transfer",
                   onClick: () => setModal({ type: "transfer", record: item }),
                 },
+                canRequest && { label: "Request Transfer", onClick: () => setAsking(true) },
                 canEdit && lead && item.stage === "Demo" && {
                   label: "Reschedule / Cancel Demo",
                   onClick: () => setModal({ type: "cancelDemo", record: item }),
@@ -537,6 +551,17 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
               <p className="muted pad">No notes yet.</p>
             )}
           </Card>
+          {lead && requests.length > 0 && (
+            <Card title={`Transfer Requests (${requests.length})`} icon="contact">
+              <TransferRequestList
+                rows={requests}
+                onChange={(saved) => {
+                  loadRequests();
+                  if (saved?.status === "Approved") reload?.(); // the lead has a new owner
+                }}
+              />
+            </Card>
+          )}
           {lead && (
             <Card title={`Transfer History (${transfers.length})`} icon="contact">
               {transfers.length ? (
@@ -573,6 +598,16 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
           {!lead && <OpportunityAttachments key={item.id} opportunity={item} user={user} canEdit={canEdit} />}
         </aside>
       </div>
+      {asking && (
+        <RequestTransferDialog
+          lead={{ id: item.id, name: item.name, owner_name: item.owner }}
+          onClose={() => setAsking(false)}
+          onDone={() => {
+            setAsking(false);
+            loadRequests();
+          }}
+        />
+      )}
     </div>
   );
 }

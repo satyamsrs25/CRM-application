@@ -101,12 +101,15 @@ def test_a_valid_contact_is_created(client):
         "ana.okafor@harbor.example", "+1 555 0141", "Synthetic Harbor Co")
 
 
-def test_no_new_email_uniqueness_or_domain_rule_for_contacts(client):
+def test_contact_email_is_unique_but_has_no_domain_rule(client):
     acc = account(client)
-    for _ in range(2):  # the same address twice, on a domain unlike the account's: both allowed, as before
-        assert client.post("/api/contacts", json={**CONTACT, "email": "shared@other-domain.example",
-                                                  "account_id": acc["id"]}).status_code == 201
-    assert db_count(Contact) == 2
+    # a domain unlike the account's is fine; the same address a second time is a duplicate contact (test_duplicates.py)
+    assert client.post("/api/contacts", json={**CONTACT, "email": "shared@other-domain.example",
+                                              "account_id": acc["id"]}).status_code == 201
+    again = client.post("/api/contacts", json={**CONTACT, "last_name": "Other", "email": "shared@other-domain.example",
+                                               "account_id": acc["id"]})
+    assert again.status_code == 409 and "already has this email" in again.json()["detail"]
+    assert db_count(Contact) == 1
 
 
 def test_contact_access_and_ownership_rules_are_unchanged(client):

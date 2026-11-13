@@ -14,12 +14,12 @@ from decimal import Decimal, InvalidOperation
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from sqlalchemy import func, insert, or_, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, aliased, selectinload
 
 from app import schemas
 from app.constants import CURRENCIES, DEFAULT_CURRENCY, LEAD_OPEN_STAGES, LEAD_SOURCES, LEAD_STAGES, LEAD_START
 from app.database import get_db
-from app.models import Account, ActivityLog, Contact, Lead, StageHistory, User
+from app.models import Account, ActivityLog, Contact, Lead, LeadTransfer, StageHistory, User
 from app.security import acting_user, can_view, require, team_ids, visible
 from app.serializers import lead_out
 from app.services import (activity_condition, email_matches_website, is_personal_email, log_activity, notify,
@@ -396,7 +396,7 @@ async def import_leads(
     note = f"Uploaded from {file.filename}"
     for i in range(0, len(leads), CHUNK):
         batch = [{k: v for k, v in l.items() if not k.startswith("_")}
-                 | {"owner_id": l["_owner_user"].id, "stage": LEAD_START, "untouched": True,
+                 | {"owner_id": l["_owner_user"].id, "created_by_id": me.id, "stage": LEAD_START, "untouched": True,
                     "uploaded_from": (file.filename or "file")[:255]}
                  for l in leads[i:i + CHUNK]]
         ids = db.scalars(insert(Lead).returning(Lead.id), batch).all()
@@ -438,9 +438,13 @@ LIST_VIEWS = {
                                       Lead.unsubscribed_at.is_(None)),  # can be emailed
     "no_email": lambda q, me: q.where(Lead.email.is_(None)),
 }
+CreatedBy = aliased(User)  # the Created By column (a second join to users)
 SORTS = {"name": Lead.name, "title": Lead.title, "company": Lead.company, "phone": Lead.phone, "email": Lead.email,
-         "stage": Lead.stage, "source": Lead.source, "owner": User.full_name, "created": Lead.created_at,
-         "modified": Lead.updated_at}
+         "stage": Lead.stage, "source": Lead.source, "owner": User.full_name, "created_by": CreatedBy.full_name,
+         # Transferred To: by when the lead was last transferred
+         "transferred": select(func.max(LeadTransfer.transferred_at)).where(LeadTransfer.lead_id == Lead.id)
+         .correlate(Lead).scalar_subquery(),
+         "created": Lead.created_at, "modified": Lead.updated_at}
 
 
 def as_local(value: datetime) -> datetime:
@@ -504,8 +508,11 @@ def leads_page(
     column = SORTS[sort]
     if sort == "owner":
         query = query.join(User, User.id == Lead.owner_id)
+    elif sort == "created_by":
+        query = query.outerjoin(CreatedBy, CreatedBy.id == Lead.created_by_id)
     order = column.desc().nulls_last() if direction == "desc" else column.asc().nulls_last()
-    rows = db.scalars(query.options(selectinload(Lead.owner), selectinload(Lead.opportunity))
+    rows = db.scalars(query.options(selectinload(Lead.owner), selectinload(Lead.opportunity), selectinload(Lead.created_by),
+                                    selectinload(Lead.transfers).selectinload(LeadTransfer.to_user))
                       .order_by(order, Lead.id.desc()).offset(offset).limit(limit)).all()
     return {"total": total, "offset": offset, "limit": limit, "items": [lead_out(l) for l in rows]}
 

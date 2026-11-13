@@ -252,7 +252,7 @@ export const api = {
   // Tasks page: Mark as Done / Reassign the ticked tasks
   bulkTasks: (body) => apiRequest("/tasks/bulk", { method: "POST", body }),
   // Home > Whole team graphs
-  teamCharts: () => apiRequest("/home/team-charts"),
+  teamCharts: (query = "") => apiRequest(`/home/team-charts${query ? `?${query}` : ""}`),
   unqualifyLead: (id, values) => apiRequest(`/leads/${id}/unqualified`, { method: "POST", body: values }),
   reopenLead: (id, values) => apiRequest(`/leads/${id}/reopen`, { method: "POST", body: values }),
   stage: (collection, id, values) =>
@@ -269,6 +269,18 @@ export const api = {
     apiRequest(`/leads/${id}/convert`, { method: "POST", body: values }),
   transferLead: (id, values) =>
     apiRequest(`/leads/${id}/transfer`, { method: "POST", body: values }),
+  // ask for someone else's lead (the owner, their Manager or the Admin approves)
+  requestLeadTransfer: (id, reason) => apiRequest(`/leads/${id}/transfer-requests`, { method: "POST", body: { reason } }),
+  leadTransferRequests: (id) => apiRequest(`/leads/${id}/transfer-requests`),
+  transferRequests: (box = "all") => apiRequest(`/transfer-requests?box=${box}`),
+  decideTransferRequest: (id, decision, note) =>
+    apiRequest(`/transfer-requests/${id}/${decision}`, { method: "POST", body: { note: note || null } }),
+  cancelTransferRequest: (id) => apiRequest(`/transfer-requests/${id}/cancel`, { method: "POST" }),
+  // duplicates while typing a new account or contact
+  accountDuplicates: (name, website) =>
+    apiRequest(`/accounts/duplicates?${new URLSearchParams({ ...(name ? { name } : {}), ...(website ? { website } : {}) })}`),
+  contactDuplicates: (params) =>
+    apiRequest(`/contacts/duplicates?${new URLSearchParams(Object.entries(params).filter(([, v]) => v))}`),
   cancelDemo: (id, values) =>
     apiRequest(`/leads/${id}/cancel-demo`, { method: "POST", body: values }),
   note: (collection, id, body) =>

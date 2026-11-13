@@ -31,7 +31,7 @@ def test_build_pipeline_pills_open_the_leads_they_count(client):
     db.commit()
 
     card = client.get("/api/home").json()["seller_home"]["build_pipeline"]
-    assert card["leads_last_30_days"] == 3  # the 45-day-old lead isn't counted
+    assert card["total"] == 3  # the 45-day-old lead isn't in the default period (the past 30 days)
     assert pills(card) == (1, 1, 1)
     for activity, lead in (("upcoming", upcoming), ("past", past), ("none", none)):
         page = client.get("/api/leads/page", params={"view": "my", "activity": activity, "created_days": 30}).json()

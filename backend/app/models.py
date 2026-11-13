@@ -149,6 +149,7 @@ class Lead(Base):
     converted_at: Mapped[datetime | None]
     closed_at: Mapped[datetime | None]
     owner_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))  # who added the lead (by hand or upload)
     # Email campaigns: an address that doesn't work, and leads who unsubscribed, are left out of every campaign
     email_invalid_at: Mapped[datetime | None]
     email_invalid_reason: Mapped[str | None] = mapped_column(String(300))
@@ -156,7 +157,8 @@ class Lead(Base):
     created_at: Mapped[datetime | None] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime | None] = mapped_column(server_default=func.now(), onupdate=func.now())
 
-    owner: Mapped[User] = relationship()
+    owner: Mapped[User] = relationship(foreign_keys=[owner_id])
+    created_by: Mapped[User | None] = relationship(foreign_keys=[created_by_id])
     opportunity: Mapped["Opportunity | None"] = relationship(back_populates="lead")
     tasks: Mapped[list["Task"]] = relationship(back_populates="lead")
     history: Mapped[list["StageHistory"]] = relationship(back_populates="lead")
@@ -181,6 +183,29 @@ class LeadTransfer(Base):
     from_user: Mapped[User | None] = relationship(foreign_keys=[from_user_id])
     to_user: Mapped[User] = relationship(foreign_keys=[to_user_id])
     transferred_by: Mapped[User] = relationship(foreign_keys=[transferred_by_id])
+
+
+class LeadTransferRequest(Base):
+    """A user asks for someone else's lead. The lead's owner, the owner's Manager or the Admin approves or rejects it;
+    the lead moves (a LeadTransfer) only when it is approved."""
+
+    __tablename__ = "lead_transfer_requests"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    lead_id: Mapped[int] = mapped_column(ForeignKey("leads.id", ondelete="CASCADE"))
+    requested_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"))  # gets the lead when approved
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id"))  # the lead's owner when it was asked for
+    reason: Mapped[str] = mapped_column(String(300))
+    status: Mapped[str] = mapped_column(String(10), default="Pending")  # Pending, Approved, Rejected, Cancelled
+    decided_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    decision_note: Mapped[str | None] = mapped_column(String(300))
+    decided_at: Mapped[datetime | None]
+    created_at: Mapped[datetime | None] = mapped_column(server_default=func.now())
+
+    lead: Mapped[Lead] = relationship()
+    requested_by: Mapped[User] = relationship(foreign_keys=[requested_by_id])
+    owner: Mapped[User] = relationship(foreign_keys=[owner_id])
+    decided_by: Mapped[User | None] = relationship(foreign_keys=[decided_by_id])
 
 
 class Opportunity(Base):

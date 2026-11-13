@@ -1,13 +1,37 @@
 import React, { useEffect, useState } from "react";
 import { api } from "./api";
-import { LEAD_OPEN_STAGES, OPPORTUNITY_OPEN_STAGES, dateKey, homeDescription } from "./domain";
+import { homeDescription } from "./domain";
 import { compactMoney, compactMoneyMix, dateTime, greeting, shortDate, time } from "./format";
 import { Card, EmptyState, Icon, ObjectIcon, Ring, StageBadge } from "./ui";
-import { myOverdueTasks } from "./listHelpers";
-import { formatBusinessTime } from "./businessTime";
+import { formatBusiness, formatBusinessTime } from "./businessTime";
+import { can } from "./permissions";
+import { PERIODS, localIso, periodLabel, periodQuery } from "./homePeriod";
 
-const COLORS = { open: "#06a59a", won: "#1b96ff", lost: "#ea001e", upcoming: "#06a59a", past: "#1b96ff", none: "#ea001e" };
-const routeFor = { Lead: "leads", Opportunity: "opportunities", Account: "accounts", Contact: "contacts" };
+// Home: one dashboard per role (each card also needs its "Home dashboard" permission, which the Admin sets for
+// Managers and Salespeople on the Permissions page; the Admin has them all):
+// - Salesperson, and a Manager's Me view: Action Needed, Scheduled Demos, Overall Value, Follow-up Radar, My Scorecard,
+//   Recent Activity (GET /api/home)
+// - Manager's My Team view: Action Needed, Scheduled Demos, Overall Value, Win/Loss Analysis, Team Performance
+//   (GET /api/home/team-charts)
+// - Admin (every record): Overall Value, Win/Loss Analysis, Lead Sources, Closing Soon, Follow-up Radar,
+//   Recent Activity
+// The period (top right) applies to every card except Action Needed, Scheduled Demos, Closing Soon and Recent Activity,
+// which are about now.
+
+const COLORS = { open: "#06a59a", won: "#1b96ff", lost: "#ea001e" };
+const list = (collection, view) => `#/${collection}?list=${encodeURIComponent(view)}`;
+const money = (values) => compactMoneyMix(values);
+const percent = (value) => (value === null || value === undefined ? "–" : `${value}%`);
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const ROUTE = { Lead: "leads", Opportunity: "opportunities", Account: "accounts", Contact: "contacts" };
+
+function ViewButton({ href, children }) {
+  return (
+    <a className="outline-button" href={href}>
+      {children}
+    </a>
+  );
+}
 
 // Each pill opens the matching list (items: [colorKey, text, href])
 function Legend({ items }) {
@@ -25,78 +49,6 @@ function Legend({ items }) {
   );
 }
 
-const list = (collection, view) => `#/${collection}?list=${encodeURIComponent(view)}`;
-
-function ViewButton({ href, children }) {
-  return (
-    <a className="outline-button" href={href}>
-      {children}
-    </a>
-  );
-}
-
-// "Upcoming / Past / No Activity" ring used by the Accounts, Contacts and Leads cards. Each pill opens the list with
-// only those records: activity = upcoming | past | none, days = the card's "created in the last N days" (the backend's
-// services.activity_condition is the one rule for both the counts and the lists)
-function ActivityCard({ title, subtitle, stats, total, noun, href, button, listHref, days }) {
-  const pick = (activity) => `${listHref}&activity=${activity}${days ? `&days=${days}` : ""}`;
-  return (
-    <Card title={title} className="home-card" footer={<ViewButton href={href}>{button}</ViewButton>}>
-      <p className="card-sub">{subtitle}</p>
-      <div className="ring-row">
-        <Ring
-          label={`${total} ${noun}`}
-          segments={[
-            { value: stats.upcoming_activity, color: COLORS.upcoming },
-            { value: stats.past_activity, color: COLORS.past },
-            { value: stats.no_activity, color: COLORS.none },
-          ]}
-        >
-          <strong>{total}</strong>
-          <span>{noun}</span>
-        </Ring>
-        <Legend
-          items={[
-            ["upcoming", `${stats.upcoming_activity} Upcoming Activity`, pick("upcoming")],
-            ["past", `${stats.past_activity} Past Activity`, pick("past")],
-            ["none", `${stats.no_activity} No Activity`, pick("none")],
-          ]}
-        />
-      </div>
-    </Card>
-  );
-}
-
-function assistantItems(data, user) {
-  const mine = (r) => r.owner_id === user.id;
-  const items = [];
-  const overdue = myOverdueTasks(data.tasks, user.id); // the same tasks the link opens
-  if (overdue.length)
-    items.push({
-      key: "overdue",
-      icon: "task",
-      text: `You have ${overdue.length} overdue task${overdue.length > 1 ? "s" : ""}`,
-      href: "#/tasks?view=overdue",
-    });
-  const today = dateKey();
-  data.opportunities
-    .filter((o) => mine(o) && OPPORTUNITY_OPEN_STAGES.includes(o.stage) && o.expected_close_date && o.expected_close_date < today)
-    .forEach((o) =>
-      items.push({ key: `late${o.id}`, icon: "opportunity", text: `${o.name} is past its close date`, href: `#/opportunities/${o.id}` }),
-    );
-  const openTaskFor = new Set(data.tasks.filter((t) => !t.completed && t.relatedType === "leads").map((t) => t.relatedId));
-  data.leads
-    .filter((l) => mine(l) && LEAD_OPEN_STAGES.includes(l.stage) && !openTaskFor.has(l.id))
-    .forEach((l) =>
-      items.push({ key: `idle${l.id}`, icon: "lead", text: `${l.name} has no upcoming activity`, href: `#/leads/${l.id}` }),
-    );
-  return items.slice(0, 6);
-}
-
-// ---------- Whole team graphs: leads by stage, pipeline by stage, won vs lost this month, per salesperson ----------
-// Money totals come per currency ({USD: 12000, INR: 500000}): never added across currencies
-const money = (values) => compactMoneyMix(values);
-
 // One series of horizontal bars (one hue; the label on each row names it, the value sits at the bar's end)
 function BarList({ rows, format = (v) => v, label }) {
   const max = Math.max(...rows.map((r) => r.value), 0);
@@ -104,9 +56,9 @@ function BarList({ rows, format = (v) => v, label }) {
     <ul className="team-bars" aria-label={label}>
       {rows.map((r) => (
         <li key={r.label} title={`${r.label}: ${format(r.value, r)}${r.note ? ` (${r.note})` : ""}`}>
-          <span className="team-bar-label">{r.label}</span>
+          <span className="team-bar-label">{r.href ? <a href={r.href}>{r.label}</a> : r.label}</span>
           <span className="team-bar-track">
-            <span className={`team-bar ${r.tone || ""}`} style={{ width: max ? `${Math.max((r.value / max) * 100, r.value ? 2 : 0)}%` : 0 }} />
+            <span className="team-bar" style={{ width: max ? `${Math.max((r.value / max) * 100, r.value ? 2 : 0)}%` : 0 }} />
           </span>
           <span className="team-bar-value">
             {format(r.value, r)}
@@ -118,99 +70,467 @@ function BarList({ rows, format = (v) => v, label }) {
   );
 }
 
-function TeamCharts() {
-  const [charts, setCharts] = useState(null);
-  const [error, setError] = useState("");
-  useEffect(() => {
-    api.teamCharts().then(setCharts).catch((err) => setError(err.message));
-  }, []);
-  if (error) return <p className="table-empty">{error}</p>;
-  if (!charts) return <p className="table-empty">Loading team charts…</p>;
-  const { won, lost } = charts.won_lost_month;
-  const winRate = won.count + lost.count ? Math.round((won.count / (won.count + lost.count)) * 100) : null;
-  const people = [...charts.people].sort((a, b) => b.open_pipeline - a.open_pipeline || a.name.localeCompare(b.name));
+// A "Today" or "Upcoming" part of Action Needed / Scheduled Demos
+function Section({ title, count, children }) {
   return (
-    <section className="team-charts" aria-label="Team performance">
-      <div className="team-charts-head">
-        <h2>Team Performance</h2>
-        <p>{charts.scope === "team" ? "You and the Salespeople in your team" : "Everyone's records"}</p>
-      </div>
-      <div className="team-charts-grid">
-        <Card title="Leads by Stage" className="home-card">
-          <BarList label="Leads by stage" rows={charts.leads_by_stage.map((r) => ({ label: r.stage, value: r.count }))} />
-        </Card>
-        <Card title="Open Pipeline by Stage" className="home-card">
-          <BarList
-            label="Open pipeline value by stage"
-            format={(_, r) => money(r.values)}
-            rows={charts.pipeline_by_stage.map((r) => ({ label: r.stage, value: r.value, values: r.values, note: `${r.count} deal${r.count === 1 ? "" : "s"}` }))}
-          />
-        </Card>
-        <Card title={`Won vs Lost · ${charts.month}`} className="home-card">
-          <div className="team-winrate">
-            <b>{winRate === null ? "–" : `${winRate}%`}</b>
-            <span>win rate this month</span>
-          </div>
-          <BarList
-            label="Won and lost deals this month"
-            rows={[
-              { label: "Won", value: won.count, note: money(won.values), tone: "won" },
-              { label: "Lost", value: lost.count, note: money(lost.values), tone: "lost" },
-            ]}
-          />
-        </Card>
-      </div>
-      <Card title="Performance per Salesperson" className="home-card team-people">
-        <div className="table-scroll">
-          <table className="sf-table">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th className="num">Open Leads</th>
-                <th className="num">Converted ({charts.month})</th>
-                <th>Open Pipeline</th>
-                <th className="num">Won ({charts.month})</th>
-              </tr>
-            </thead>
-            <tbody>
-              {people.map((p) => (
-                <tr key={p.id}>
-                  <td>
-                    {p.name} {p.role === "Manager" && <small className="muted">(Manager)</small>}
-                  </td>
-                  <td className="num">{p.open_leads}</td>
-                  <td className="num">{p.converted_this_month}</td>
-                  <td>
-                    <span className="team-inline-bar">
-                      <span style={{ width: `${people[0].open_pipeline ? (p.open_pipeline / people[0].open_pipeline) * 100 : 0}%` }} />
-                      <b>{money(p.open_pipeline_values)}</b>
-                    </span>
-                  </td>
-                  <td className="num">{money(p.won_this_month_values)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {!people.length && <p className="table-empty">No salespeople yet.</p>}
-        </div>
-      </Card>
-    </section>
+    <div className="home-section">
+      <h3>
+        {title} <span className="home-section-count">{count}</span>
+      </h3>
+      {children}
+    </div>
   );
 }
 
-export default function SellerHome({ data, user, toggleTask, openTask, scope = "team", setScope = () => {}, teamDashboard = true }) {
+function TaskRows({ tasks, toggleTask, showDay, empty }) {
+  if (!tasks.length) return <p className="home-section-empty">{empty}</p>;
+  return (
+    <ul className="home-tasks work-list">
+      {tasks.slice(0, 5).map((t) => (
+        <li key={t.id}>
+          <input type="checkbox" aria-label={`Complete ${t.title}`} checked={t.completed} disabled={t.completed} onChange={() => toggleTask(t.id)} />
+          <div>
+            <a href={t.relatedType !== "general" ? `#/${t.relatedType}/${t.relatedId}` : `#/tasks?task=${t.id}`}>{t.title}</a>
+            {t.related_to && (
+              <small>
+                {t.related_type}: {t.related_to}
+              </small>
+            )}
+          </div>
+          <span className={t.isOverdue ? "due overdue" : "due"}>
+            {t.isOverdue ? `Overdue · ${shortDate(t.due_date)}` : showDay ? dateTime(t.due_date) : time(t.due_date)}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function EventRows({ events, showDay, empty }) {
+  if (!events.length) return <p className="home-section-empty">{empty}</p>;
+  return (
+    <ul className="home-tasks work-list">
+      {events.slice(0, 5).map((e) => (
+        <li key={`${e.lead_id}${e.start}`}>
+          <ObjectIcon type="event" size={24} />
+          <div>
+            <a href={`#/leads/${e.lead_id}`}>Demo with {e.name}</a>
+            <small>{e.company}</small>
+          </div>
+          <span className="due">{showDay ? formatBusiness(e.start_at) : formatBusinessTime(e.start_at)}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// Overall Value: open, won and lost amounts of the opportunities created in the period (pills open the lists)
+function PipelineCard({ pipeline, views, range }) {
+  const show = (key) => money(pipeline.by_currency?.[key]);
+  return (
+    <Card title="Overall Value" className="home-card" footer={<ViewButton href={`${list("opportunities", views.all)}${range}`}>View Opportunities</ViewButton>}>
+      <div className="ring-row">
+        <Ring
+          label={`Total pipeline ${show("total_pipeline")}`}
+          segments={[
+            { value: pipeline.open, color: COLORS.open },
+            { value: pipeline.won, color: COLORS.won },
+            { value: pipeline.lost, color: COLORS.lost },
+          ]}
+        >
+          {/* two or more currencies ("$85M + ₹42M") get a smaller line so they stay inside the ring */}
+          <strong className={show("total_pipeline").length > 8 ? "ring-long" : ""}>{show("total_pipeline")}</strong>
+          <span>Total Pipeline</span>
+        </Ring>
+        <Legend
+          items={[
+            ["open", `${show("open")} Open`, `${list("opportunities", views.open)}${range}`],
+            ["won", `${show("won")} Won`, `${list("opportunities", views.won)}${range}`],
+            ["lost", `${show("lost")} Lost`, `${list("opportunities", views.lost)}${range}`],
+          ]}
+        />
+      </div>
+    </Card>
+  );
+}
+
+// Won and Lost side by side (count and amount): My Scorecard and Win/Loss Analysis
+function Outcomes({ won, wonValues, lost, lostValues }) {
+  return (
+    <div className="home-score-outcomes">
+      <div className="home-score-won">
+        <span>Won</span>
+        <b>{won ?? 0}</b>
+        <small>{money(wonValues)}</small>
+      </div>
+      <div className="home-score-lost">
+        <span>Lost</span>
+        <b>{lost ?? 0}</b>
+        <small>{money(lostValues)}</small>
+      </div>
+    </div>
+  );
+}
+
+// Win/Loss Analysis (Manager's team, Admin): won vs lost, the win rate and the top lost reasons
+function WinLossCard({ results, range }) {
+  return (
+    <Card title="Win/Loss Analysis" className="home-card" footer={<ViewButton href={`${list("opportunities", "Lost Opportunities")}${range}`}>View Lost Opportunities</ViewButton>}>
+      <Outcomes won={results.won.count} wonValues={results.won.values} lost={results.lost.count} lostValues={results.lost.values} />
+      <p className="home-winrate">
+        <b>{percent(results.win_rate)}</b> win rate
+      </p>
+      <h3 className="home-subhead">Top lost reasons</h3>
+      {results.lost_reasons.length ? (
+        <BarList label="Top lost reasons" rows={results.lost_reasons.map((r) => ({ label: r.reason, value: r.count }))} />
+      ) : (
+        <p className="home-section-empty home-note">No deals lost yet.</p>
+      )}
+    </Card>
+  );
+}
+
+// Closing Soon (Admin): open opportunities closing in the next 30 days (or late), with their owner
+function ClosingSoonCard({ deals }) {
+  return (
+    <Card title="Closing Soon" className="home-card" footer={<ViewButton href={list("opportunities", "Open Opportunities")}>View Opportunities</ViewButton>}>
+      {deals.length ? (
+        <ul className="deal-list">
+          {deals.map((d) => (
+            <li key={d.id}>
+              <ObjectIcon type="opportunity" size={28} />
+              <div>
+                <a href={`#/opportunities/${d.id}`}>{d.name}</a>
+                <small className={d.late ? "overdue" : ""}>
+                  {d.account_name} • {d.late ? "Was due" : "Closes"} {shortDate(d.close_date)}
+                </small>
+                {d.owner_name && <small>{d.owner_name}</small>}
+              </div>
+              <div className="deal-amount">
+                <b>{compactMoney(d.amount, d.currency)}</b>
+                <StageBadge stage={d.stage} />
+              </div>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <EmptyState text="Nothing closing in the next 30 days." small />
+      )}
+    </Card>
+  );
+}
+
+// Follow-up Radar: leads, accounts and contacts created in the period; each pill opens the records with that activity
+function RadarCard({ home, mine, range }) {
+  const rows = [
+    ["Lead", "leads", mine ? "My Leads" : "All Leads", home.build_pipeline],
+    ["Account", "accounts", mine ? "My Accounts" : "All Accounts", home.accounts],
+    ["Contact", "contacts", mine ? "My Contacts" : "All Contacts", home.contacts],
+  ];
+  return (
+    <Card title="Follow-up Radar" className="home-card">
+      <ul className="home-radar">
+        {rows.map(([noun, collection, view, stats]) => {
+          const pick = (activity) => `${list(collection, view)}&activity=${activity}${range}`;
+          return (
+            <li key={collection}>
+              <a className="home-radar-name" href={`${list(collection, view)}${range}`}>
+                {plural(stats.total, noun)}
+              </a>
+              <span>
+                <a className="pill pill-upcoming" href={pick("upcoming")}>
+                  {stats.upcoming_activity} Upcoming
+                </a>
+                <a className="pill pill-past" href={pick("past")}>
+                  {stats.past_activity} Past
+                </a>
+                <a className="pill pill-none" href={pick("none")}>
+                  {stats.no_activity} No Activity
+                </a>
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </Card>
+  );
+}
+
+// Recent Activity: the leads, opportunities, accounts and contacts changed last (the Admin's also names the owner)
+function RecentCard({ records, showOwner }) {
+  return (
+    <Card title="Recent Activity" className="home-card">
+      {records.length ? (
+        <ul className="recent-list home-recent">
+          {records.map((r) => (
+            <li key={r.type + r.id}>
+              <ObjectIcon type={r.type} size={28} />
+              <div>
+                <a href={`#/${ROUTE[r.type]}/${r.id}`}>{r.name}</a>
+                <small>
+                  {r.type}
+                  {showOwner && r.owner_name ? ` • ${r.owner_name}` : ""} • {dateTime(r.updated_at)}
+                </small>
+              </div>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <EmptyState text="Records you work on will show up here." small />
+      )}
+    </Card>
+  );
+}
+
+// Lead Sources: leads created in the period per source, and the share of them converted
+function SourcesCard({ sources, range }) {
+  return (
+    <Card title="Lead Sources" className="home-card" footer={<ViewButton href={`${list("leads", "All Leads")}${range}`}>View Leads</ViewButton>}>
+      {sources.length ? (
+        <BarList
+          label="Leads by source"
+          format={(v, r) => `${v} · ${percent(r.rate)}`}
+          rows={sources.map((s) => ({ label: s.source, value: s.leads, rate: s.conversion_rate, note: `${s.converted} converted` }))}
+        />
+      ) : (
+        <EmptyState text="No new leads." small />
+      )}
+    </Card>
+  );
+}
+
+// Team Performance: each salesperson ranked by deals won, then converted leads, then open pipeline
+function LeaderboardCard({ people }) {
+  const ranked = [...people].sort(
+    (a, b) =>
+      b.won_count - a.won_count ||
+      b.converted_this_month - a.converted_this_month ||
+      b.open_pipeline - a.open_pipeline ||
+      a.name.localeCompare(b.name),
+  );
+  const top = Math.max(...ranked.map((p) => p.open_pipeline), 0);
+  return (
+    <Card title="Team Performance" className="home-card home-wide">
+      <div className="table-scroll">
+        <table className="sf-table">
+          <thead>
+            <tr>
+              <th className="num">Rank</th>
+              <th>Name</th>
+              <th className="num">Open Leads</th>
+              <th className="num">Converted</th>
+              <th>Open Pipeline</th>
+              <th className="num">Deals Won</th>
+              <th className="num">Won</th>
+            </tr>
+          </thead>
+          <tbody>
+            {ranked.map((p, i) => (
+              <tr key={p.id}>
+                <td className="num">{i + 1}</td>
+                <td>
+                  {p.name} {p.role === "Manager" && <small className="muted">(Manager)</small>}
+                </td>
+                <td className="num">{p.open_leads}</td>
+                <td className="num">{p.converted_this_month}</td>
+                <td>
+                  <span className="team-inline-bar">
+                    <span style={{ width: `${top ? (p.open_pipeline / top) * 100 : 0}%` }} />
+                    <b>{money(p.open_pipeline_values)}</b>
+                  </span>
+                </td>
+                <td className="num">{p.won_count}</td>
+                <td className="num">{money(p.won_this_month_values)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!ranked.length && <p className="table-empty">No salespeople yet.</p>}
+      </div>
+    </Card>
+  );
+}
+
+// Period selector (top right). Past 1 week applies at once; a custom range needs From, To and Apply.
+function PeriodPicker({ period, setPeriod, shown }) {
+  const toInput = (value) => localIso(new Date(value)).slice(0, 16); // datetime-local: 2026-11-12T15:30
+  const [custom, setCustom] = useState(period.preset === "custom" ? { from: period.from, to: period.to } : null);
+  const choose = (preset) => {
+    if (preset === "custom") setCustom({ from: toInput(shown.start), to: toInput(new Date()) });
+    else {
+      setCustom(null);
+      setPeriod({ preset });
+    }
+  };
+  const valid = custom && custom.from && custom.to && custom.from < custom.to;
+  return (
+    <div className="home-period">
+      <div className="home-period-row">
+        <Icon name="calendar" size={16} />
+        <label className="sr-only" htmlFor="home-period">
+          Period
+        </label>
+        <select id="home-period" value={custom ? "custom" : period.preset} onChange={(e) => choose(e.target.value)}>
+          {PERIODS.map(([key, label]) => (
+            <option key={key} value={key}>
+              {label}
+            </option>
+          ))}
+        </select>
+      </div>
+      <small className="home-period-range">{periodLabel(shown.start, shown.end, period.preset === "custom")}</small>
+      {custom && (
+        <form
+          className="home-period-custom"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (valid) setPeriod({ preset: "custom", ...custom });
+          }}
+        >
+          <label>
+            <span>From</span>
+            <input type="datetime-local" value={custom.from} max={custom.to} onChange={(e) => setCustom({ ...custom, from: e.target.value })} required />
+          </label>
+          <label>
+            <span>To</span>
+            <input type="datetime-local" value={custom.to} min={custom.from} onChange={(e) => setCustom({ ...custom, to: e.target.value })} required />
+          </label>
+          <button className="sf-button brand" disabled={!valid}>
+            Apply
+          </button>
+        </form>
+      )}
+    </div>
+  );
+}
+
+// The team cards' data (GET /api/home/team-charts) for this period
+function useTeamCharts(enabled, period) {
+  const [charts, setCharts] = useState(null);
+  const [error, setError] = useState("");
+  const key = JSON.stringify(period);
+  useEffect(() => {
+    if (!enabled) return undefined;
+    let live = true;
+    setError("");
+    api
+      .teamCharts(periodQuery(period))
+      .then((value) => live && setCharts(value))
+      .catch((err) => live && setError(err.message));
+    return () => {
+      live = false;
+    };
+  }, [enabled, key]); // eslint-disable-line react-hooks/exhaustive-deps
+  return { charts: enabled ? charts : null, error };
+}
+
+const MINE = { all: "My Opportunities", open: "My Open Opportunities", won: "My Won Opportunities", lost: "My Lost Opportunities" };
+const EVERYONE = { all: "All Opportunities", open: "Open Opportunities", won: "Won Opportunities", lost: "Lost Opportunities" };
+
+export default function SellerHome({
+  data,
+  user,
+  toggleTask,
+  openTask,
+  scope = "team",
+  setScope = () => {},
+  teamDashboard = true,
+  period = { preset: "7d" },
+  setPeriod = () => {},
+}) {
+  const isAdmin = user.role === "Admin";
+  const teamView = isAdmin || (teamDashboard && scope === "team");
+  const { charts, error } = useTeamCharts(teamView, period);
   const home = data.home?.seller_home;
   if (!home) return null;
-  const team = scope === "team";
-  const who = team ? "owned by the team" : "owned by me";
-  const myList = (collection, mineView, teamView) => list(collection, team ? teamView : mineView);
-  const deals = home.close_deals;
-  // printed per currency (amounts in different currencies are never added); the plain numbers size the ring
-  const dealMoney = (key) => compactMoneyMix(deals.by_currency?.[key] ?? { USD: deals[key] });
-  const myTasks = (data.home.todays_tasks || [])
-    .map((t) => data.tasks.find((x) => x.id === String(t.id)))
-    .filter(Boolean);
-  const assistant = assistantItems(data, user);
+  const shows = (card) => can(user, `home_${card}`);
+
+  // the period the API counted (no end = up to now): every pill and View button opens its records with it
+  const counted = (teamView ? charts?.period : null) || home.period || { start: localIso(new Date(Date.now() - 7 * 864e5)), end: null };
+  const shown = { start: counted.start, end: counted.end || new Date() };
+  const range = `&from=${encodeURIComponent(counted.start)}${counted.end ? `&to=${encodeURIComponent(counted.end)}` : ""}`;
+  const tasksFor = (rows) => (rows || []).map((t) => data.tasks.find((x) => x.id === String(t.id))).filter(Boolean);
+  const todayTasks = tasksFor(home.my_tasks?.today);
+  const upcomingTasks = tasksFor(home.my_tasks?.upcoming);
+
+  // ----- the user's own work: on the Manager's and Salesperson's dashboards (not the Admin's) -----
+  const work = isAdmin
+    ? []
+    : [
+        shows("action_items") && (
+          <Card
+            key="actions"
+            title="Action Needed"
+            className="home-card"
+            actions={
+              <button className="icon-btn" aria-label="New task" title="New Task" onClick={() => openTask()}>
+                <Icon name="plus" size={14} />
+              </button>
+            }
+            footer={<ViewButton href="#/tasks">View Tasks</ViewButton>}
+          >
+            <Section title="Today" count={todayTasks.length}>
+              <TaskRows tasks={todayTasks} toggleTask={toggleTask} empty="Nothing due today." />
+            </Section>
+            <Section title="Upcoming" count={upcomingTasks.length}>
+              <TaskRows tasks={upcomingTasks} toggleTask={toggleTask} showDay empty="Nothing planned for the next 7 days." />
+            </Section>
+          </Card>
+        ),
+        shows("meetings") && (
+          <Card key="meetings" title="Scheduled Demos" className="home-card" footer={<ViewButton href={list("leads", "My Open Leads")}>View Leads</ViewButton>}>
+            <Section title="Today" count={home.todays_events.length}>
+              <EventRows events={home.todays_events} empty="No demos today." />
+            </Section>
+            <Section title="Upcoming" count={(home.upcoming_events || []).length}>
+              <EventRows events={home.upcoming_events || []} showDay empty="No demos booked for the next 7 days." />
+            </Section>
+          </Card>
+        ),
+      ];
+
+  let cards = [];
+  if (!teamView) {
+    const score = home.scorecard || {};
+    cards = [
+      ...work,
+      shows("pipeline") && <PipelineCard key="pipeline" pipeline={home.close_deals} views={MINE} range={range} />,
+      shows("follow_up_radar") && <RadarCard key="radar" home={home} mine range={range} />,
+      shows("scorecard") && (
+        <Card key="score" title="My Scorecard" className="home-card">
+          <Outcomes won={score.won} wonValues={score.won_values} lost={score.lost} lostValues={score.lost_values} />
+          <dl className="home-score">
+            <div>
+              <dt>Win rate</dt>
+              <dd>{percent(score.win_rate)}</dd>
+            </div>
+            <div>
+              <dt>Leads converted</dt>
+              <dd>{score.converted ?? 0}</dd>
+            </div>
+            <div>
+              <dt>Average deal</dt>
+              <dd>{money(score.average_deal)}</dd>
+            </div>
+          </dl>
+        </Card>
+      ),
+      shows("recent_activity") && <RecentCard key="recent" records={home.recent_records} />,
+    ];
+  } else if (charts) {
+    // ----- the Manager's My Team view / the Admin's dashboard -----
+    cards = [
+      ...work,
+      shows("pipeline") && <PipelineCard key="pipeline" pipeline={charts.pipeline} views={EVERYONE} range={range} />,
+      shows("win_loss") && <WinLossCard key="winloss" results={charts.win_loss} range={range} />,
+      isAdmin && charts.lead_sources && <SourcesCard key="sources" sources={charts.lead_sources} range={range} />,
+      isAdmin && charts.closing_soon && <ClosingSoonCard key="closing" deals={charts.closing_soon} />,
+      isAdmin && <RadarCard key="radar" home={home} range={range} />,
+      !isAdmin && shows("team_performance") && <LeaderboardCard key="leaders" people={charts.people} />,
+      isAdmin && charts.recent_records && <RecentCard key="recent" records={charts.recent_records} showOwner />,
+    ];
+  }
+  cards = cards.filter(Boolean);
 
   return (
     <div className="page seller-home">
@@ -218,200 +538,31 @@ export default function SellerHome({ data, user, toggleTask, openTask, scope = "
         <div className="home-greeting">
           {/* Title Case on the page title: "Good Evening" */}
           <h1>{greeting().replace(/\b\w/g, (c) => c.toUpperCase())}!</h1>
-          <p>{homeDescription(user.role, team)}</p>
+          <p>{homeDescription(user.role, teamView)}</p>
         </div>
-        {teamDashboard && (
-        <div className="home-scope" role="group" aria-label="Show records">
-          <button className={team ? "on" : ""} aria-pressed={team} onClick={() => setScope("team")}>
-            Whole team
-          </button>
-          <button className={team ? "" : "on"} aria-pressed={!team} onClick={() => setScope("mine")}>
-            My records
-          </button>
+        <div className="home-controls">
+          <PeriodPicker period={period} setPeriod={setPeriod} shown={shown} />
+          {teamDashboard && !isAdmin && (
+            <div className="home-scope" role="group" aria-label="Show records">
+              <button className={scope === "team" ? "on" : ""} aria-pressed={scope === "team"} onClick={() => setScope("team")}>
+                My Team
+              </button>
+              <button className={scope === "team" ? "" : "on"} aria-pressed={scope !== "team"} onClick={() => setScope("mine")}>
+                Me
+              </button>
+            </div>
+          )}
         </div>
-        )}
       </div>
 
-      <div className="home-grid">
-        <Card
-          title="Close Deals"
-          className="home-card"
-          footer={<ViewButton href="#/opportunities">View Opportunities</ViewButton>}
-        >
-          <p className="card-sub">Opportunities {who} and closing this quarter</p>
-          <div className="ring-row">
-            <Ring
-              label={`Total pipeline ${dealMoney("total_pipeline")}`}
-              segments={[
-                { value: deals.open, color: COLORS.open },
-                { value: deals.won, color: COLORS.won },
-                { value: deals.lost, color: COLORS.lost },
-              ]}
-            >
-              <strong>{dealMoney("total_pipeline")}</strong>
-              <span>Total Pipeline</span>
-            </Ring>
-            <Legend
-              items={[
-                ["open", `${dealMoney("open")} Open`, myList("opportunities", "My Open Opportunities", "Open Opportunities")],
-                ["won", `${dealMoney("won")} Won`, myList("opportunities", "My Won Opportunities", "Won Opportunities")],
-                ["lost", `${dealMoney("lost")} Lost`, myList("opportunities", "My Lost Opportunities", "Lost Opportunities")],
-              ]}
-            />
-          </div>
-        </Card>
-
-        <ActivityCard
-          title={team ? "Plan Accounts" : "Plan My Accounts"}
-          subtitle={`Accounts ${who}`}
-          stats={home.accounts}
-          total={home.accounts.total}
-          noun="Accounts"
-          href="#/accounts"
-          listHref={myList("accounts", "My Accounts", "All Accounts")}
-          button="View Accounts"
-        />
-        <ActivityCard
-          title="Grow Relationships"
-          subtitle={`Contacts ${who} and created in the last 90 days`}
-          stats={home.contacts}
-          total={home.contacts.total}
-          noun="Contacts"
-          href="#/contacts"
-          listHref={myList("contacts", "My Contacts", "All Contacts")}
-          days={90}
-          button="View Contacts"
-        />
-        <ActivityCard
-          title="Build Pipeline"
-          subtitle={`Leads ${who} and created in the last 30 days`}
-          stats={home.build_pipeline}
-          total={home.build_pipeline.leads_last_30_days}
-          noun="Leads"
-          href="#/leads"
-          listHref={myList("leads", "My Leads", "All Leads")}
-          days={30}
-          button="View Leads"
-        />
-
-        <Card title="Key Deals" className="home-card" footer={<ViewButton href="#/opportunities">View All</ViewButton>}>
-          <p className="card-sub">{team ? "Open opportunities" : "My open opportunities"}, largest first</p>
-          {home.key_deals.length ? (
-            <ul className="deal-list">
-              {home.key_deals.map((d) => (
-                <li key={d.id}>
-                  <ObjectIcon type="opportunity" size={28} />
-                  <div>
-                    <a href={`#/opportunities/${d.id}`}>{d.name}</a>
-                    <small>
-                      {d.account_name} • Close {shortDate(d.close_date)}
-                    </small>
-                  </div>
-                  <div className="deal-amount">
-                    <b>{compactMoney(d.amount, d.currency)}</b>
-                    <StageBadge stage={d.stage} />
-                  </div>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <EmptyState text="No open deals yet. Convert a lead to start one." small />
-          )}
-        </Card>
-
-        <Card title="Today's Events" className="home-card" footer={<ViewButton href="#/leads?stage=Demo">View Demos</ViewButton>}>
-          {home.todays_events.length ? (
-            <ul className="event-list">
-              {home.todays_events.map((e) => (
-                <li key={e.lead_id}>
-                  <span className="event-time">{formatBusinessTime(e.start_at)}</span>
-                  <ObjectIcon type="event" size={28} />
-                  <div>
-                    <a href={`#/leads/${e.lead_id}`}>Demo with {e.name}</a>
-                    <small>{e.company}</small>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <EmptyState text="Looks like you're free and clear the rest of the day." />
-          )}
-        </Card>
-
-        <Card
-          title="Today's Tasks"
-          className="home-card"
-          actions={
-            <button className="icon-btn" aria-label="New task" title="New Task" onClick={() => openTask()}>
-              <Icon name="plus" size={14} />
-            </button>
-          }
-          footer={<ViewButton href="#/tasks">View All</ViewButton>}
-        >
-          {myTasks.length ? (
-            <ul className="home-tasks">
-              {myTasks.slice(0, 6).map((t) => (
-                <li key={t.id}>
-                  <input
-                    type="checkbox"
-                    aria-label={`Complete ${t.title}`}
-                    checked={t.completed}
-                    disabled={t.completed}
-                    onChange={() => toggleTask(t.id)}
-                  />
-                  <div>
-                    <a href={t.relatedType !== "general" ? `#/${t.relatedType}/${t.relatedId}` : `#/tasks?task=${t.id}`}>{t.title}</a>
-                    {t.related_to && (
-                      <small>
-                        {t.related_type}: {t.related_to}
-                      </small>
-                    )}
-                  </div>
-                  <span className={t.isOverdue ? "due overdue" : "due"}>
-                    {t.isOverdue ? shortDate(t.due_date) : time(t.due_date)}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <EmptyState text="Nothing due today. Be a go-getter, and check back soon." />
-          )}
-        </Card>
-
-        <Card title="Recent Records" className="home-card">
-          {home.recent_records.length ? (
-            <ul className="recent-list">
-              {home.recent_records.map((r) => (
-                <li key={r.type + r.id}>
-                  <ObjectIcon type={r.type} size={28} />
-                  <a href={`#/${routeFor[r.type]}/${r.id}`} title={`${r.type} • updated ${dateTime(r.updated_at)}`}>
-                    {r.name}
-                  </a>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <EmptyState text="Records you work on will show up here." small />
-          )}
-        </Card>
-
-        <Card title="Assistant" className="home-card">
-          {assistant.length ? (
-            <ul className="assistant-list">
-              {assistant.map((a) => (
-                <li key={a.key}>
-                  <ObjectIcon type={a.icon} size={24} />
-                  <a href={a.href}>{a.text}</a>
-                  <Icon name="right" size={14} />
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <EmptyState text="Nothing needs your attention right now. Nice work!" small />
-          )}
-        </Card>
-      </div>
-      {team && teamDashboard && <TeamCharts />}
+      {error && <p className="table-empty">{error}</p>}
+      {teamView && !charts && !error ? (
+        <p className="table-empty">Loading the dashboard…</p>
+      ) : cards.length ? (
+        <div className="home-grid">{cards}</div>
+      ) : (
+        !error && <EmptyState text="No Home cards are turned on for your role. Your Admin can choose them on the Permissions page." />
+      )}
     </div>
   );
 }

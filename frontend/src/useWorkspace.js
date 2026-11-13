@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, apiRequest, normalizeWorkspace } from "./api";
+import { DEFAULT_PERIOD, periodQuery } from "./homePeriod";
 
 const empty = {
   leads: [],
@@ -13,7 +14,8 @@ const empty = {
 };
 // userId = the logged-in user (the bell shows their notifications).
 // homeScope: "team" = Home shows everyone's records (shared), "mine" = only records owned by userId.
-export function useWorkspace(collection, id, userId, homeScope = "team") {
+// homePeriod: the Home period selector ({ preset } or { preset: "custom", from, to }); changing it reloads only Home.
+export function useWorkspace(collection, id, userId, homeScope = "team", homePeriod = DEFAULT_PERIOD) {
   const [data, setData] = useState(empty);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -22,6 +24,11 @@ export function useWorkspace(collection, id, userId, homeScope = "team") {
   const notificationOwner = userId ? String(userId) : "";
   const sequence = useRef(0),
     busy = useRef(false);
+  const period = useRef(homePeriod);
+  period.current = homePeriod;
+  const last = useRef(null); // the last full load, so a new period only fetches Home again
+  const homePath = () =>
+    `/home?${homeScope === "mine" && notificationOwner ? `owner_id=${notificationOwner}&` : ""}${periodQuery(period.current)}`;
   const reload = useCallback(async () => {
     const ticket = ++sequence.current;
     setLoading(true);
@@ -35,10 +42,7 @@ export function useWorkspace(collection, id, userId, homeScope = "team") {
         "contacts",
         "home",
       ];
-      const path = (name) =>
-        name === "home" && homeScope === "mine" && notificationOwner
-          ? `/home?owner_id=${notificationOwner}`
-          : `/${name}`;
+      const path = (name) => (name === "home" ? homePath() : `/${name}`);
       const [responses, detail, notifications] = await Promise.all([
         Promise.all(names.map((name) => apiRequest(path(name)))),
         id && ["leads", "opportunities"].includes(collection)
@@ -52,6 +56,7 @@ export function useWorkspace(collection, id, userId, homeScope = "team") {
       const raw = Object.fromEntries(
         names.map((name, index) => [name, responses[index]]),
       );
+      last.current = { raw, notifications, detail };
       setData(
         normalizeWorkspace(
           { ...raw, notifications },
@@ -73,6 +78,31 @@ export function useWorkspace(collection, id, userId, homeScope = "team") {
       sequence.current++;
     };
   }, [reload]);
+  // A new Home period: fetch Home only and keep everything else
+  const periodKey = JSON.stringify(homePeriod);
+  const firstPeriod = useRef(true);
+  useEffect(() => {
+    if (firstPeriod.current) {
+      firstPeriod.current = false;
+      return;
+    }
+    if (!last.current) {
+      reload().catch(() => {}); // nothing loaded yet: load everything (with the new period)
+      return;
+    }
+    const ticket = ++sequence.current;
+    setLoading(true);
+    apiRequest(homePath())
+      .then((home) => {
+        if (ticket !== sequence.current) return;
+        const { raw, notifications, detail } = last.current;
+        last.current = { ...last.current, raw: { ...raw, home } };
+        setData(normalizeWorkspace({ ...raw, home, notifications }, detail ? { collection, record: detail } : null));
+        setError("");
+      })
+      .catch((err) => ticket === sequence.current && setError(err.message))
+      .finally(() => ticket === sequence.current && setLoading(false));
+  }, [periodKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const latestReload = useRef(reload);
   latestReload.current = reload;
   const run = useCallback(
