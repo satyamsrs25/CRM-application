@@ -389,7 +389,10 @@ class LeadOut(Out):
     opportunity_id: int | None = None
     created_at: datetime | None
     updated_at: datetime | None
+    created_by_id: int | None = None  # who added the lead (by hand or by an upload)
+    created_by_name: str | None = None
     last_transferred_at: datetime | None = None  # when the lead last got a new owner (shown in the list)
+    last_transferred_to: str | None = None  # and to whom
     # email campaigns: left out of every campaign while either is set
     email_invalid_at: datetime | None = None
     email_invalid_reason: str | None = None
@@ -425,6 +428,15 @@ class LeadTransfer(BaseModel):
     """Give the lead to another user. Only the owner changes: details and stage stay as they are."""
     to_user_id: int
     note: str | None = Field(None, max_length=300)
+
+
+class TransferRequestCreate(BaseModel):
+    """Ask for someone else's lead (the owner, their Manager or the Admin must approve)."""
+    reason: str = Field(..., min_length=3, max_length=300)
+
+
+class TransferRequestDecision(BaseModel):
+    note: str | None = Field(None, max_length=300)  # required to reject
 
 
 class BulkLeads(BaseModel):
@@ -618,7 +630,7 @@ class AccountOut(Out):
     created_at: datetime | None
     updated_at: datetime | None = None
     last_activity_at: datetime | None = None  # the latest change on the account, its contacts, deals, tasks or emails
-    activity: str | None = None  # lists: "upcoming" | "past" | "none" (Home's Plan Accounts pills, services.activity_of)
+    activity: str | None = None  # lists: "upcoming" | "past" | "none" (Home's Accounts card pills, services.activity_of)
 
     @field_serializer("annual_revenue")
     def _revenue(self, value):
@@ -774,7 +786,7 @@ class ContactOut(Out):
     linkedin_url: str | None = None
     account_id: int
     account_name: str | None = None
-    activity: str | None = None  # lists: "upcoming" | "past" | "none" (Home's Grow Relationships pills)
+    activity: str | None = None  # lists: "upcoming" | "past" | "none" (Home's Contacts card pills)
     owner_id: int
     created_at: datetime | None
     updated_at: datetime | None = None

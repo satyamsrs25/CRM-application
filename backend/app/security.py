@@ -46,11 +46,17 @@ PERMISSION_GROUPS = {
     "Email": ("send_emails", "send_campaigns"),
     "Data": ("import_leads", "export_data"),
     "Administration": ("manage_users", "manage_permissions"),
+    # which Home cards each role sees (the Admin always has every permission; Lead Sources and Closing Soon are the
+    # Admin's own cards, so they are not listed here)
+    "Home dashboard": tuple(f"home_{card}" for card in (
+        "action_items", "meetings", "pipeline", "follow_up_radar", "scorecard", "recent_activity", "win_loss",
+        "team_performance")),
 }
+BOTH = ("Manager", "Salesperson")
 PERMISSIONS = {
     "view_team_records": ("View team records", "See leads, deals, accounts, contacts and tasks owned by others",
                           ("Manager",)),
-    "view_team_dashboard": ("View team dashboard", "Use the Whole team view on Home", ("Manager",)),
+    "view_team_dashboard": ("View team dashboard", "Use the Team view on Home", ("Manager",)),
     "edit_team_records": ("Edit team records", "Change stages and details of records owned by others", ("Manager",)),
     "reassign_owner": ("Reassign owner", "Give any record you can see to another user, including transferring leads",
                        ("Manager",)),
@@ -68,6 +74,21 @@ PERMISSIONS = {
                     ("Manager", "Salesperson")),
     "manage_users": ("Manage users", "Add users, reset passwords, deactivate, transfer leads", ()),
     "manage_permissions": ("Manage roles & permissions", "Change this permission matrix", ()),
+    # Home dashboard cards (frontend/src/SellerHome.jsx shows a card only with its permission). "Me" cards are on a
+    # Salesperson's Home and a Manager's Me view; team cards on the Team view (needs View team dashboard).
+    "home_action_items": ("Action Needed", "Home card: my tasks, today (overdue first) and the next 7 days", BOTH),
+    "home_meetings": ("Scheduled Demos", "Home card: my demos, today and the next 7 days", BOTH),
+    "home_pipeline": ("Overall Value", "Home card: open, won and lost amounts of the opportunities in the period", BOTH),
+    "home_follow_up_radar": ("Follow-up Radar", "Home card (Me): leads, accounts and contacts with past or no activity",
+                             BOTH),
+    "home_scorecard": ("My Scorecard", "Home card (Me): won and lost deals, converted leads, win rate, average deal",
+                       BOTH),
+    "home_recent_activity": ("Recent Activity", "Home card (Me): the leads, opportunities, accounts and contacts changed last",
+                             BOTH),
+    "home_win_loss": ("Win/Loss Analysis", "Home card (Team): won vs lost, win rate and the top lost reasons",
+                      ("Manager",)),
+    "home_team_performance": ("Team Performance", "Home card (Team): each salesperson's leads, pipeline and wins, ranked",
+                              ("Manager",)),
 }
 LOCKED_FOR_ADMIN = True  # the Admin keeps every permission, so nobody can lock themselves out
 

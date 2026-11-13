@@ -260,9 +260,12 @@ export default function ListView({ collection, data, user, openNew, setModal, qu
   const stageFilter = params.get("stage");
   const allViews = views(collection, user);
   const listParam = params.get("list");
-  // opened from a Home pill: only the records with this activity, created in the last N days (Leads, Accounts, Contacts)
+  // opened from a Home card: only records created in Home's period (from <= created_at < to), and from an activity pill
+  // only the records with that activity (Leads, Accounts, Contacts)
   const activity = ["upcoming", "past", "none"].includes(params.get("activity")) ? params.get("activity") : null;
-  const days = activity && Number(params.get("days")) > 0 ? Number(params.get("days")) : null;
+  const validTime = (v) => (v && !Number.isNaN(new Date(v).getTime()) ? v : null);
+  const createdFrom = validTime(params.get("from"));
+  const createdTo = validTime(params.get("to"));
   const [viewName, setViewName] = useState(
     stageFilter
       ? `${stageFilter} ${LABEL[collection]}`
@@ -327,8 +330,11 @@ export default function ListView({ collection, data, user, openNew, setModal, qu
 
   const rows = useMemo(() => {
     const term = search.trim().toLowerCase();
-    const since = days ? Date.now() - days * 864e5 : null;
-    const fromHome = (r) => (!activity || r.activity === activity) && (!since || new Date(r.created_at).getTime() >= since);
+    const [after, before] = [createdFrom && new Date(createdFrom).getTime(), createdTo && new Date(createdTo).getTime()];
+    const fromHome = (r) => {
+      const at = new Date(r.created_at).getTime();
+      return (!activity || r.activity === activity) && (!after || at >= after) && (!before || at < before);
+    };
     const list = (collection === "leads" ? data.leads : applyFilters(data[collection].filter(filter), defs, active).filter(fromHome)).filter((r) => !term || cols.some(([, get]) => String(get(r)).toLowerCase().includes(term)));
     const get = cols[sort.col][1];
     return [...list].sort((a, b) => {
@@ -436,6 +442,11 @@ export default function ListView({ collection, data, user, openNew, setModal, qu
                 Download
               </button>
             )}
+            {collection === "leads" && (
+              <a className="sf-button" href="#/transfer-requests" title="Ask for someone else's lead, or approve requests for yours">
+                Transfer Requests
+              </a>
+            )}
             {dataList && (user.role === "Admin" || user.role === "Manager") && (
               <button className="sf-button" onClick={() => setFiles("history")} title="Who uploaded or downloaded, when and why">
                 History
@@ -511,7 +522,8 @@ export default function ListView({ collection, data, user, openNew, setModal, qu
         <LeadsTable
           view={LEAD_VIEWS[viewName] || "all"}
           activity={activity}
-          days={days}
+          createdFrom={createdFrom}
+          createdTo={createdTo}
           viewName={viewName}
           stage={fixedStage}
           filters={active}

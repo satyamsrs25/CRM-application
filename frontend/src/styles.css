@@ -881,8 +881,10 @@ p {
 }
 .deal-amount {
   display: grid;
+  flex: none; /* the amount and stage keep their width; the name and account wrap instead */
   justify-items: end;
   gap: 2px;
+  white-space: nowrap;
 }
 .deal-amount b {
   font-weight: 600;
@@ -5691,31 +5693,7 @@ a.email-off {
   color: var(--text-weak);
 }
 
-/* ---------- Home > Whole team: Team Performance graphs ---------- */
-.team-charts {
-  margin-top: 24px;
-}
-.team-charts-head {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-.team-charts-head h2 {
-  margin: 0;
-  font-size: 18px;
-}
-.team-charts-head p {
-  margin: 0;
-  color: var(--text-weak);
-  font-size: 13px;
-}
-.team-charts-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
-  margin-bottom: 16px;
-}
+/* ---------- Home: bar lists, win rate and inline bars on the dashboard cards ---------- */
 .team-bars {
   display: grid;
   gap: 10px;
@@ -5747,12 +5725,6 @@ a.email-off {
   border-radius: 0 4px 4px 0;
   background: #0176d3;
 }
-.team-bar.won {
-  background: #2e844a;
-}
-.team-bar.lost {
-  background: #8a96a3;
-}
 .team-bars li:hover .team-bar {
   filter: brightness(1.12);
 }
@@ -5768,19 +5740,6 @@ a.email-off {
   font-weight: 400;
   font-size: 11px;
 }
-.team-winrate {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 4px 16px 12px;
-}
-.team-winrate b {
-  font-size: 28px;
-}
-.team-winrate span {
-  color: var(--text-weak);
-  font-size: 13px;
-}
 .team-inline-bar {
   display: flex;
   align-items: center;
@@ -5794,11 +5753,6 @@ a.email-off {
   flex: 0 0 auto;
   border-radius: 0 4px 4px 0;
   background: #0176d3;
-}
-@media (max-width: 1100px) {
-  .team-charts-grid {
-    grid-template-columns: 1fr;
-  }
 }
 
 /* ---------- Email Campaigns: tabs instead of popups, Draft with AI, sending note ---------- */
@@ -5876,12 +5830,6 @@ a.email-off {
   gap: 6px;
   align-items: flex-start;
   line-height: 1.5;
-}
-.team-charts .home-card {
-  min-height: 0;
-}
-.team-charts .team-bars {
-  padding-top: 12px;
 }
 .list-buttons.task-actions {
   display: flex;
@@ -6922,6 +6870,314 @@ p.list-state {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+/* Home: period selector and the Whole team / My records switch, top right */
+.home-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-left: auto;
+}
+.home-controls .home-scope {
+  margin-left: 0;
+  align-self: flex-start;
+}
+.home-period {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+.home-period-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 6px 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--white);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+  color: var(--brand);
+}
+.home-period-row select {
+  height: 32px;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.home-period-row select:focus-visible {
+  outline: 2px solid var(--brand);
+  border-radius: 6px;
+}
+.home-title .home-period-range {
+  padding-right: 8px;
+  font-size: 12px;
+  color: var(--text-weak);
+}
+.home-period-custom {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--white);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+}
+.home-period-custom label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--text-weak);
+}
+.home-period-custom input {
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--border-strong, #c9c9c9);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 13px;
+}
+.home-period-custom .sf-button {
+  height: 32px;
+}
+@media (max-width: 760px) {
+  .home-title {
+    flex-wrap: wrap;
+  }
+  .home-controls {
+    width: 100%;
+    justify-content: flex-start;
+  }
+  .home-period {
+    align-items: flex-start;
+  }
+  .home-period-custom {
+    right: auto;
+    left: 0;
+    flex-wrap: wrap;
+  }
+}
+
+/* Home dashboards (My Sales Desk, Team Command Center, Company Control Tower) */
+.home-wide {
+  grid-column: span 2;
+  min-height: 0;
+}
+.home-wide .team-inline-bar > span {
+  max-width: 80px;
+}
+.home-wide .team-inline-bar {
+  flex-wrap: wrap; /* amounts in two currencies ("$85M + ₹42M") go under the bar instead of being cut off */
+  gap: 2px 8px;
+  min-width: 0;
+  white-space: normal;
+}
+.home-section {
+  padding: 12px 22px 0;
+}
+.home-section + .home-section {
+  border-top: 1px solid var(--border);
+  margin-top: 8px;
+}
+.home-section h3,
+.home-subhead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-weak);
+}
+.home-subhead {
+  padding: 14px 22px 0;
+}
+.home-card .home-note {
+  padding: 12px 22px 0;
+}
+.home-section-count {
+  min-width: 22px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--brand-light);
+  color: var(--brand-dark);
+  font-size: 12px;
+  text-align: center;
+}
+.home-section .home-tasks {
+  padding: 4px 0 0;
+}
+.home-section-empty {
+  padding: 8px 0 4px;
+  font-size: 13px;
+  color: var(--text-weak);
+}
+.ring-center strong.ring-long {
+  padding: 0 16px;
+  font-size: 17px;
+}
+.home-radar {
+  list-style: none;
+  margin: 0;
+  padding: 14px 22px 0;
+}
+.home-radar li {
+  display: flex;
+  flex-direction: column; /* the record name above, its activity pills below */
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.home-radar li > span {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.home-radar-name {
+  font-weight: 600;
+}
+/* My Scorecard: Won and Lost side by side, then win rate, converted leads and average deal */
+.home-score-outcomes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 16px 22px 0;
+}
+.home-score-outcomes > div {
+  display: grid;
+  gap: 2px;
+  padding: 14px 16px;
+  border-radius: 10px;
+}
+.home-score-outcomes span {
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.home-score-outcomes b {
+  font-size: 30px;
+  font-weight: 400;
+  line-height: 1.15;
+}
+.home-score-outcomes small {
+  font-size: 14px;
+  font-weight: 600;
+}
+.home-score-won {
+  background: #e5f6ea;
+  color: #1b5e2b;
+}
+.home-score-lost {
+  background: #feded8;
+  color: #8e030f;
+}
+.home-score {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 12px 22px 0;
+}
+.home-score > div {
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.home-score dt {
+  font-size: 13px;
+  color: var(--text-weak);
+}
+.home-score dd {
+  margin: 4px 0 0;
+  font-size: 20px;
+  color: #032d60;
+}
+.home-card .team-bars {
+  padding: 12px 22px 0;
+}
+.home-card .overdue {
+  color: #ba0517;
+}
+@media (max-width: 1100px) {
+  .home-wide {
+    grid-column: 1 / -1;
+  }
+}
+.home-recent li > div {
+  display: grid;
+  justify-items: start;
+  min-width: 0;
+}
+.home-recent li a {
+  border-bottom: 0;
+}
+.home-winrate {
+  margin: 0;
+  padding: 14px 22px 0;
+  color: var(--text-weak);
+}
+.home-winrate b {
+  margin-right: 4px;
+  color: #032d60;
+  font-size: 24px;
+  font-weight: 400;
+}
+.home-recent small {
+  color: var(--text-weak);
+  font-size: 13px;
+}
+
+/* Lead transfer requests: the request / decision dialogs and the requests table */
+.transfer-form {
+  display: grid;
+  gap: 12px;
+}
+.transfer-form p {
+  margin: 0;
+}
+.transfer-requests-page .table-scroll,
+.transfer-requests-page .table-empty,
+.transfer-requests-page .form-error {
+  margin: 0 16px 16px;
+}
+.transfer-requests td {
+  vertical-align: top;
+}
+.transfer-requests td.wrap {
+  min-width: 180px;
+  max-width: 320px;
+  white-space: normal;
+}
+.transfer-requests small.block {
+  display: block;
+}
+.field .request-transfer {
+  justify-self: start;
+  margin-top: 4px;
+}
+.transfer-request-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
 }
 
 /* Phone with its country (New Contact, New Opportunity > New contact): the country, then the number */

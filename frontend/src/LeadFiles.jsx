@@ -62,7 +62,7 @@ function saveText(name, text) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function Dialog({ title, onClose, busy, children, footer, wide }) {
+export function Dialog({ title, onClose, busy, children, footer, wide }) {
   useEffect(() => {
     const key = (e) => e.key === "Escape" && !busy && onClose();
     document.addEventListener("keydown", key);

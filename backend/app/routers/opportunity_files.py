@@ -19,9 +19,10 @@ from sqlalchemy.orm import Session, selectinload
 from app.constants import CURRENCIES, DEFAULT_CURRENCY, OPPORTUNITY_OPEN_STAGES, OPPORTUNITY_STAGES, STAGE_PROBABILITY
 from app.database import get_db
 from app.models import Account, Contact, Opportunity, StageHistory, User
-from app.routers.lead_files import EMAIL_RE, MAX_FILE_BYTES, MAX_ROWS, issue_list, key, number, read_rows, text_of
+from app.routers.lead_files import (EMAIL_RE, MAX_FILE_BYTES, MAX_ROWS, company_key, issue_list, key, number, read_rows,
+                                    text_of)
 from app.security import owner_for_new, require, visible
-from app.services import log_activity, notify, notify_data_owners
+from app.services import log_activity, notify, notify_data_owners, website_host
 
 router = APIRouter(prefix="/api/opportunities", tags=["Opportunities: upload and download"])
 
@@ -149,13 +150,20 @@ async def import_opportunities(
         raise HTTPException(status_code=400, detail=f"Upload up to {MAX_ROWS:,} rows per file.")
     deals, errors, mapped, ignored = parse(header, rows)
 
-    # skip deals that already exist (same name on an account with the same company name) or repeat in the file
-    accounts = {a.name.strip().lower(): a for a in db.scalars(select(Account)).all()}
+    # skip deals that already exist (same name on the company's account) or repeat in the file. A company's account is
+    # found by its name ("Inc", "LLC", case and punctuation ignored) or its website, so no second account is created
+    all_accounts = db.scalars(select(Account).order_by(Account.id.desc())).all()  # the oldest wins below
+    by_name = {company_key(a.name): a for a in all_accounts}
+    by_site = {website_host(a.website): a for a in all_accounts if "." in website_host(a.website)}
+
+    def account_for(d):
+        return by_name.get(company_key(d["company"])) or by_site.get(website_host(d["website"]))
+
     existing = {(n.strip().lower(), aid) for n, aid in db.execute(select(Opportunity.name, Opportunity.account_id)).all()}
     keep, seen = [], set()
     for d in deals:
-        account = accounts.get(d["company"].strip().lower())
-        pair = (d["name"].strip().lower(), d["company"].strip().lower())
+        account = account_for(d)
+        pair = (d["name"].strip().lower(), company_key(d["company"]))
         if account is not None and (pair[0], account.id) in existing or pair in seen:
             errors.append({"row": d["_row"], "reason": "This opportunity already exists (duplicate)", "duplicate": True})
         else:
@@ -180,22 +188,24 @@ async def import_opportunities(
     contacts = {c.email.lower(): c for c in db.scalars(select(Contact).where(Contact.email.is_not(None))).all()}
     note = f"Uploaded from {file.filename}"
     for d in keep:
-        account = accounts.get(d["company"].strip().lower())
+        account = account_for(d)
         if account is None:
             account = Account(name=d["company"], industry=d["industry"], website=d["website"], owner_id=owner_id)
             db.add(account)
             db.flush()
-            accounts[d["company"].strip().lower()] = account
+            by_name[company_key(account.name)] = account
+            if "." in website_host(account.website):
+                by_site[website_host(account.website)] = account
             result["accounts_created"] += 1
         contact = None
         if d["contact"]:
-            contact = contacts.get(d["contact"]["email"] or "")
+            contact = contacts.get((d["contact"]["email"] or "").lower())  # one contact per email
             if contact is None:
                 contact = Contact(**d["contact"], account_id=account.id, owner_id=owner_id)
                 db.add(contact)
                 db.flush()
                 if contact.email:
-                    contacts[contact.email] = contact
+                    contacts[contact.email.lower()] = contact
         closed = d["stage"] in ("Won", "Lost")
         opp = Opportunity(
             name=d["name"], stage=d["stage"], probability=STAGE_PROBABILITY[d["stage"]], expected_value=d["amount"],

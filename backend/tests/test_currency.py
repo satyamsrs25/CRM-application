@@ -47,6 +47,5 @@ def test_home_totals_are_split_by_currency(client):
            contact_last_name="Rao")
     home = client.get("/api/home").json()["seller_home"]
     assert home["close_deals"]["by_currency"]["open"] == {"USD": 1000.0, "INR": 50000.0}
-    assert {d["currency"] for d in home["key_deals"]} == {"USD", "INR"}
     charts = login_as(client, PRIYA).get("/api/home/team-charts").json()
-    assert charts["pipeline_by_stage"][0]["values"] == {"USD": 1000.0, "INR": 50000.0}
+    assert charts["pipeline"]["by_currency"]["open"] == {"USD": 1000.0, "INR": 50000.0}

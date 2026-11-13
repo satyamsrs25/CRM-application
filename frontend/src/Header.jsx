@@ -386,7 +386,13 @@ export function Sidebar({ section, data, user, collapsed }) {
           <li key={key}>
             <a
               href={`#${path}`}
-              className={section === key || (key === "users" && ["permissions", "activity", "team-activity"].includes(section)) ? "active" : ""}
+              className={
+                section === key ||
+                (key === "users" && ["permissions", "activity", "team-activity"].includes(section)) ||
+                (key === "leads" && section === "transfer-requests")
+                  ? "active"
+                  : ""
+              }
               aria-current={section === key ? "page" : undefined}
               title={collapsed ? label : undefined}
             >

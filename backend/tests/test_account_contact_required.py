@@ -31,7 +31,14 @@ def db_count(model) -> int:
 
 
 def account(client, **changes):
-    res = client.post("/api/accounts", json={**ACCOUNT, **changes})
+    """A new account. One account per company name (test_duplicates.py), so a second call in a test gets a numbered
+    name: "Synthetic Harbor Co 2"."""
+    body = {**ACCOUNT, **changes}
+    res = client.post("/api/accounts", json=body)
+    for n in range(2, 10):
+        if res.status_code != 409:
+            break
+        res = client.post("/api/accounts", json={**body, "name": f"{body['name']} {n}"})
     assert res.status_code == 201, res.text
     return res.json()
 
@@ -174,14 +181,17 @@ def test_the_contact_linkedin_profile_is_optional_and_checked(client):
     assert res.status_code == 201 and res.json()["linkedin_url"] == "https://linkedin.com/in/ana-okafor"
     bad = contact(client, linkedin_url="https://www.linkedin.com/company/harbor")
     assert bad.status_code == 422 and "person's profile address" in errors(bad)["linkedin_url"]
-    assert contact(client, linkedin_url="  ").json()["linkedin_url"] is None
+    # another person (one contact per email)
+    assert contact(client, linkedin_url="  ", email="a.okafor@harbor.example").json()["linkedin_url"] is None
 
 
-def test_no_new_email_uniqueness_or_domain_rule_for_contacts(client):
+def test_contact_email_is_unique_but_has_no_domain_rule(client):
     acc = account(client)
-    for _ in range(2):  # the same address twice, on a domain unlike the account's: both allowed, as before
-        assert contact(client, email="shared@other-domain.example", account_id=acc["id"]).status_code == 201
-    assert db_count(Contact) == 2
+    # a domain unlike the account's is fine; the same address a second time is a duplicate contact (test_duplicates.py)
+    assert contact(client, email="shared@other-domain.example", account_id=acc["id"]).status_code == 201
+    again = contact(client, last_name="Other", email="shared@other-domain.example", account_id=acc["id"])
+    assert again.status_code == 409 and "already has this email" in again.json()["detail"]
+    assert db_count(Contact) == 1
 
 
 def test_contact_access_and_ownership_rules_are_unchanged(client):
