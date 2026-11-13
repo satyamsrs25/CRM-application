@@ -17,7 +17,8 @@ from sqlalchemy import func, insert, or_, select
 from sqlalchemy.orm import Session, aliased, selectinload
 
 from app import schemas
-from app.constants import CURRENCIES, DEFAULT_CURRENCY, LEAD_OPEN_STAGES, LEAD_SOURCES, LEAD_STAGES, LEAD_START
+from app.constants import (CURRENCIES, DEFAULT_CURRENCY, LEAD_OPEN_STAGES, LEAD_SOURCE_DETAIL_MAX, LEAD_SOURCES,
+                           LEAD_STAGES, LEAD_START)
 from app.database import get_db
 from app.models import Account, ActivityLog, Contact, Lead, LeadTransfer, StageHistory, User
 from app.security import acting_user, can_view, require, team_ids, visible
@@ -56,12 +57,13 @@ COLUMNS = {
     "state": ("state", "region"),
     "country": ("country",),
     "source": ("leadsource", "source"),
+    "source_detail": ("leadsourcedetails", "leadsourcedetail", "sourcedetails", "sourcedetail", "specifyleadsource"),
 }
 LOOKUP = {alias: field for field, aliases in COLUMNS.items() for alias in aliases}
 LIMITS = {"first_name": 50, "last_name": 50, "company": 200, "title": 100, "industry": 100, "email": 255, "phone": 30}
 EMAIL_RE = re.compile(r"^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$")
-SOURCE_ALIASES = {s.lower(): s for s in LEAD_SOURCES} | {"web": "Website", "linkedin": "Social Media",
-                                                         "social": "Social Media", "apollo": "Other"}
+# A file's Lead Source (any case); "LinkedIn" is its own source now (it used to become Social Media)
+SOURCE_ALIASES = {s.lower(): s for s in LEAD_SOURCES} | {"web": "Website", "social": "Social Media", "apollo": "Other"}
 
 
 def key(heading: str) -> str:
@@ -193,6 +195,9 @@ def parse(header: list[str], rows: list[list]):
             blank.append(f"currency '{raw.get('currency')[:20]}' is not one of {', '.join(CURRENCIES)} (USD used)")
         lead["currency"] = currency if currency in CURRENCIES else DEFAULT_CURRENCY
         lead["source"] = SOURCE_ALIASES.get((raw.get("source") or "").lower(), "Upload")  # source from the file, or Upload
+        # what an "Other" source is, when the file says (kept as given; nothing is made up when it doesn't)
+        detail = " ".join((raw.get("source_detail") or "").split())
+        lead["source_detail"] = (detail[:LEAD_SOURCE_DETAIL_MAX] or None) if lead["source"] == "Other" else None
         location = raw.get("location") or ", ".join(x for x in (raw.get("city"), raw.get("state"), raw.get("country")) if x)
         lead["location"] = location[:200] or None
         for field, label, linkedin, limit in (("linkedin_url", "LinkedIn URL", True, 300),
@@ -220,6 +225,10 @@ def parse(header: list[str], rows: list[list]):
             lead["email"] = None  # personal mailboxes (gmail.com...) aren't lead emails
         if blank:
             warnings.append({"row": number_in_file, "reason": "Left blank: " + "; ".join(blank)})
+        if lead["source"] == "LinkedIn" and not lead.get("linkedin_url"):
+            # uploaded as given (rows aren't skipped for a missing value); the profile can be added on the lead later
+            warnings.append({"row": number_in_file, "reason": "Check: Lead Source is LinkedIn but the row has no valid "
+                                                               "LinkedIn profile URL"})
         if lead["email"] and not email_matches_website(lead["email"], lead.get("company_website")):
             # kept: some companies email from another domain than their website (e.g. srsconsultinginc.com / -us.com)
             warnings.append({"row": number_in_file, "reason": f"Check: email '{lead['email']}' is on another domain "
@@ -612,7 +621,8 @@ EXPORT_COLUMNS = (
     ("Company", "company"), ("Email", "email"), ("Phone", "phone"), ("LinkedIn URL", "linkedin_url"),
     ("Company Website", "company_website"), ("Company LinkedIn URL", "company_linkedin_url"),
     ("Turnover", "annual_revenue"), ("Currency", "currency"), ("Headcount", "employees"), ("Location", "location"),
-    ("Industry", "industry"), ("Lead Source", "source"), ("Status", "stage"), ("Owner", "owner"),
+    ("Industry", "industry"), ("Lead Source", "source"), ("Lead Source Details", "source_detail"),
+    ("Status", "stage"), ("Owner", "owner"),
     ("Lost Reason", "lost_reason"), ("Created", "created_at"), ("Converted", "converted_at"),
 )
 STAGE_FILTERS = {"all": None, "open": LEAD_OPEN_STAGES, **{s.lower(): (s,) for s in LEAD_STAGES}}

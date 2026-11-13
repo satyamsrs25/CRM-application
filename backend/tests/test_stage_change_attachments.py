@@ -338,7 +338,7 @@ def test_an_invalid_amount_saves_nothing(client, sent, final_value, status, mess
 
 def test_a_deal_without_an_amount_needs_one(client, sent):
     login_as(client, RAVI)
-    lead = client.post("/api/leads", json={"last_name": "NoAmount", "company": "Synthetic Co",
+    lead = client.post("/api/leads", json={"first_name": "Test", "source": "Website", "last_name": "NoAmount", "company": "Synthetic Co",
                                            "email": "no.amount@example.test", "welcome_email": False}).json()
     opp = client.post(f"/api/leads/{lead['id']}/convert", json={"task": TASK, "completed_stages": ["New", "Nurturing", "Demo"], "note": "Synthetic test note"}).json()["opportunity"]
     move(client, opp["id"], "Proposal")

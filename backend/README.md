@@ -47,10 +47,19 @@ The tests use a temporary database and don't send real emails, so they don't tou
 
 We kept the fields close to the Salesforce forms.
 
-Lead: salutation, first name, last name, company, title, industry, email, phone, lead source.
-Last name and company are required. The full name (`name`) is filled automatically from first + last name.
+Lead: salutation, first name, last name, company, title, industry, email, phone, lead source, source detail.
+First name (new leads), last name and company are required. Lead Source LinkedIn needs `linkedin_url`; Other needs
+`source_detail` (what the source is, up to 100 characters). On an edit these rules apply only when the edit changes
+that field or the source, so older leads without them still save. The full name (`name`) is filled automatically from
+first + last name.
 
-Contact: salutation, first name, last name, job title, email, phone, account. Last name and account are required.
+Account: name, industry, phone, website, LinkedIn page, address. New accounts need a name and industry (no phone on
+the form; one sent through the API is optional and kept as given); website and LinkedIn page are checked when given.
+
+Contact: salutation, first name, last name, job title, email, phone, LinkedIn profile, account. New contacts (and New
+Opportunity's new contact) need first name, last name, email and the account. The phone is optional; with
+`phone_country` (default `IN`) it is checked by `phonenumbers` (Google's libphonenumber rules) and saved in
+international format (`schemas.international_phone`). Conversion and imports keep their own rules.
 
 Opportunity: name, stage, probability, expected value, final value, expected close date, account, primary contact.
 
@@ -82,7 +91,7 @@ Probability changes with the stage: Opportunity 20%, Proposal 75%, Won 100%, Los
 
 ## Emails and notifications
 
-Send Email (lead, opportunity, contact or account page):
+Send Email (lead, opportunity or contact page; the account page shows the account's email history only):
 
 - To, Cc, subject, message and up to 10 attachments (10 MB each, 25 MB in total).
 - The email is saved in the `emails` table and the files in `email_attachments`, so it shows on the record even later.
@@ -125,6 +134,10 @@ Reminders and overdue tasks are checked every minute in the background (`app/sch
   confirm who owns the address). Values are passed on as Apollo gives them: names are never split or rebuilt.
 - Same access as creating a lead. 10 lookups a minute per user; each user's answers are kept in memory for 10 minutes
   (only those fields), so the same profile doesn't use credits twice. Keys and personal details are never logged.
+- Contacts: `POST /contacts/enrichment` (`{"linkedin_url": ..., "company": the chosen account}`) uses the same lookup,
+  checks and cache, and returns only the person's details (`first_name`, `last_name`, `job_title`, `email`, `phone`),
+  plus Apollo's current `employer` and `employer_matches` (compared like the duplicate check, `company_key`). It never
+  fills, chooses or changes an account. Any signed-in user who can add contacts can use it.
 - Without `APOLLO_API_KEY` the endpoint answers 503 and leads are entered by hand.
 
 ## Opportunity attachments

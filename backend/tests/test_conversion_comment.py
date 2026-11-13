@@ -66,10 +66,13 @@ def test_conversion_rules_and_permissions_are_unchanged(client):
     assert login_as(client, PRIYA).put(f"/api/users/{sam}/team-access", json={"team_access": True}).status_code == 200
     before = snapshot()
     assert convert(login_as(client, sam), lead["id"], note="View only").status_code == 403
-    admin = convert(login_as(client, ASHA), lead["id"], note="Admins don't create opportunities")
-    assert admin.status_code == 403
     assert snapshot() == before
-    assert convert(login_as(client, PRIYA), lead["id"], note="Manager converting for the team").status_code == 200
+    # the Admin converts with the same comment rule (a blank one is refused; then it goes through)
+    assert convert(login_as(client, ASHA), lead["id"], note="  ").status_code == 422
+    assert snapshot() == before
+    assert convert(login_as(client, ASHA), lead["id"], note="Admin converting for the team").status_code == 200
+    assert convert(login_as(client, PRIYA), new_lead(login_as(client, 2))["id"],
+                   note="Manager converting for the team").status_code == 200
 
 
 def test_other_stage_notes_keep_their_own_message(client):

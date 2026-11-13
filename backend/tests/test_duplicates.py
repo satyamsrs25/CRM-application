@@ -13,7 +13,7 @@ from test_opportunity_duplicates import convert, create, new_lead
 PRIYA, RAVI, ASHA = 1, 2, 3
 ACCOUNT = {"name": "Brightline Logistics", "industry": "Logistics", "phone": "+1 555 0140",
            "website": "https://www.brightline.example/about"}
-CONTACT = {"first_name": "Mira", "last_name": "Shah", "email": "mira@brightline.example", "phone": "+1 555 0141"}
+CONTACT = {"first_name": "Mira", "last_name": "Shah", "email": "mira@brightline.example", "phone": "+1 212-555-0141"}
 
 
 def count(model) -> int:

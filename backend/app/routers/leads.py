@@ -14,7 +14,7 @@ from app import schemas
 from app.constants import (AUTO_TASKS, DEFAULT_CURRENCY, LEAD_FLOW, LEAD_OPEN_STAGES, LEAD_OPTIONAL_STAGES, LEAD_SOURCES, LEAD_STAGES,
                            LEAD_START, STAGE_PROBABILITY)
 from app.database import get_db
-from app.security import (acting_user, acting_user_id, forbid_admin_create, owner_for_new, require_edit,
+from app.security import (acting_user, acting_user_id, owner_for_new, require_edit,
                           require_transfer, require_view, visible)
 from app.models import (Account, Contact, Email, EmailAttachment, Lead, LeadTransfer, Note, Notification, Opportunity,
                         StageHistory, Task, User)
@@ -188,6 +188,27 @@ def get_lead(lead_id: int, db: Session = Depends(get_db)):
     return lead_detail(lead)
 
 
+def check_new_lead_rules(lead: Lead, changes: dict) -> None:
+    """The New Lead rules on an edit (First Name; LinkedIn Profile URL for Lead Source LinkedIn; what the source is for
+    Other). Older leads may lack these values, so a rule is enforced only when the edit changes that value or the Lead
+    Source: an unrelated edit of an older lead still saves. A source other than Other keeps no description."""
+    def changed(field: str) -> bool:  # "" and None (or only spaces) are the same empty value
+        return field in changes and schemas.trimmed(changes[field]) != schemas.trimmed(getattr(lead, field))
+
+    if changed("first_name") and not changes["first_name"]:
+        raise HTTPException(status_code=400, detail=schemas.FIRST_NAME_REQUIRED)
+    source = changes.get("source") or lead.source
+    if source == "Other":
+        detail = changes.get("source_detail", lead.source_detail)
+        if (changed("source") or changed("source_detail")) and not detail:
+            raise HTTPException(status_code=400, detail=schemas.SOURCE_DETAIL_REQUIRED)
+    else:
+        changes["source_detail"] = None
+    if source == "LinkedIn" and (changed("source") or changed("linkedin_url")) \
+            and not changes.get("linkedin_url", lead.linkedin_url):
+        raise HTTPException(status_code=400, detail=schemas.LINKEDIN_PROFILE_REQUIRED)
+
+
 @router.put("/{lead_id}", response_model=schemas.LeadOut)
 def update_lead(lead_id: int, data: schemas.LeadUpdate, db: Session = Depends(get_db)):
     lead = get_or_404(db, Lead, lead_id, "Lead")
@@ -216,6 +237,7 @@ def update_lead(lead_id: int, data: schemas.LeadUpdate, db: Session = Depends(ge
     for field in ("last_name", "company", "source"):  # required, like Salesforce
         if field in changes and not changes[field]:
             raise HTTPException(status_code=400, detail=f"{field} can't be empty")
+    check_new_lead_rules(lead, changes)
     for field, value in changes.items():
         setattr(lead, field, value)
     if new_owner is not None and new_owner != lead.owner_id:
@@ -591,8 +613,8 @@ def convert_lead(lead_id: int, data: schemas.ConvertLead, db: Session = Depends(
     """Convert an open lead, like Salesforce: creates (or reuses) the Account, creates the Contact
     and the Opportunity. Lead tasks are auto-closed. The note is required (saved in the stage history of the lead and
     of the new opportunity), and so is the user's new task: it is linked to the new opportunity, instead of the
-    system's 'Send proposal' task."""
-    forbid_admin_create("opportunities")
+    system's 'Send proposal' task. Managers, Salespeople and the Admin can convert (record access is checked as for
+    any edit); the opportunity, account and contact belong to the lead's owner."""
     lead = get_for_update(db, Lead, lead_id, "Lead")
     ensure_open(lead)
     require_edit(lead.owner_id, "lead")

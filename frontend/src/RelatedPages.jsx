@@ -55,7 +55,8 @@ function FieldGrid({ rows }) {
 const owner = (data, id) => data.users.find((u) => u.id === id)?.full_name || "";
 const site = (url) => (url ? <a href={/^https?:/.test(url) ? url : `https://${url}`} target="_blank" rel="noreferrer">{url}</a> : "");
 
-export function AccountPage({ id, data, user, openNew, openEmail, emailVersion }) {
+// No Send Email here: emails are written from a lead, opportunity or contact. The account's email history stays below.
+export function AccountPage({ id, data, user, openNew, emailVersion }) {
   const account = data.accounts.find((a) => String(a.id) === id);
   const { emails } = useEmails("account_id", account?.id, emailVersion);
   if (!account) return <NotFound collection="accounts" />;
@@ -74,21 +75,6 @@ export function AccountPage({ id, data, user, openNew, openEmail, emailVersion }
           ["Account Owner", account.owner_name],
         ]}
       >
-        <button
-          className="sf-button"
-          onClick={() =>
-            openEmail({
-              type: "account",
-              field: "account_id",
-              id: account.id,
-              name: account.name,
-              email: contacts[0]?.email,
-              firstName: contacts[0]?.first_name,
-            })
-          }
-        >
-          Send Email
-        </button>
         <button className="sf-button" onClick={() => openNew("contact", { account_id: account.id })}>
           New Contact
         </button>

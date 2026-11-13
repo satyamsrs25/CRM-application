@@ -109,7 +109,7 @@ def test_activity_pages(client, outbox):
 
 def test_the_manager_is_told_when_someone_else_downloads_their_teams_data(client, outbox):
     login_as(client, ASHA).put(f"/api/users/{RAVI}", json={"reports_to_id": PRIYA})
-    login_as(client, RAVI).post("/api/leads", json={"first_name": "Mira", "last_name": "Shah", "company": "Brightline",
+    login_as(client, RAVI).post("/api/leads", json={"source": "Website", "first_name": "Mira", "last_name": "Shah", "company": "Brightline",
                                                     "email": "mira@brightline.test", "welcome_email": False})
     login_as(client, ASHA).get("/api/leads/export", params={"reason": "Board pack for Friday"})
     bell = login_as(client, PRIYA).get("/api/notifications").json()
@@ -158,7 +158,7 @@ def test_accounts_list_shows_the_last_activity(client, outbox):
 # ---------- Home > My Team cards ----------
 
 def test_team_charts(client, outbox):
-    login_as(client, RAVI).post("/api/leads", json={"first_name": "Mira", "last_name": "Shah", "company": "Brightline",
+    login_as(client, RAVI).post("/api/leads", json={"source": "Website", "first_name": "Mira", "last_name": "Shah", "company": "Brightline",
                                                     "email": "mira@brightline.test", "welcome_email": False})
     assert client.get("/api/home/team-charts").status_code == 403  # Salespeople: no team dashboard
     everyone = login_as(client, PRIYA).get("/api/home/team-charts").json()
@@ -174,7 +174,7 @@ def test_team_charts(client, outbox):
 
 def test_a_team_members_own_download_is_in_team_activity_not_the_bell(client, outbox):
     login_as(client, ASHA).put(f"/api/users/{RAVI}", json={"reports_to_id": PRIYA})
-    login_as(client, RAVI).post("/api/leads", json={"first_name": "Mira", "last_name": "Shah", "company": "Brightline",
+    login_as(client, RAVI).post("/api/leads", json={"source": "Website", "first_name": "Mira", "last_name": "Shah", "company": "Brightline",
                                                     "email": "mira@brightline.test", "welcome_email": False})
     client.get("/api/leads/export", params={"reason": "My call list"})
     bell = login_as(client, PRIYA).get("/api/notifications").json()

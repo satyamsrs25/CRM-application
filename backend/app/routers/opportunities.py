@@ -128,10 +128,12 @@ def create_opportunity(data: schemas.OpportunityCreate, db: Session = Depends(ge
         db.add(account)
         db.flush()
     if contact is None:
+        # the new contact's fields were checked like New Contact (schemas.OpportunityCreate); the phone is already in
+        # international format and the LinkedIn profile in its saved form
         contact = Contact(salutation=data.contact_salutation, first_name=(data.contact_first_name or "").strip() or None,
                           last_name=data.contact_last_name.strip(), email=(data.contact_email or "").strip() or None,
-                          job_title=(data.contact_title or "").strip() or None,
-                          phone=(data.contact_phone or "").strip() or None, account_id=account.id, owner_id=owner_id)
+                          job_title=(data.contact_title or "").strip() or None, phone=data.contact_phone,
+                          linkedin_url=data.contact_linkedin_url, account_id=account.id, owner_id=owner_id)
         db.add(contact)
         db.flush()
     opp = Opportunity(

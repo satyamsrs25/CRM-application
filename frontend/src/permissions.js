@@ -11,8 +11,9 @@ export const canManageAccess = (user) =>
 export const canEditRecord = (user, record) =>
   !!user && !!record && (record.owner_id === user.id || can(user, "edit_team_records"));
 
-// Lead conversion is reserved for Managers and Salespeople.
-export const canCreateSales = (user) => !!user && user.role !== "Admin";
+// Lead conversion (Convert on the lead page, the board, the Leads list and Opportunities > Convert a Lead): the Admin,
+// Managers and Salespeople. Which leads still follows canEditRecord (the backend checks both).
+export const canCreateSales = (user) => ["Admin", "Manager", "Salesperson"].includes(user?.role);
 
 // Direct opportunity creation is available to all signed-in CRM roles, including Admin.
 export const canCreateOpportunity = (user) => ["Admin", "Manager", "Salesperson"].includes(user?.role);

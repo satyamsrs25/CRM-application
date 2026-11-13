@@ -66,7 +66,7 @@ EMAILS = itertools.count(1)
 def new_lead(client, **extra):
     # welcome_email off: these tests count the team's notification emails (customer emails are in test_roles_bell_email)
     body = {"first_name": "Maria", "last_name": "Lopez", "company": "Bluebird", "email": f"maria{next(EMAILS)}@bluebird.example",
-            "owner_id": 2, "welcome_email": False, **extra}
+            "owner_id": 2, "welcome_email": False, "source": "Website", **extra}
     res = client.post("/api/leads", json=body)
     assert res.status_code == 201, res.text
     return res.json()
@@ -236,7 +236,7 @@ def test_mark_all_read(client, outbox):
 
 def test_no_email_when_save_fails(client, outbox):
     outbox.clear()
-    assert login_as(client, 1).post("/api/leads", json={"last_name": "X", "company": "Y", "owner_id": 99}).status_code == 400
+    assert login_as(client, 1).post("/api/leads", json={"first_name": "Test", "source": "Website", "last_name": "X", "company": "Y", "owner_id": 99}).status_code == 400
     assert outbox == []
 
 

@@ -15,7 +15,9 @@ LEAD_START = "New"
 # Optional stages (Revisit: only when a lead asks to be contacted again later) may be passed over.
 LEAD_FLOW = ["New", "Nurturing", "Revisit", "Demo"]   # then Convert
 LEAD_OPTIONAL_STAGES = ["Revisit"]
-LEAD_SOURCES = ["Website", "Referral", "Phone", "Email", "Event", "Social Media", "Other", "Upload"]  # Upload: bulk upload
+LEAD_SOURCES = ["Website", "LinkedIn", "Referral", "Phone", "Email", "Event", "Social Media", "Other", "Upload"]  # Upload: bulk upload
+# "Other": the user says what the source is (leads.source_detail, at most this many characters)
+LEAD_SOURCE_DETAIL_MAX = 100
 
 # Opportunity path: Opportunity -> Discovery -> Proposal -> Won; Lost from any open stage
 OPPORTUNITY_STAGES = ["Opportunity", "Discovery", "Proposal", "Won", "Lost"]

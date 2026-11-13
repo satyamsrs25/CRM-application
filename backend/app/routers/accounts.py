@@ -179,8 +179,8 @@ def create_contact(data: schemas.ContactCreate, db: Session = Depends(get_db)):
                 "lead": "is an open lead with this email: convert the lead instead"}[first["why"]]
         raise HTTPException(status_code=409, detail=(
             f'{first["type"]} {first["name"]}{where} ({owner}) {what}. One person has one contact.'))
-    contact = Contact(
-        **data.model_dump(exclude={"owner_id"}), owner_id=resolve_user_id(db, owner_for_new(data.owner_id))
+    contact = Contact(  # phone: already checked for its country and in international format (schemas.ContactCreate)
+        **data.model_dump(exclude={"owner_id", "phone_country"}), owner_id=resolve_user_id(db, owner_for_new(data.owner_id))
     )
     db.add(contact)
     db.commit()

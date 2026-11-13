@@ -140,7 +140,8 @@ CREATE TABLE leads (
   untouched            BOOLEAN NOT NULL DEFAULT FALSE,  -- uploaded and not worked on yet
   uploaded_from        VARCHAR(255),  -- file name when the lead came from a bulk upload
   source       VARCHAR(20) NOT NULL DEFAULT 'Other'
-               CHECK (source IN ('Website','Referral','Phone','Email','Event','Social Media','Other','Upload')),
+               CHECK (source IN ('Website','LinkedIn','Referral','Phone','Email','Event','Social Media','Other','Upload')),
+  source_detail VARCHAR(100),   -- Lead Source Other: what the source is (required on new leads; older ones may be empty)
   stage        VARCHAR(20) NOT NULL DEFAULT 'New'
                CHECK (stage IN ('Unqualified','New','Nurturing','Revisit','Demo','Converted','Lost')),
   demo_date    TIMESTAMP,

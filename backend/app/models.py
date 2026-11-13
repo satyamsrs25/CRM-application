@@ -137,6 +137,7 @@ class Lead(Base):
     untouched: Mapped[bool] = mapped_column(default=False, server_default="false")
     uploaded_from: Mapped[str | None] = mapped_column(String(255))  # file name, for leads created by an upload
     source: Mapped[str] = mapped_column(String(20), default="Other")
+    source_detail: Mapped[str | None] = mapped_column(String(100))  # Lead Source Other: what the source is
     stage: Mapped[str] = mapped_column(String(20), default="New")   # constants.LEAD_STAGES
     demo_date: Mapped[datetime | None]
     lost_reason: Mapped[str | None] = mapped_column(String(20))

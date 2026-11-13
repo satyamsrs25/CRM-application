@@ -72,6 +72,8 @@ export function leadPayload(values, editing = false) {
     employees: numeric(values.employees),
     location: optional(values.location?.trim()),
     source: values.source || "Other",
+    // what an Other source is; any other source keeps no description
+    source_detail: (values.source || "Other") === "Other" ? optional(values.source_detail?.trim()) : null,
     owner_id: numeric(values.owner_id),
   };
   if (editing) payload.demo_date = fromBusinessInput(optional(values.demo_date)); // typed in IST, sent with its offset
@@ -185,15 +187,15 @@ async function fileRequest(path) {
   return response.blob();
 }
 
-// LinkedIn autofill (New Lead): the backend asks Apollo. The error keeps the HTTP status, so the form knows
-// whether trying again can help (503 = not set up on this server).
-async function lookupProfile(linkedinUrl) {
+// LinkedIn autofill (New Lead, and the contact forms): the backend asks Apollo. The error keeps the HTTP status, so the
+// form knows whether trying again can help (503 = not set up on this server).
+async function lookupProfile(linkedinUrl, path = "/leads/enrichment", extra = {}) {
   let response;
   try {
-    response = await fetch(`${BASE}/leads/enrichment`, {
+    response = await fetch(`${BASE}${path}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...authHeaders() },
-      body: JSON.stringify({ linkedin_url: linkedinUrl }),
+      body: JSON.stringify({ linkedin_url: linkedinUrl, ...extra }),
       signal: AbortSignal.timeout(30000),
     });
   } catch (error) {
@@ -301,8 +303,8 @@ export const api = {
       body: {
         name: v.name.trim(),
         industry: optional(v.industry),
-        phone: optional(v.phone),
-        website: optional(v.website),
+        website: optional(v.website?.trim()), // optional; New Account has no Phone
+        linkedin_url: optional(v.linkedin_url?.trim()), // the company's LinkedIn page, optional
         address: optional(v.address),
         owner_id: numeric(v.owner_id),
       },
@@ -316,7 +318,9 @@ export const api = {
         last_name: v.last_name.trim(),
         job_title: optional(v.job_title),
         email: optional(v.email),
-        phone: optional(v.phone),
+        phone: optional(v.phone?.trim()), // optional; checked for its country, saved in international format
+        phone_country: v.phone_country || "IN",
+        linkedin_url: optional(v.linkedin_url?.trim()), // the person's LinkedIn profile, optional
         account_id: Number(v.account_id),
         owner_id: numeric(v.owner_id),
       },
@@ -498,6 +502,8 @@ export const api = {
   // LinkedIn autofill on New Lead (Apollo, through the backend only)
   leadEnrichmentStatus: () => apiRequest("/leads/enrichment"),
   enrichLead: (linkedinUrl) => lookupProfile(linkedinUrl),
+  // a contact's details only; company: the chosen account, compared with Apollo's employer (never changed)
+  enrichContact: (linkedinUrl, company) => lookupProfile(linkedinUrl, "/contacts/enrichment", { company: company || null }),
   // Change Stage popup with files: the stage change and the files are saved together, or nothing is saved
   stageWithFiles: (opportunityId, values, files) =>
     saveWithFiles(`/opportunities/${opportunityId}/stage-with-files`, [["stage", values.stage], ["note", values.note],

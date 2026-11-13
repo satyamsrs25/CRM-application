@@ -4,9 +4,15 @@ import React, { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { StageFiles } from "./Attachments";
 import LinkedInField from "./LeadAutofill";
+import PhoneField from "./PhoneField";
 import { ConvertCheck, NewOpportunityFields, newOpportunityPayload } from "./NewOpportunity";
 import {
   ATTACHMENT_STAGES,
+  CONTACT_FORM,
+  contactAnswerFields,
+  contactAutofillFields,
+  contactProblems,
+  OPPORTUNITY_CONTACT_FORM,
   LEAD_FLOW,
   LEAD_OPTIONAL_STAGES,
   LEAD_SOURCES,
@@ -18,8 +24,12 @@ import {
   emailWebsiteProblem,
   websiteHost,
   isPersonalEmail,
+  leadFieldsRequired,
+  leadFormProblems,
+  sourceAfterLinkedInMatch,
   localInput,
   newRecordProblems,
+  SOURCE_DETAIL_MAX,
   skippedStages,
   stageNote,
   stageNoteField,
@@ -187,8 +197,27 @@ export default function Modal({ modal, close, data, run, notify, user }) {
   // that email is someone else's open lead: ask for it to be transferred instead (the owner, their Manager or the Admin approves)
   const [askFor, setAskFor] = useState(null);
   const [asking, setAsking] = useState(false);
-  // New Account / New Contact: required fields left empty (or an invalid email), shown under each field
+  // New Account / New Contact: required fields left empty (or an invalid email), shown under each field. The lead form
+  // shows its own (First Name, Specify lead source, LinkedIn Profile URL, web addresses) the same way.
   const [fieldErrors, setFieldErrors] = useState({});
+  // Lead form: the chosen Lead Source decides whether "Specify lead source" shows and the LinkedIn URL is required
+  const [leadSource, setLeadSource] = useState(record?.source || "Other");
+  // New Lead: a successful LinkedIn lookup selects LinkedIn while the source is still the untouched default or blank
+  // (sourceAfterLinkedInMatch). A source the user picked, or an Other they described, is kept.
+  const sourceChosen = useRef(false);
+  const linkedInMatched = () => {
+    const form = ref.current?.querySelector("form");
+    const list = form?.elements.source;
+    if (!list) return;
+    const next = sourceAfterLinkedInMatch({ current: list.value, chosen: sourceChosen.current, detail: form.elements.source_detail?.value });
+    if (!next) return;
+    list.value = next; // not the user's choice: a later lookup may still update it, and the user can change it
+    setLeadSource(next);
+    setFieldErrors(({ source_detail: _, linkedin_url: __, ...rest }) => rest);
+  };
+  // New Contact: the chosen account, which LinkedIn autofill compares with Apollo's employer (and never changes)
+  const [contactAccount, setContactAccount] = useState(String(modal.defaults?.account_id ?? ""));
+  const leadNeeds = leadFieldsRequired(leadSource, type === "lead" ? record : null);
   const newRecord = type === "account" || type === "contact";
   const fieldError = (name) => (name === "email" && emailError) || fieldErrors[name] || "";
   const errorId = (name) => (name === "email" && emailError ? "email-error" : `${name}-field-error`);
@@ -292,7 +321,9 @@ export default function Modal({ modal, close, data, run, notify, user }) {
             ? 50
             : name === "company"
               ? 200
-              : undefined
+              : name === "source_detail"
+                ? SOURCE_DETAIL_MAX
+                : undefined
         }
         aria-invalid={fieldError(name) ? true : undefined}
         aria-describedby={fieldError(name) ? errorId(name) : undefined}
@@ -377,6 +408,7 @@ export default function Modal({ modal, close, data, run, notify, user }) {
     options,
     value = record?.[name] ?? "",
     required = false,
+    onPick = undefined, // told the chosen value (the lead form's Lead Source)
   ) => (
     <label className="field">
       <span>
@@ -389,7 +421,14 @@ export default function Modal({ modal, close, data, run, notify, user }) {
         required={required}
         aria-invalid={fieldError(name) ? true : undefined}
         aria-describedby={fieldError(name) ? errorId(name) : undefined}
-        onChange={fieldError(name) ? () => clearError(name) : undefined}
+        onChange={
+          fieldError(name) || onPick
+            ? (event) => {
+                if (fieldError(name)) clearError(name);
+                onPick?.(event.target.value);
+              }
+            : undefined
+        }
       >
         <option value="">
           {required ? "Select an option" : "Default / not specified"}
@@ -560,6 +599,18 @@ export default function Modal({ modal, close, data, run, notify, user }) {
         return;
       }
     }
+    if (type === "newOpportunity") {
+      // a new contact (not an existing one): the same rules as New Contact, shown under each field
+      const values = Object.fromEntries(new FormData(event.target));
+      const newContact = (!values.primary_contact_id || values.primary_contact_id === "new") && "contact_last_name" in values;
+      const problems = newContact ? contactProblems(values, OPPORTUNITY_CONTACT_FORM) : {};
+      setFieldErrors(problems);
+      if (Object.keys(problems).length) {
+        setError(""); // nothing is sent: no account, contact or opportunity is created
+        event.target.elements[Object.keys(problems)[0]]?.focus();
+        return;
+      }
+    }
     const noteInput = noteField && event.target.elements[noteField];
     const noteMissing = !!noteInput && !stageNote(noteInput.value);
     const taskProblems = taskNeeded ? stageTaskProblems(Object.fromEntries(new FormData(event.target))) : {};
@@ -581,13 +632,15 @@ export default function Modal({ modal, close, data, run, notify, user }) {
       if (type === "lead") {
         if (!v.last_name.trim() || !v.company.trim())
           throw new Error("Last name and company are required.");
-        const missing = [
-          ["email", "Email"],
-          ["linkedin_url", "LinkedIn Profile URL"],
-          ["company_website", "Company Website"],
-          ["company_linkedin_url", "Company LinkedIn URL"],
-        ].filter(([name]) => !(v[name] || "").trim());
-        if (missing.length) throw new Error(`Please fill in: ${missing.map(([, label]) => label).join(", ")}.`);
+        // First Name, what an Other source is, the LinkedIn Profile URL for LinkedIn, and valid web addresses: shown
+        // under each field (an older lead's missing values don't block an unrelated edit)
+        const problems = leadFormProblems(v, record);
+        if (Object.keys(problems).length) {
+          setFieldErrors(problems);
+          event.target.elements[Object.keys(problems)[0]]?.focus();
+          return; // nothing is sent; what was typed stays
+        }
+        if (!(v.email || "").trim()) throw new Error("Please fill in: Email.");
         const email = (v.email || "").trim().toLowerCase();
         const emailProblem = (text) => {
           setEmailError(text);
@@ -785,6 +838,8 @@ export default function Modal({ modal, close, data, run, notify, user }) {
         <form
           onSubmit={submit}
           noValidate={newRecord}
+          // a contact's details are the customer's: the browser doesn't fill in the user's own saved name, email or phone
+          autoComplete={type === "contact" || type === "newOpportunity" ? "off" : undefined}
           onInput={(e) => type === "lead" && e.target.name === "company" && lookUpCompany(e.target.value)}
         >
           <div className="modal-body">
@@ -800,32 +855,51 @@ export default function Modal({ modal, close, data, run, notify, user }) {
           )}
           {type === "account" && (
             <div className="form-grid" onBlur={checkDupes}>
+              {/* no Phone or Address on New Account (older accounts keep theirs); the two web addresses are optional */}
               {field("Account Name", "name", "text", true, "")}
               {field("Industry", "industry", "text", true, "")}
-              {field("Phone", "phone", "tel", true, "")}
               {field("Website", "website", "text", false, "")}
-              {field("Address", "address", "text", false, "")}
+              {field("Company LinkedIn URL", "linkedin_url", "text", false, "")}
               {owner()}
             </div>
           )}
           {(type === "account" || type === "contact") && dupeBox()}
           {type === "contact" && (
-            <div className="form-grid" onBlur={checkDupes}>
-              {select("Salutation", "salutation", SALUTATIONS, "")}
-              {field("First Name", "first_name", "text", false, "")}
-              {field("Last Name", "last_name", "text", true, "")}
-              {select(
-                "Account Name",
-                "account_id",
-                data.accounts.map((a) => [a.id, a.name]),
-                modal.defaults?.account_id ?? "",
-                true,
-              )}
-              {field("Title", "job_title", "text", false, "")}
-              {field("Email", "email", "email", true, "")}
-              {field("Phone", "phone", "tel", true, "")}
-              {owner()}
-            </div>
+            <>
+              {/* optional: Apollo fills the person's details; the account below is never changed by it */}
+              <LinkedInField
+                autofill
+                defaultValue=""
+                form={() => ref.current?.querySelector("form")}
+                fields={contactAutofillFields(CONTACT_FORM)}
+                lookup={(url, company) => api.enrichContact(url, company)}
+                toForm={(values) => contactAnswerFields(values, CONTACT_FORM)}
+                company={data.accounts.find((a) => String(a.id) === contactAccount)?.name || ""}
+                phone={{ field: CONTACT_FORM.phone, country: CONTACT_FORM.phone_country }}
+                needed={[CONTACT_FORM.first_name, CONTACT_FORM.last_name, CONTACT_FORM.email]}
+                noun="contact"
+                compact
+                error={fieldError("linkedin_url")}
+                onInput={fieldError("linkedin_url") ? () => clearError("linkedin_url") : undefined}
+              />
+              <div className="form-grid" onBlur={checkDupes}>
+                {select("Salutation", "salutation", SALUTATIONS, "")}
+                {field("First Name", "first_name", "text", true, "")}
+                {field("Last Name", "last_name", "text", true, "")}
+                {select(
+                  "Account Name",
+                  "account_id",
+                  data.accounts.map((a) => [a.id, a.name]),
+                  modal.defaults?.account_id ?? "",
+                  true,
+                  (value) => setContactAccount(String(value)),
+                )}
+                {field("Title", "job_title", "text", false, "")}
+                {field("Email", "email", "email", true, "")}
+                <PhoneField error={fieldError("phone")} onInput={fieldError("phone") ? () => clearError("phone") : undefined} />
+                {owner()}
+              </div>
+            </>
           )}
           {type === "lead" && (
             <>
@@ -834,10 +908,14 @@ export default function Modal({ modal, close, data, run, notify, user }) {
               defaultValue={record?.linkedin_url ?? ""}
               form={() => ref.current?.querySelector("form")}
               onCompany={lookUpCompany}
+              onMatched={linkedInMatched}
+              required={leadNeeds.linkedin_url}
+              error={fieldError("linkedin_url")}
+              onInput={fieldError("linkedin_url") ? () => clearError("linkedin_url") : undefined}
             />
             <div className="form-grid">
               {select("Salutation", "salutation", SALUTATIONS)}
-              {field("First Name", "first_name")}
+              {field("First Name", "first_name", "text", leadNeeds.first_name)}
               {field("Last Name", "last_name", "text", true)}
               {field("Company", "company", "text", true)}
               {companyBox()}
@@ -852,11 +930,20 @@ export default function Modal({ modal, close, data, run, notify, user }) {
                 record?.source && !LEAD_SOURCES.includes(record.source) ? [...LEAD_SOURCES, record.source] : LEAD_SOURCES,
                 record?.source || "Other",
                 true,
+                (value) => {
+                  sourceChosen.current = true; // the user's choice: a LinkedIn lookup never replaces it
+                  setLeadSource(value);
+                  setFieldErrors(({ source_detail: _, linkedin_url: __, ...rest }) => rest); // the rules may differ now
+                },
               )}
+              {/* Other: what the source is (kept with the lead; required unless an older lead never had one) */}
+              {leadSource === "Other" &&
+                field("Specify lead source", "source_detail", "text", leadNeeds.source_detail, record?.source_detail ?? "")}
               {owner()}
               <h3 className="form-section">Company Details</h3>
-              {field("Company Website", "company_website", "text", true)}
-              {field("Company LinkedIn URL", "company_linkedin_url", "text", true)}
+              {/* optional; checked as web addresses when given */}
+              {field("Company Website", "company_website", "text", false)}
+              {field("Company LinkedIn URL", "company_linkedin_url", "text", false)}
               <AmountField label="Turnover" name="annual_revenue" value={record?.annual_revenue} currency={record?.currency} />
               {field("Headcount", "employees", "number")}
               {record &&
@@ -872,7 +959,14 @@ export default function Modal({ modal, close, data, run, notify, user }) {
           )}
           {type === "newOpportunity" && (
             <>
-              <NewOpportunityFields data={data} defaults={modal.defaults} owner={owner()} onBlocked={setBlocked} />
+              <NewOpportunityFields
+                data={data}
+                defaults={modal.defaults}
+                owner={owner()}
+                onBlocked={setBlocked}
+                errors={fieldErrors}
+                onFix={clearError}
+              />
               {noteBox("Opportunity Comment", "note")}
               {taskSection()}
             </>

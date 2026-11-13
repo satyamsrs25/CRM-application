@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.constants import LEAD_STAGES, LEAD_START, OPPORTUNITY_STAGES
+from app.constants import LEAD_SOURCES, LEAD_STAGES, LEAD_START, OPPORTUNITY_STAGES
 from app.database import Base, SessionLocal, engine, get_db
 from app import mailer, scheduler, schemas
 from app.security import authenticate, ensure_default_admin, require_admin
@@ -72,12 +72,14 @@ def upgrade_database() -> None:
             # the currency of a lead's turnover and an opportunity's amounts (existing records: USD)
             ("leads", "currency", "VARCHAR(3) NOT NULL DEFAULT 'USD'"), ("accounts", "currency", "VARCHAR(3) NOT NULL DEFAULT 'USD'"),
             ("opportunities", "currency", "VARCHAR(3) NOT NULL DEFAULT 'USD'"),
+            # Lead Source Other: what the source is (empty on older leads; nothing is filled in for them)
+            ("leads", "source_detail", "VARCHAR(100)"),
         ):
             conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {kind}"))
-        # 'Upload' lead source for leads created by a bulk upload
+        # Lead sources: 'Upload' (bulk upload) and 'LinkedIn'. Only the allowed list grows; no lead's source changes.
+        sources = ",".join(f"'{s}'" for s in LEAD_SOURCES)
         conn.execute(text("ALTER TABLE leads DROP CONSTRAINT IF EXISTS leads_source_check"))
-        conn.execute(text("ALTER TABLE leads ADD CONSTRAINT leads_source_check CHECK (source IN "
-                          "('Website','Referral','Phone','Email','Event','Social Media','Other','Upload'))"))
+        conn.execute(text(f"ALTER TABLE leads ADD CONSTRAINT leads_source_check CHECK (source IN ({sources}))"))
         # leads uploaded before 'uploaded_from' existed: take the file name from their first stage history note
         conn.execute(text("""UPDATE leads l SET uploaded_from = SUBSTRING(h.note FROM 15) FROM stage_history h
             WHERE h.lead_id = l.id AND h.from_stage IS NULL AND h.note LIKE 'Uploaded from %' AND l.uploaded_from IS NULL"""))
@@ -223,7 +225,7 @@ app.include_router(campaigns.public)
 # lead_files, lead_enrichment and opportunity_files first: their fixed paths (/leads/page, /leads/enrichment...) come before
 # /leads/{id}
 for router in (user_files.router, emails.router, home.router, lead_files.router, lead_enrichment.router,
-               campaigns.router, campaigns.leads_router, leads.router, opportunity_files.router,
+               lead_enrichment.contacts_router, campaigns.router, campaigns.leads_router, leads.router, opportunity_files.router,
                opportunities.router, attachments.router, tasks.router, accounts.router, activity.router, assistant.router,
                transfer_requests.router):
     app.include_router(router, dependencies=[Depends(authenticate)])
