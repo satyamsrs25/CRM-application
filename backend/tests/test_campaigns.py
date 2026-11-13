@@ -51,7 +51,7 @@ def run_round(**kw):
 
 def lead(client, first="Mia", email=True, **extra):
     n = next(NUMBERS)
-    body = {"first_name": first, "last_name": f"Camp{n}", "company": "Bluebird",
+    body = {"first_name": first, "last_name": f"Camp{n}", "company": "Bluebird", "source": "Website",
             **({"email": f"{first.lower()}{n}@bluebird.example"} if email else {}), **extra}
     res = client.post("/api/leads", json=body)
     assert res.status_code == 201, res.text

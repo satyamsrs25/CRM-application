@@ -56,7 +56,7 @@ def test_create_lead_from_one_sentence(client, ai):
 
 def test_missing_permission_is_explained_not_done(client, ai):
     script, seen = ai
-    priyas = login_as(client, 1).post("/api/leads", json={"last_name": "Shah", "company": "Orbit"}).json()
+    priyas = login_as(client, 1).post("/api/leads", json={"first_name": "Test", "source": "Website", "last_name": "Shah", "company": "Orbit"}).json()
     script += [[call("move_lead_stage", lead_id=priyas["id"], stage="Nurturing", note="Synthetic test note",
                      task_title="Synthetic follow-up task", task_due_date="2030-01-15T10:00")], "You can't change that lead."]
     res = login_as(client, 2).post("/api/assistant/chat", json={"message": "Move Shah to nurturing"}).json()
@@ -66,7 +66,7 @@ def test_missing_permission_is_explained_not_done(client, ai):
 
 def test_won_waits_for_confirm(client, ai):
     script, _ = ai
-    lead = client.post("/api/leads", json={"last_name": "Iyer", "company": "Sunrise"}).json()
+    lead = client.post("/api/leads", json={"first_name": "Test", "source": "Website", "last_name": "Iyer", "company": "Sunrise"}).json()
     opp = client.post(f"/api/leads/{lead['id']}/convert",
                       json={"task": TASK, "expected_value": 25000, "completed_stages": ["New", "Nurturing", "Demo"], "note": "Synthetic test note"}).json()["opportunity"]
     finish_stage_tasks(client, opp["id"])  # its first task is done (an open one would hold up Won)
@@ -88,7 +88,7 @@ def test_won_waits_for_confirm(client, ai):
 
 def test_cancel_leaves_record_alone(client, ai):
     script, _ = ai
-    lead = client.post("/api/leads", json={"last_name": "Das", "company": "Acme"}).json()
+    lead = client.post("/api/leads", json={"first_name": "Test", "source": "Website", "last_name": "Das", "company": "Acme"}).json()
     script += [[call("mark_lead_lost", lead_id=lead["id"], reason="No budget", notes="Synthetic test note")], "OK, I left it open."]
     first = client.post("/api/assistant/chat", json={"message": "Das has no budget, close it"}).json()
     done = client.post("/api/assistant/confirm", json={"messages": first["messages"], "pending": first["pending"],
@@ -99,7 +99,7 @@ def test_cancel_leaves_record_alone(client, ai):
 
 def test_new_message_instead_of_confirm_keeps_conversation_valid(client, ai):
     script, seen = ai
-    lead = client.post("/api/leads", json={"last_name": "Sen", "company": "Acme"}).json()
+    lead = client.post("/api/leads", json={"first_name": "Test", "source": "Website", "last_name": "Sen", "company": "Acme"}).json()
     script += [[call("delete_lead", lead_id=lead["id"])], "Sure, here are your tasks."]
     first = client.post("/api/assistant/chat", json={"message": "delete Sen"}).json()
     client.post("/api/assistant/chat", json={"messages": first["messages"], "message": "actually, show my tasks"})
@@ -111,7 +111,7 @@ def test_new_message_instead_of_confirm_keeps_conversation_valid(client, ai):
 
 def test_stage_rule_comes_back_as_a_question(client, ai):
     script, seen = ai
-    lead = client.post("/api/leads", json={"last_name": "Rao", "company": "Acme"}).json()
+    lead = client.post("/api/leads", json={"first_name": "Test", "source": "Website", "last_name": "Rao", "company": "Acme"}).json()
     script += [[call("move_lead_stage", lead_id=lead["id"], stage="Demo", demo_date="2026-12-01T11:00",
                      note="Synthetic test: demo booked", task_title="Synthetic follow-up task", task_due_date="2030-01-15T10:00")],
                "Was Nurturing already done?",
@@ -126,7 +126,7 @@ def test_stage_rule_comes_back_as_a_question(client, ai):
 
 def test_lookups_and_transfer_by_name(client, ai):
     script, _ = ai
-    lead = client.post("/api/leads", json={"last_name": "Nair", "company": "Globex"}).json()
+    lead = client.post("/api/leads", json={"first_name": "Test", "source": "Website", "last_name": "Nair", "company": "Globex"}).json()
     script += [[call("search", query="Globex"), call("list_users")],
                [call("transfer_lead", lead_id=lead["id"], to_user_name="Priya")]]
     first = client.post("/api/assistant/chat", json={"message": "give the Globex lead to Priya"}).json()

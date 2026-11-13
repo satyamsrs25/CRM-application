@@ -48,7 +48,7 @@ def test_email_on_another_domain_is_kept_with_a_note(client):
 
 
 def test_emails_already_in_the_crm_are_skipped_whatever_the_stage(client):
-    lead = client.post("/api/leads", json={"last_name": "Old", "company": "Acme", "email": "old@acme-example.com"}).json()
+    lead = client.post("/api/leads", json={"first_name": "Test", "source": "Website", "last_name": "Old", "company": "Acme", "email": "old@acme-example.com"}).json()
     client.post(f"/api/leads/{lead['id']}/lost", json={"lost_reason": "Price", "lost_notes": "Synthetic"})
     res = upload(client, [["A", "Again", "Acme", "OLD@acme-example.com", "acme-example.com", ""],
                           ["B", "Fresh", "Acme", "fresh@acme-example.com", "acme-example.com", ""],
@@ -126,7 +126,7 @@ def test_lead_owner_column_by_email_or_name_with_a_default(client):
 
 
 def test_skipped_rows_are_listed_with_name_company_and_email(client):
-    client.post("/api/leads", json={"last_name": "Old", "company": "Acme", "email": "old@acme-example.com",
+    client.post("/api/leads", json={"first_name": "Test", "source": "Website", "last_name": "Old", "company": "Acme", "email": "old@acme-example.com",
                                     "company_website": "acme-example.com"})
     body = upload(client, [["Asha", "Iyer", "Acme", "OLD@acme-example.com", "acme-example.com", ""],
                            ["Ben", "", "Acme", "ben@acme-example.com", "acme-example.com", ""],

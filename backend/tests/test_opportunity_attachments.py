@@ -93,7 +93,7 @@ DOCX_SAMPLE = docx_file()  # zip files carry a timestamp: build once so download
 
 def new_opportunity(client, owner=RAVI) -> dict:
     login_as(client, owner)
-    res = client.post("/api/leads", json={"first_name": "Test", "last_name": f"Buyer{next(LEADS)}",
+    res = client.post("/api/leads", json={"source": "Website", "first_name": "Test", "last_name": f"Buyer{next(LEADS)}",
                                           "company": "Synthetic Co", "email": f"buyer{next(LEADS)}@example.test",
                                           "welcome_email": False})
     assert res.status_code == 201, res.text

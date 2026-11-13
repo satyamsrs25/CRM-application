@@ -68,6 +68,21 @@ import {
   ATTACHMENT_TYPES_TEXT,
   ATTACHMENT_LEGACY_TEXT,
   PREVIEW_TYPES,
+  LEAD_FIRST_NAME_REQUIRED,
+  LINKEDIN_PROFILE_REQUIRED,
+  SOURCE_DETAIL_MAX,
+  SOURCE_DETAIL_REQUIRED,
+  UPLOAD_SOURCE,
+  leadFieldsRequired,
+  leadFormProblems,
+  webAddressProblem,
+  CONTACT_FORM,
+  OPPORTUNITY_CONTACT_FORM,
+  contactAnswerFields,
+  contactAutofillFields,
+  contactProblems,
+  NEW_LEAD_DEFAULT_SOURCE,
+  sourceAfterLinkedInMatch,
 } from "./domain.js";
 import { BUSINESS_TIMEZONE, BUSINESS_TZ_LABEL, businessNow, formatBusiness, formatBusinessTime, fromBusinessInput, toBusinessInput } from "./businessTime.js";
 import { attachedSummary, fileSize } from "./format.js";
@@ -98,8 +113,9 @@ import {
 } from "./listHelpers.js";
 import { demoEvent, foldIcsLine, googleCalendarUrl, icsContent, icsText, outlookCalendarUrl } from "./calendarLinks.js";
 import { addressProblem, draftForCopy, OUTLOOK_COMPOSE_URL, OUTLOOK_URL_LIMIT, outlookComposeUrl, outlookHandoff, splitAddresses } from "./outlookDraft.js";
+import { DEFAULT_PHONE_COUNTRY, PHONE_COUNTRIES, PHONE_RECHECK_EVENT, PHONE_WITH_CODE_INVALID, phoneCountryLabel, phoneCountryOf, phoneFieldError, phoneProblem } from "./phone.js";
 
-test("lead form uses backend fields and only requires last name and company", () => {
+test("lead form sends the backend's fields (the form's own checks are in leadFormProblems)", () => {
   assert.deepEqual(
     leadPayload({
       last_name: " Smith ",
@@ -124,9 +140,14 @@ test("lead form uses backend fields and only requires last name and company", ()
       employees: null,
       location: null,
       source: "Phone",
+      source_detail: null,
       owner_id: 3,
     },
   );
+  // Other: what the source is, trimmed; any other source sends no description (even if one was typed earlier)
+  assert.equal(leadPayload({ last_name: "A", company: "B", source: "Other", source_detail: "  Trade fair 2026 " }).source_detail, "Trade fair 2026");
+  assert.equal(leadPayload({ last_name: "A", company: "B", source: "Other", source_detail: "   " }).source_detail, null);
+  assert.equal(leadPayload({ last_name: "A", company: "B", source: "LinkedIn", source_detail: "Trade fair" }).source_detail, null);
   assert.ok(!("welcome_email" in leadPayload({ last_name: "A", company: "B" }))); // leads are never emailed automatically
   const links = leadPayload({ last_name: "A", company: "B", linkedin_url: " linkedin.com/in/a ", employees: "250", annual_revenue: "" });
   assert.equal(links.linkedin_url, "linkedin.com/in/a"); // the backend adds https://
@@ -134,6 +155,7 @@ test("lead form uses backend fields and only requires last name and company", ()
   assert.equal(links.annual_revenue, null);
   assert.ok(!LEAD_STAGES.includes("Won"));
   assert.ok(LEAD_SOURCES.includes("Social Media"));
+  assert.deepEqual(LEAD_SOURCES, ["Website", "LinkedIn", "Referral", "Phone", "Email", "Event", "Social Media", "Other"]);
   assert.deepEqual(PRIORITIES, ["Low", "Normal", "High"]);
   assert.ok(LOST_REASONS.includes("No budget"));
 });
@@ -796,22 +818,37 @@ test("AI drafting greets by name only while To still addresses the record's cont
   assert.equal(toRecordContact("mary.jo@other.example", ""), false);
 });
 
-test("New Account needs Industry and Phone; blanks and spaces don't count", () => {
-  const ok = { name: "Synthetic Harbor Co", industry: "Logistics", phone: "+1 555 0140" };
-  assert.deepEqual(newRecordProblems("account", ok), {});
-  assert.deepEqual(Object.keys(newRecordProblems("account", { ...ok, industry: "   ", phone: "" })), ["industry", "phone"]);
-  assert.deepEqual(Object.keys(newRecordProblems("account", { name: " " })), ["name", "industry", "phone"]);
-  assert.equal(newRecordProblems("account", { ...ok, phone: undefined }).phone, "Enter the account's phone number.");
-  assert.deepEqual(newRecordProblems("account", { ...ok, phone: "+44 (20) 7946-0958 ext. 12" }), {}); // no format imposed
+test("New Account needs Account Name and Industry; no Phone; Website and Company LinkedIn URL optional but checked", () => {
+  const ok = { name: "Synthetic Harbor Co", industry: "Logistics" };
+  assert.deepEqual(newRecordProblems("account", ok), {}); // saved without a phone
+  assert.deepEqual(Object.keys(newRecordProblems("account", { ...ok, industry: "   " })), ["industry"]);
+  assert.deepEqual(Object.keys(newRecordProblems("account", { name: " " })), ["name", "industry"]);
+  assert.deepEqual(newRecordProblems("account", { ...ok, website: "", linkedin_url: "" }), {});
+  assert.deepEqual(newRecordProblems("account", { ...ok, website: "harbor.example", linkedin_url: "linkedin.com/company/harbor" }), {});
+  assert.equal(newRecordProblems("account", { ...ok, website: "harbor" }).website, "Enter a valid web address");
+  assert.equal(newRecordProblems("account", { ...ok, linkedin_url: "https://harbor.example/about" }).linkedin_url,
+    "Enter a LinkedIn address (linkedin.com/...)");
 });
-test("New Contact needs a valid Email and a Phone", () => {
-  const ok = { last_name: "Okafor", account_id: "4", email: "ana.okafor@harbor.example", phone: "+1 555 0141" };
-  assert.deepEqual(newRecordProblems("contact", ok), {});
-  assert.deepEqual(Object.keys(newRecordProblems("contact", { ...ok, email: " ", phone: "\t" })), ["email", "phone"]);
+test("New Contact needs First Name, Last Name, Email and the account; Phone and LinkedIn are optional but checked", () => {
+  const ok = { first_name: "Ana", last_name: "Okafor", account_id: "4", email: "ana.okafor@harbor.example" };
+  assert.deepEqual(newRecordProblems("contact", ok), {}); // no phone: fine
+  assert.deepEqual(newRecordProblems("contact", { ...ok, phone: "   ", phone_country: "IN" }), {});
+  assert.deepEqual(Object.keys(newRecordProblems("contact", { account_id: "4" })), ["first_name", "last_name", "email"]);
+  assert.deepEqual(Object.keys(newRecordProblems("contact", { ...ok, first_name: " ", last_name: "\t", email: " " })),
+    ["first_name", "last_name", "email"]);
+  assert.equal(newRecordProblems("contact", { ...ok, first_name: "" }).first_name, "Enter the contact's first name.");
   assert.equal(newRecordProblems("contact", { ...ok, email: "" }).email, "Enter the contact's email address.");
   for (const email of ["ana.okafor", "ana@harbor", "@harbor.example", "ana okafor@harbor.example", "a@b.example, c@d.example"])
     assert.equal(newRecordProblems("contact", { ...ok, email }).email, CONTACT_EMAIL_INVALID, email);
-  assert.deepEqual(Object.keys(newRecordProblems("contact", { email: "x@y.example", phone: "1" })), ["last_name", "account_id"]);
+  assert.deepEqual(Object.keys(newRecordProblems("contact", { ...ok, account_id: "" })), ["account_id"]);
+  // phone: checked for the chosen country (India by default)
+  assert.deepEqual(newRecordProblems("contact", { ...ok, phone: "98765 43210", phone_country: "IN" }), {});
+  assert.equal(newRecordProblems("contact", { ...ok, phone: "12345", phone_country: "IN" }).phone,
+    "Enter a valid phone number for India (+91).");
+  // LinkedIn: a person's profile, when given
+  assert.deepEqual(newRecordProblems("contact", { ...ok, linkedin_url: "linkedin.com/in/ana-okafor" }), {});
+  assert.match(newRecordProblems("contact", { ...ok, linkedin_url: "https://www.linkedin.com/company/harbor" }).linkedin_url,
+    /person's profile address/);
   assert.deepEqual(newRecordProblems("lead", {}), {}); // other forms keep their own checks
 });
 test("Convert to Opportunity: exactly one open lead the user may convert", () => {
@@ -828,7 +865,11 @@ test("Convert to Opportunity: exactly one open lead the user may convert", () =>
     assert.equal(closed.action, undefined);
     assert.match(closed.reason, new RegExp(`This lead is ${stage}`));
   }
-  assert.match(leadConvertChoice([mine], () => ({ canEdit: true, canCreateSales: false })).reason, /Admins don't convert/);
+  // the Admin converts like a Manager (canCreateSales is true for every CRM role; canEdit from Edit team records)
+  const admin = () => ({ canEdit: canEditRecord({ id: 3, role: "Admin", permissions: ["edit_team_records"] }, mine),
+    canCreateSales: canCreateSales({ role: "Admin" }) });
+  assert.deepEqual(leadConvertChoice([mine], admin).action, { type: "convert", record: mine });
+  assert.match(leadConvertChoice([mine], () => ({ canEdit: true, canCreateSales: false })).reason, /can't convert leads/);
   assert.match(leadConvertChoice([mine], () => ({ canEdit: false, canCreateSales: true })).reason, /only your own leads/);
 });
 
@@ -842,11 +883,13 @@ test("Convert to Opportunity with several leads ticked only explains, and never 
     assert.equal(choice.action, undefined); // no Convert form, so no conversion request
     assert.equal(choice.reason, undefined);
   }
-  // several ticked doesn't get round the role rule: Admins still can't convert (item stays off with the reason)
-  const admin = leadConvertChoice([lead(1), lead(2)], () => ({ canEdit: true, canCreateSales: false }));
-  assert.equal(admin.explain, undefined);
-  assert.equal(admin.action, undefined);
-  assert.match(admin.reason, /Admins don't convert/);
+  // several ticked doesn't get round the role rule: a role that can't convert stays off with the reason
+  const noRole = leadConvertChoice([lead(1), lead(2)], () => ({ canEdit: true, canCreateSales: false }));
+  assert.equal(noRole.explain, undefined);
+  assert.equal(noRole.action, undefined);
+  assert.match(noRole.reason, /can't convert leads/);
+  // the Admin gets the same one-lead-at-a-time warning as everyone else
+  assert.equal(leadConvertChoice([lead(1), lead(2)], () => ({ canEdit: true, canCreateSales: true })).explain, CONVERT_ONE_AT_A_TIME);
   // one lead: the usual rules (someone else's lead without Edit team records stays off)
   assert.match(leadConvertChoice([lead(1)], () => ({ canEdit: false, canCreateSales: true })).reason, /only your own leads/);
   assert.deepEqual(leadConvertChoice([lead(1)], salesperson).action, { type: "convert", record: lead(1) });
@@ -916,7 +959,8 @@ test("New Campaign has no rendered preview; subject and message stay templates w
 test("Leads selection actions: only with leads ticked, keeping Convert's one-lead form, the warning and the limits", () => {
   const lead = (id, stage = "Demo") => ({ id, name: `Synthetic Lead ${id}`, stage, owner_id: 2 });
   const seller = () => ({ canEdit: true, canCreateSales: true });
-  const admin = () => ({ canEdit: true, canCreateSales: false });
+  const admin = () => ({ canEdit: true, canCreateSales: canCreateSales({ role: "Admin" }) });
+  const noRole = () => ({ canEdit: true, canCreateSales: false });
   const actions = (leads, rights, extra = {}) =>
     leadSelectionActions({ count: leads.length, convertChoice: leadConvertChoice(leads, rights), canCampaign: true, canTransfer: true, ...extra });
   const byKey = (list) => Object.fromEntries(list.map((a) => [a.key, a]));
@@ -938,11 +982,12 @@ test("Leads selection actions: only with leads ticked, keeping Convert's one-lea
   assert.equal(leadConvertChoice([lead(1), lead(2)], seller).explain, CONVERT_ONE_AT_A_TIME);
   assert.equal(several.transfer.label, "Transfer Leads");
 
-  // a closed lead, or an Admin: Convert is off and says why
+  // a closed lead, or a role that can't convert: Convert is off and says why; the Admin's Convert is on
   const closed = byKey(actions([lead(1, "Converted")], seller));
   assert.equal(closed.convert.disabled, true);
   assert.match(closed.convert.reason, /This lead is Converted/);
-  assert.match(byKey(actions([lead(1)], admin)).convert.reason, /Admins don't convert/);
+  assert.match(byKey(actions([lead(1)], noRole)).convert.reason, /can't convert leads/);
+  assert.equal(byKey(actions([lead(1)], admin)).convert.disabled, false);
 
   // rights decide which actions are offered; the server still checks each lead
   assert.deepEqual(Object.keys(byKey(actions([lead(1)], seller, { canCampaign: false, canTransfer: false }))), ["convert", "delete"]);
@@ -1222,13 +1267,23 @@ test("column filter menus keep their own option layout inside table headers (no 
   assert.match(css, /\.sf-table th \.th-menu > button\.on \{\s*color: var\(--brand-dark\);/);
 });
 
-test("direct opportunity creation includes Admin without granting lead conversion", () => {
+test("direct opportunity creation and lead conversion: the Admin, Managers and Salespeople", () => {
   for (const role of ["Admin", "Manager", "Salesperson"]) assert.equal(canCreateOpportunity({ role }), true);
   assert.equal(canCreateOpportunity(null), false);
   assert.equal(canCreateOpportunity({ role: "Unknown" }), false);
-  assert.equal(canCreateSales({ role: "Admin" }), false);
-  assert.equal(canCreateSales({ role: "Manager" }), true);
-  assert.equal(canCreateSales({ role: "Salesperson" }), true);
+  // lead conversion (canCreateSales gates only the Convert entry points): every CRM role, and nobody else
+  for (const role of ["Admin", "Manager", "Salesperson"]) assert.equal(canCreateSales({ role }), true, role);
+  assert.equal(canCreateSales(null), false);
+  assert.equal(canCreateSales({ role: "Unknown" }), false);
+  // ...and every use of it is a Convert entry point (no other sales action is opened to the Admin by it)
+  const uses = ["./RecordPage.jsx", "./LeadsKanban.jsx", "./LeadsTable.jsx", "./ListView.jsx"]
+    .flatMap((file) => source(file).split("\n").filter((line) => line.includes("canCreateSales(")).map((line) => `${file}: ${line.trim()}`));
+  assert.equal(uses.length, 4, uses.join("\n"));
+  assert.ok(uses.find((u) => u.startsWith("./RecordPage.jsx") && /const canConvert = canEdit && canCreateSales\(user\)/.test(u)));
+  assert.ok(uses.find((u) => u.startsWith("./LeadsKanban.jsx") && /canConvert: canEdit && canCreateSales\(user\)/.test(u)));
+  assert.ok(uses.find((u) => u.startsWith("./LeadsTable.jsx") && /canCreateSales: canCreateSales\(user\)/.test(u)));
+  assert.ok(uses.find((u) => u.startsWith("./ListView.jsx") && /collection === "opportunities" && canCreateSales\(user\)/.test(u)));
+  assert.match(source("./ListView.jsx"), /canCreateSales\(user\) && \(\s*<a className="sf-button" href="#\/leads" title="Opportunities are created by converting a lead">\s*Convert a Lead/);
 });
 
 
@@ -1618,4 +1673,408 @@ test("Leads Kanban: Sort by only, each field in its default order; the summary n
   assert.match(table, /onChange=\{\(e\) => setSort\(\{ col: e\.target\.value, dir: defaultSortDirection\(e\.target\.value\) \}\)\}/);
   assert.match(table, /const \[sort, setSort\] = useState\(\{ col: "created", dir: "desc" \}\);/); // the page still opens newest first
   assert.match(table, /sort: sortText\(sortLabel, sort\.col, sort\.dir\)/); // the summary under the title
+});
+
+// ---------- vikram-crm-followups: Lead Source and the New Lead / Edit Lead rules ----------
+
+test("Lead Source: LinkedIn is offered on the form and in the Source filter; Upload stays upload-only", () => {
+  assert.ok(LEAD_SOURCES.includes("LinkedIn"));
+  assert.ok(!LEAD_SOURCES.includes(UPLOAD_SOURCE)); // not offered on the New Lead form
+  assert.match(source("./ListView.jsx"), /\{ key: "source", label: "Lead Source", options: opts\(\[\.\.\.LEAD_SOURCES, UPLOAD_SOURCE\]\) \}/);
+  const backend = readFileSync(new URL("../../backend/app/constants.py", import.meta.url), "utf8");
+  const listed = backend.match(/^LEAD_SOURCES = \[([^\]]*)\]/m)[1].match(/"([^"]+)"/g).map((s) => s.slice(1, -1));
+  assert.deepEqual(listed, [...LEAD_SOURCES, UPLOAD_SOURCE]); // the same list, in the same order, as the API
+  assert.match(backend, new RegExp(`LEAD_SOURCE_DETAIL_MAX = ${SOURCE_DETAIL_MAX}\\b`));
+});
+
+test("New Lead: First Name, Specify lead source (Other), LinkedIn Profile URL (LinkedIn) are required", () => {
+  const ok = { first_name: "Ana", last_name: "Okafor", company: "Harbor", email: "ana@harbor.example", source: "Website" };
+  assert.deepEqual(leadFormProblems(ok), {});
+  // First Name: empty or only spaces
+  for (const first_name of ["", "   ", "\t"]) assert.equal(leadFormProblems({ ...ok, first_name }).first_name, LEAD_FIRST_NAME_REQUIRED);
+  // every source works; Other and LinkedIn ask for their own value
+  for (const source of LEAD_SOURCES.filter((s) => !["Other", "LinkedIn"].includes(s))) assert.deepEqual(leadFormProblems({ ...ok, source }), {}, source);
+  for (const source_detail of [undefined, "", "   "])
+    assert.equal(leadFormProblems({ ...ok, source: "Other", source_detail }).source_detail, SOURCE_DETAIL_REQUIRED);
+  assert.deepEqual(leadFormProblems({ ...ok, source: "Other", source_detail: "Trade fair 2026" }), {});
+  assert.match(leadFormProblems({ ...ok, source: "Other", source_detail: "x".repeat(SOURCE_DETAIL_MAX + 1) }).source_detail, /at most 100/);
+  assert.equal(leadFormProblems({ ...ok, source: "LinkedIn" }).linkedin_url, LINKEDIN_PROFILE_REQUIRED);
+  assert.equal(leadFormProblems({ ...ok, source: "LinkedIn", linkedin_url: "   " }).linkedin_url, LINKEDIN_PROFILE_REQUIRED);
+  assert.deepEqual(leadFormProblems({ ...ok, source: "LinkedIn", linkedin_url: "https://www.linkedin.com/in/ana-okafor" }), {});
+  // the LinkedIn Profile URL is optional for every other source; a description typed for Other doesn't matter elsewhere
+  assert.deepEqual(leadFormProblems({ ...ok, source: "Referral", linkedin_url: "", source_detail: "" }), {});
+  assert.deepEqual(leadFieldsRequired("Website"), { first_name: true, source_detail: false, linkedin_url: false });
+  assert.deepEqual(leadFieldsRequired("Other"), { first_name: true, source_detail: true, linkedin_url: false });
+  assert.deepEqual(leadFieldsRequired("LinkedIn"), { first_name: true, source_detail: false, linkedin_url: true });
+});
+
+test("Lead form: Company Website and Company LinkedIn URL are optional, but checked when given", () => {
+  const ok = { first_name: "Ana", last_name: "Okafor", company: "Harbor", email: "ana@harbor.example", source: "Website" };
+  assert.deepEqual(leadFormProblems({ ...ok, company_website: "", company_linkedin_url: "" }), {});
+  assert.deepEqual(leadFormProblems({ ...ok, company_website: "harbor.example", company_linkedin_url: "linkedin.com/company/harbor" }), {});
+  assert.equal(leadFormProblems({ ...ok, company_website: "harbor" }).company_website, "Enter a valid web address");
+  assert.equal(leadFormProblems({ ...ok, company_website: "harbor .example" }).company_website, "Enter a valid web address");
+  assert.equal(leadFormProblems({ ...ok, company_linkedin_url: "https://harbor.example/about" }).company_linkedin_url,
+    "Enter a LinkedIn address (linkedin.com/...)");
+  assert.equal(leadFormProblems({ ...ok, linkedin_url: "https://linkedin.com.example.test/in/ana" }).linkedin_url,
+    "Enter a LinkedIn address (linkedin.com/...)");
+  // the same rule as the API's clean_url
+  assert.equal(webAddressProblem("https://uk.linkedin.com/company/x", { linkedin: true }), "");
+  assert.equal(webAddressProblem("ftp://example.com"), "Enter a valid web address");
+  assert.equal(webAddressProblem("  "), "");
+});
+
+test("Edit Lead: an older lead's missing First Name, Other description or LinkedIn URL doesn't block an unrelated edit", () => {
+  const legacy = { id: 9, first_name: null, last_name: "Okafor", source: "Other", source_detail: null, linkedin_url: null };
+  const form = { first_name: "", last_name: "Okafor", company: "Harbor", email: "ana@harbor.example", source: "Other", source_detail: "" };
+  assert.deepEqual(leadFormProblems(form, legacy), {}); // e.g. only the phone changed
+  assert.deepEqual(leadFieldsRequired("Other", legacy), { first_name: false, source_detail: false, linkedin_url: false });
+  // ...but a value the lead has can't be removed, and changing the source asks for what that source needs
+  const named = { ...legacy, first_name: "Ana", source_detail: "Trade fair" };
+  assert.equal(leadFormProblems({ ...form, source_detail: "Trade fair" }, named).first_name, LEAD_FIRST_NAME_REQUIRED);
+  assert.equal(leadFormProblems({ ...form, first_name: "Ana", source_detail: "  " }, named).source_detail, SOURCE_DETAIL_REQUIRED);
+  const website = { ...legacy, source: "Website" };
+  assert.equal(leadFormProblems({ ...form, source: "Other" }, website).source_detail, SOURCE_DETAIL_REQUIRED);
+  assert.equal(leadFormProblems({ ...form, source: "LinkedIn" }, website).linkedin_url, LINKEDIN_PROFILE_REQUIRED);
+  // an uploaded LinkedIn lead without a profile: other edits save; removing a saved profile doesn't
+  const uploaded = { ...legacy, source: "LinkedIn" };
+  assert.deepEqual(leadFormProblems({ ...form, source: "LinkedIn" }, uploaded), {});
+  assert.equal(
+    leadFormProblems({ ...form, source: "LinkedIn", linkedin_url: "" }, { ...uploaded, linkedin_url: "https://linkedin.com/in/ana" }).linkedin_url,
+    LINKEDIN_PROFILE_REQUIRED,
+  );
+});
+
+test("Lead form wiring: required stars follow the rules; Specify lead source shows for Other; one LinkedIn field", () => {
+  const modal = source("./Modal.jsx");
+  assert.match(modal, /field\("First Name", "first_name", "text", leadNeeds\.first_name\)/);
+  assert.match(modal, /leadSource === "Other" &&\s*field\("Specify lead source", "source_detail", "text", leadNeeds\.source_detail, record\?\.source_detail \?\? ""\)/);
+  assert.match(modal, /required=\{leadNeeds\.linkedin_url\}/);
+  assert.match(modal, /field\("Company Website", "company_website", "text", false\)/);
+  assert.match(modal, /field\("Company LinkedIn URL", "company_linkedin_url", "text", false\)/);
+  assert.match(modal, /const problems = leadFormProblems\(v, record\);/);
+  assert.doesNotMatch(modal, /\["linkedin_url", "LinkedIn Profile URL"\],\s*\["company_website"/); // no longer always required
+  assert.match(modal, /name === "source_detail"\s*\? SOURCE_DETAIL_MAX/); // bounded like the database column
+  // the LinkedIn Profile URL stays one field, with Apollo autofill on New Lead (looked up only when a profile is pasted)
+  const leadForm = modal.slice(modal.indexOf('{type === "lead" && ('), modal.indexOf('{type === "newOpportunity" && ('));
+  assert.equal((leadForm.match(/name="linkedin_url"|"linkedin_url", "text"/g) || []).length, 0);
+  assert.equal((modal.match(/<LinkedInField/g) || []).length, 2); // one on the lead form, one on New Contact
+  const field = source("./LeadAutofill.jsx");
+  assert.match(field, /required=\{required\}/);
+  assert.match(field, /label = "LinkedIn Profile URL",/);
+  assert.match(field, /\{label\}\{required && <i> \*<\/i>\}/);
+  assert.match(field, /onPaste=\{autofill \? /);
+  // the lead page shows what an Other source is
+  assert.match(source("./RecordPage.jsx"), /item\.source === "Other" && item\.source_detail \? ` \(\$\{item\.source_detail\}\)` : ""/);
+});
+
+test("Account page has no Send Email (for every role); leads, opportunities and contacts keep theirs; history stays", () => {
+  const related = source("./RelatedPages.jsx");
+  const accountPage = related.slice(related.indexOf("export function AccountPage"), related.indexOf("export function ContactPage"));
+  const contactPage = related.slice(related.indexOf("export function ContactPage"));
+  assert.doesNotMatch(accountPage, /Send Email|openEmail|field: "account_id"/); // no role check: it isn't rendered at all
+  assert.match(accountPage, /useEmails\("account_id", account\?\.id, emailVersion\)/); // the account's email history...
+  assert.match(accountPage, /<EmailList emails=\{emails\} \/>/); // ...is still listed
+  assert.match(contactPage, /openEmail\(\{\s*type: "contact",\s*field: "contact_id"/);
+  assert.match(contactPage, /Send Email/);
+  assert.match(source("./RecordPage.jsx"), /Send Email/); // leads and opportunities
+  assert.doesNotMatch(source("./App.jsx"), /<AccountPage[^>]*openEmail/);
+  assert.match(source("./App.jsx"), /<ContactPage[^>]*openEmail=\{openEmail\}/);
+});
+
+test("Opportunities table: Client POC is a label only; Account Name stays Account Name", () => {
+  const list = source("./ListView.jsx");
+  const start = list.indexOf('["Opportunity Name"'); // the Opportunities table's columns
+  const opps = list.slice(start, list.indexOf("accounts: [", start));
+  assert.match(opps, /\["Client POC", \(r\) => r\.lead_name \|\| "", \(r\) => r\.lead_id && r\.lead_name \? <a href=\{`#\/leads\/\$\{r\.lead_id\}`\}>\{r\.lead_name\}<\/a> : "—"\]/);
+  assert.match(opps, /\["Account Name", \(r\) => r\.account_name \|\| "", account\]/); // value and link unchanged
+  assert.doesNotMatch(opps, /Client Name|Account POC/);
+  // sorting is by column position and the Opportunities filters don't use these columns, so both keep working
+  assert.match(list, /const get = cols\[sort\.col\]\[1\];/);
+  // the Accounts and Contacts tables and the board's cards keep "Account Name" too
+  assert.match(list, /\["Account Name", \(r\) => r\.name, \(r\) => link\(r, r\.name\)\]/);
+  assert.equal((list.match(/\["Account Name", \(r\) => r\.account_name \|\| "", account\]/g) || []).length, 2); // Opportunities, Contacts
+  assert.match(list, /<dt>Account Name<\/dt>/); // the opportunity board's cards
+});
+
+// ---------- issues 2, 3 and 7: New Account, New Contact and New Opportunity > New contact ----------
+
+test("Phone: country-aware checks, India by default; spaces, brackets and hyphens are fine; blank is fine", () => {
+  assert.equal(DEFAULT_PHONE_COUNTRY, "IN");
+  assert.equal(phoneCountryLabel("IN"), "India (+91)");
+  assert.equal(phoneProblem(""), "");
+  assert.equal(phoneProblem("   "), "");
+  for (const ok of ["98765 43210", "98765-43210", "(98765) 43210", "098765 43210", "+91 98765 43210"])
+    assert.equal(phoneProblem(ok, "IN"), "", ok);
+  for (const bad of ["12345", "98765 4321", "98765 432100", "phone 98765 43210", "98765 43210 ext. 4"])
+    assert.equal(phoneProblem(bad, "IN"), "Enter a valid phone number for India (+91).", bad);
+  // not every country has ten digits
+  assert.equal(phoneProblem("020 7946 0958", "GB"), "");
+  assert.equal(phoneProblem("030 901820", "DE"), "");
+  assert.equal(phoneProblem("2 9876 5432", "AU"), "");
+  assert.equal(phoneProblem("6123 4567", "SG"), "");
+  assert.equal(phoneProblem("6123 4567", "IN"), "Enter a valid phone number for India (+91).");
+  // the chosen country decides a number without +: a US number isn't a Canadian one, though both are +1
+  assert.equal(phoneProblem("(212) 555-0142", "US"), "");
+  assert.equal(phoneProblem("(212) 555-0142", "CA"), "Enter a valid phone number for Canada (+1).");
+  assert.equal(phoneProblem("(416) 555-0142", "CA"), "");
+  // with +, the number's own country code decides
+  assert.equal(phoneProblem("+44 20 7946 0958", "IN"), "");
+  assert.equal(phoneProblem("+91 12345", "IN"), PHONE_WITH_CODE_INVALID);
+  assert.equal(phoneCountryOf("+1 416 555 0142"), "CA");
+  assert.equal(phoneCountryOf("98765 43210"), ""); // no country without +
+  assert.equal(phoneProblem("98765 43210", "ZZ"), "Choose the phone number's country.");
+});
+
+test("Phone country list: every country with its name and calling code; shared codes stay apart by name", () => {
+  const labels = PHONE_COUNTRIES.map((c) => `${c.name} (${c.dial})`);
+  assert.ok(PHONE_COUNTRIES.length > 200);
+  assert.equal(new Set(labels).size, labels.length); // no two options look the same
+  for (const label of ["India (+91)", "United States (+1)", "Canada (+1)", "United Kingdom (+44)", "Russia (+7)", "Kazakhstan (+7)"])
+    assert.ok(labels.includes(label), label);
+  assert.deepEqual([...PHONE_COUNTRIES.map((c) => c.name)], [...PHONE_COUNTRIES.map((c) => c.name)].sort((a, b) => a.localeCompare(b, "en")));
+});
+
+test("New Opportunity > New contact: the same rules as New Contact, on the form's own field names", () => {
+  const F = OPPORTUNITY_CONTACT_FORM;
+  const ok = { contact_first_name: "Ana", contact_last_name: "Okafor", contact_email: "ana@harbor.example" };
+  assert.deepEqual(contactProblems(ok, F), {});
+  assert.deepEqual(Object.keys(contactProblems({}, F)), ["contact_first_name", "contact_last_name", "contact_email"]);
+  assert.equal(contactProblems({ ...ok, contact_email: "ana@harbor" }, F).contact_email, CONTACT_EMAIL_INVALID);
+  assert.deepEqual(contactProblems({ ...ok, contact_phone: "" }, F), {});
+  assert.equal(contactProblems({ ...ok, contact_phone: "555 0142", contact_phone_country: "US" }, F).contact_phone,
+    "Enter a valid phone number for United States (+1).");
+  assert.deepEqual(contactProblems({ ...ok, contact_phone: "(212) 555-0142", contact_phone_country: "US" }, F), {});
+  assert.match(contactProblems({ ...ok, contact_linkedin_url: "lnkd.in/abc" }, F).contact_linkedin_url, /linkedin/i);
+  // and New Contact checks exactly the same things
+  const same = { first_name: "Ana", last_name: "Okafor", email: "ana@harbor.example", phone: "555 0142", phone_country: "US" };
+  assert.deepEqual(Object.values(contactProblems(same, CONTACT_FORM)), Object.values(contactProblems(
+    { contact_first_name: "Ana", contact_last_name: "Okafor", contact_email: "ana@harbor.example", contact_phone: "555 0142", contact_phone_country: "US" }, F)));
+});
+
+test("Contact autofill fills only the person's details, never typed values, and maps them to each form's fields", () => {
+  const fields = contactAutofillFields(OPPORTUNITY_CONTACT_FORM);
+  assert.deepEqual(fields, { contact_first_name: "First Name", contact_last_name: "Last Name", contact_title: "Title",
+    contact_email: "Email", contact_phone: "Phone" });
+  assert.deepEqual(Object.keys(contactAutofillFields(CONTACT_FORM)), ["first_name", "last_name", "job_title", "email", "phone"]);
+  // Apollo's contact answer in the form's names; anything else (a company) is never mapped
+  const incoming = contactAnswerFields({ first_name: "Ana", job_title: "CTO", email: "ana@harbor.example", company: "Other Co" },
+    OPPORTUNITY_CONTACT_FORM);
+  assert.deepEqual(incoming, { contact_first_name: "Ana", contact_title: "CTO", contact_email: "ana@harbor.example" });
+  // the user's typed last name and email stay; empty fields are filled
+  const plan = autofillPlan({ contact_first_name: "", contact_last_name: "Okafor", contact_email: "mine@harbor.example" }, {},
+    incoming, fields);
+  assert.deepEqual(plan.set, { contact_first_name: "Ana", contact_title: "CTO" });
+  assert.deepEqual(plan.kept, ["contact_email"]);
+  assert.equal(autofillSummary(plan, fields).text.includes("Filled by Apollo: First Name, Title."), true);
+  assert.match(autofillSummary({ filled: ["contact_email"], kept: [] }, fields).email, /^Email verification status is provided by Apollo/);
+  // the lead form's autofill is unchanged
+  assert.deepEqual(Object.keys(autofillPlan({}, {}, { company: "Acme" }).set), ["company"]);
+});
+
+test("Contact autofill wiring: lookup keyed by profile and account, late answers dropped, account never changed", () => {
+  const field = source("./LeadAutofill.jsx");
+  assert.match(field, /const keyOf = \(url\) => \(companyNow === undefined \? url : `\$\{url\}\\n\$\{companyNow\}`\);/);
+  assert.match(field, /if \(alive\.current && current\.current === key\) show\(answer, url\);/); // late answers are ignored
+  assert.match(field, /if \(url !== filledFor\.current\) apply\(\{\}\);/); // a failed re-check keeps what it filled
+  assert.match(field, /status\.employerMatches === false/); // another employer: a clear warning, the account is kept
+  assert.match(field, /Apollo lists \$\{status\.employer\} as this person's employer, not \$\{status\.company\}\. Check it's the right person\./);
+  assert.doesNotMatch(field.slice(field.indexOf("const apply")), /account_id|setAccount/); // never picks an account
+  const modal = source("./Modal.jsx");
+  assert.match(modal, /lookup=\{\(url, company\) => api\.enrichContact\(url, company\)\}/);
+  assert.match(modal, /needed=\{\[CONTACT_FORM\.first_name, CONTACT_FORM\.last_name, CONTACT_FORM\.email\]\}/);
+  assert.match(source("./api.js"), /enrichContact: \(linkedinUrl, company\) => lookupProfile\(linkedinUrl, "\/contacts\/enrichment", \{ company: company \|\| null \}\)/);
+});
+
+test("New Account and New Contact forms: the agreed fields", () => {
+  const modal = source("./Modal.jsx");
+  const account = modal.slice(modal.indexOf('{type === "account" && ('), modal.indexOf('{type === "contact" && ('));
+  assert.doesNotMatch(account, /"Phone"|"phone"/); // no Phone on New Account
+  assert.doesNotMatch(account, /"Address"|"address"/); // nor Address (older accounts keep theirs)
+  for (const f of [/field\("Account Name", "name", "text", true, ""\)/, /field\("Industry", "industry", "text", true, ""\)/,
+    /field\("Website", "website", "text", false, ""\)/, /field\("Company LinkedIn URL", "linkedin_url", "text", false, ""\)/,
+    /\{owner\(\)\}/])
+    assert.match(account, f);
+  const contact = modal.slice(modal.indexOf('{type === "contact" && ('), modal.indexOf('{type === "lead" && ('));
+  for (const f of [/field\("First Name", "first_name", "text", true, ""\)/, /field\("Last Name", "last_name", "text", true, ""\)/,
+    /field\("Email", "email", "email", true, ""\)/, /<PhoneField /, /<LinkedInField/, /"Account Name",\s*"account_id"/])
+    assert.match(contact, f);
+  const api = source("./api.js");
+  const saveAccount = api.slice(api.indexOf("saveAccount:"), api.indexOf("saveContact:"));
+  assert.doesNotMatch(saveAccount, /phone/);
+  assert.match(saveAccount, /linkedin_url: optional\(v\.linkedin_url\?\.trim\(\)\)/);
+  const saveContact = api.slice(api.indexOf("saveContact:"), api.indexOf("login:"));
+  assert.match(saveContact, /phone_country: v\.phone_country \|\| "IN"/);
+  assert.match(saveContact, /linkedin_url: optional\(v\.linkedin_url\?\.trim\(\)\)/);
+  const phoneField = source("./PhoneField.jsx");
+  assert.match(phoneField, /defaultValue=\{DEFAULT_PHONE_COUNTRY\}/);
+  assert.match(phoneField, /\{country\.name\} \(\{country\.dial\}\)/);
+});
+
+test("New Opportunity > New contact: shown only for a new contact; existing contacts are reused with no lookup", () => {
+  const opp = source("./NewOpportunity.jsx");
+  assert.match(opp, /const showNewContact = newContact && !!\(accountId \|\| !accounts\.length\);/);
+  assert.match(opp, /\{showNewContact && \(\s*<fieldset className="stage-task" ref=\{contactBox\}>/);
+  assert.match(opp, /<LinkedInField[\s\S]*?company=\{company\}[\s\S]*?write=\{writeContact\}|<LinkedInField[\s\S]*?write=\{writeContact\}[\s\S]*?company=\{company\}/);
+  assert.match(opp, /required: true, maxLength: 50, error: errors\[F\.first_name\]/);
+  assert.match(opp, /required: true, maxLength: 50, error: errors\[F\.last_name\]/);
+  assert.match(opp, /type: "email", required: true, maxLength: 255, error: errors\[F\.email\]/);
+  assert.match(opp, /<PhoneField name=\{F\.phone\} countryName=\{F\.phone_country\}/);
+  // the account comes from the user's choice (or the company typed), never from Apollo
+  assert.match(opp, /const company = existingAccount \? data\.accounts\.find\(\(a\) => a\.id === existingAccount\)\?\.name \|\| "" : accountName\.trim\(\);/);
+  // the payload: an existing contact sends no new contact fields
+  const payloadSource = opp.slice(opp.indexOf("export function newOpportunityPayload")).replace("export function", "function");
+  const newOpportunityPayload = new Function(`${payloadSource}; return newOpportunityPayload;`)();
+  const fromForm = (v) => newOpportunityPayload(v, {});
+  const chosen = fromForm({ name: "Deal", account_id: "4", primary_contact_id: "9", contact_first_name: "x", contact_phone: "1" });
+  assert.equal(chosen.primary_contact_id, 9);
+  assert.equal(chosen.contact_first_name, null);
+  assert.equal("contact_phone_country" in chosen, false);
+  const fresh = fromForm({ name: "Deal", account_id: "4", primary_contact_id: "new", contact_first_name: "Ana",
+    contact_last_name: "Okafor", contact_email: "ana@harbor.example", contact_phone: " 98765 43210 ", contact_phone_country: "IN",
+    contact_linkedin_url: " linkedin.com/in/ana " });
+  assert.deepEqual([fresh.contact_phone, fresh.contact_phone_country, fresh.contact_linkedin_url], ["98765 43210", "IN", "linkedin.com/in/ana"]);
+  const modal = source("./Modal.jsx");
+  assert.match(modal, /const problems = newContact \? contactProblems\(values, OPPORTUNITY_CONTACT_FORM\) : \{\};/);
+  assert.match(modal, /errors=\{fieldErrors\}\s*onFix=\{clearError\}/);
+});
+
+// ---------- four focused follow-ups: LinkedIn source, visible phone errors, short LinkedIn text, no Address ----------
+
+test("New Lead: a successful LinkedIn lookup selects LinkedIn only while the source is untouched or blank", () => {
+  assert.equal(NEW_LEAD_DEFAULT_SOURCE, "Other");
+  assert.equal(sourceAfterLinkedInMatch({ current: "Other" }), "LinkedIn"); // the form's untouched default
+  assert.equal(sourceAfterLinkedInMatch({ current: "" }), "LinkedIn"); // blank
+  assert.equal(sourceAfterLinkedInMatch({ current: "", chosen: true }), "LinkedIn"); // still blank
+  assert.equal(sourceAfterLinkedInMatch({ current: "LinkedIn" }), null); // already LinkedIn
+  // the user's own choice stays, including Other
+  for (const current of ["Website", "Referral", "Event", "Other"]) assert.equal(sourceAfterLinkedInMatch({ current, chosen: true }), null, current);
+  assert.equal(sourceAfterLinkedInMatch({ current: "Other", detail: "Trade fair" }), null); // an Other the user described
+  assert.equal(sourceAfterLinkedInMatch({ current: "Other", detail: "   " }), "LinkedIn"); // spaces aren't a description
+  // wiring: only after a verified match of the current address, on New Lead only; the user's pick is remembered
+  const field = source("./LeadAutofill.jsx");
+  const show = field.slice(field.indexOf("const show = "), field.indexOf("const lookup = "));
+  assert.ok(show.indexOf("onMatched?.()") > show.indexOf('answer.status !== "matched" || answer.url_verified !== true'));
+  assert.equal((field.match(/onMatched\?\.\(\)/g) || []).length, 1); // never after a failed, unmatched or late answer
+  assert.match(field, /if \(alive\.current && current\.current === key\) show\(answer, url\);/);
+  const modal = source("./Modal.jsx");
+  assert.match(modal, /onMatched=\{linkedInMatched\}/);
+  assert.match(modal, /sourceChosen\.current = true; \/\/ the user's choice/);
+  assert.match(modal, /const next = sourceAfterLinkedInMatch\(\{ current: list\.value, chosen: sourceChosen\.current, detail: form\.elements\.source_detail\?\.value \}\);/);
+  assert.match(modal, /setLeadSource\(next\);/); // Specify lead source hides; the LinkedIn URL rule follows the source
+  assert.equal((modal.match(/onMatched=/g) || []).length, 1); // only the lead form; contacts have no source
+});
+
+test("Phone field: no error before the field is left; then a live check that follows number and country", () => {
+  const india = "Enter a valid phone number for India (+91).";
+  assert.equal(phoneFieldError("uiadcna", "IN"), ""); // still typing: nothing yet
+  assert.equal(phoneFieldError("uiadcna", "IN", { touched: true }), india); // letters fail once the field is left
+  assert.equal(phoneFieldError("98765 432", "IN", { touched: true }), india); // too short
+  assert.equal(phoneFieldError("98765 432101", "IN", { touched: true }), india); // too long
+  assert.equal(phoneFieldError("", "IN", { touched: true }), ""); // optional: empty is fine with a country chosen
+  assert.equal(phoneFieldError("   ", "US", { touched: true }), "");
+  assert.equal(phoneFieldError("98765 43210", "IN", { touched: true }), ""); // corrected: the message clears
+  // the country decides: the same number is checked again when the country changes
+  assert.equal(phoneFieldError("6123 4567", "IN", { touched: true }), india);
+  assert.equal(phoneFieldError("6123 4567", "SG", { touched: true }), ""); // valid in Singapore
+  assert.equal(phoneFieldError("(212) 555-0142", "US", { touched: true }), "");
+  assert.equal(phoneFieldError("(212) 555-0142", "CA", { touched: true }), "Enter a valid phone number for Canada (+1).");
+  assert.equal(phoneFieldError("+44 20 7946 0958", "IN", { touched: true }), ""); // a valid international number
+  // a Save attempt's message shows until the field changes
+  assert.equal(phoneFieldError("98765 43210", "IN", { saveError: india }), india);
+});
+
+test("Phone field wiring: blur, number and country changes, aria-invalid and the linked message", () => {
+  const phone = source("./PhoneField.jsx");
+  assert.match(phone, /onBlur=\{\(event\) => \{\s*read\(event\);\s*setTouched\(true\);/);
+  assert.match(phone, /<select name=\{countryName\}[^>]*onChange=\{changed\}/);
+  assert.match(phone, /onInput=\{changed\}/);
+  assert.match(phone, /if \(error\) setTouched\(true\); \/\/ a failed Save counts as having left the field/);
+  assert.match(phone, /aria-invalid=\{message \? true : undefined\}/);
+  assert.match(phone, /aria-describedby=\{message \? errorId : undefined\}/);
+  assert.match(phone, /<small id=\{errorId\} className="field-error" role="alert">/);
+  assert.match(source("./styles.css"), /\.field input\[aria-invalid="true"\],\s*\.field select\[aria-invalid="true"\] \{\s*border-color: #c23934;/);
+  // both contact forms use it; Save is still blocked and the first invalid field is focused
+  assert.match(source("./Modal.jsx"), /<PhoneField error=\{fieldError\("phone"\)\}/);
+  assert.match(source("./NewOpportunity.jsx"), /<PhoneField name=\{F\.phone\} countryName=\{F\.phone_country\} error=\{errors\[F\.phone\] \|\| ""\}/);
+  const modal = source("./Modal.jsx");
+  assert.match(modal, /const problems = newContact \? contactProblems\(values, OPPORTUNITY_CONTACT_FORM\) : \{\};[\s\S]*?event\.target\.elements\[Object\.keys\(problems\)\[0\]\]\?\.focus\(\);/);
+  assert.equal(contactProblems({ first_name: "A", last_name: "B", email: "a@b.example", phone: "uiadcna" }).phone,
+    "Enter a valid phone number for India (+91).");
+  // the lead form's Phone is unchanged (a plain field, no country)
+  assert.match(modal, /\{field\("Phone", "phone", "tel"\)\}/);
+});
+
+test("Contact LinkedIn: no standing helper text or success narration; loading, errors and warnings stay", () => {
+  const field = source("./LeadAutofill.jsx");
+  assert.match(field, /\{!compact && \(\s*<small id=\{help\} className="field-hint">/); // helper text: lead form only
+  assert.match(field, /if \(alive\.current && !res\.enabled && !compact\)/); // no standing "not available" note
+  const matched = field.slice(field.indexOf('{status.kind === "matched" && ('));
+  assert.match(matched, /\{!compact && \(\s*<p>\s*<Icon name="check" size=\{14\} \/> \{status\.text\}/); // no "matching profile" text
+  assert.match(matched, /\{!compact && status\.email && <p>\{status\.email\}<\/p>\}/); // no email-source note
+  assert.match(matched, /\{!compact && Object\.keys\(status\.unavailable\)\.length > 0 && \(/); // no "no phone returned" list
+  assert.match(matched, /\{!compact && status\.employerMatches === null && status\.employer && !status\.company && \(/);
+  // what stays visible: loading, failure with Retry, a profile mismatch, missing required details, another employer
+  assert.match(field, /\{status\.kind === "loading" && <p>\{compact \? "Looking up…" : /);
+  assert.match(field, /\{status\.kind === "error" && \(\s*<p className="autofill-problem" role="alert">[\s\S]*?Retry/);
+  assert.match(field, /\{status\.kind === "unverified" && \(\s*<p className="autofill-problem" role="alert">/);
+  assert.match(matched, /\{status\.employerMatches === false && \(\s*<p className="autofill-problem" role="alert">/);
+  assert.match(matched, /Not provided by Apollo, enter manually: \$\{labels\(status\.missing\)\}\./);
+  // both contact forms are compact; the lead form isn't
+  assert.match(source("./Modal.jsx"), /noun="contact"\s*compact/);
+  assert.match(source("./NewOpportunity.jsx"), /noun="contact"\s*compact/);
+  const lead = source("./Modal.jsx").slice(source("./Modal.jsx").indexOf('{type === "lead" && ('));
+  assert.doesNotMatch(lead.slice(0, lead.indexOf("/>")), /compact/);
+});
+
+test("New Account: no Address or Phone; Name and Industry still required; saved without them", () => {
+  const modal = source("./Modal.jsx");
+  const account = modal.slice(modal.indexOf('{type === "account" && ('), modal.indexOf('{type === "contact" && ('));
+  assert.doesNotMatch(account, /"Address"|"address"|"Phone"|"phone"/); // no such field (a comment may name them)
+  assert.deepEqual(newRecordProblems("account", { name: "Synthetic Harbor Co", industry: "Logistics" }), {});
+  assert.deepEqual(Object.keys(newRecordProblems("account", {})), ["name", "industry"]);
+  // the account page still shows an older account's address
+  assert.match(source("./RelatedPages.jsx"), /address/i);
+});
+
+// ---------- no stale or malformed phone in the contact forms ----------
+
+test("Apollo's phone reaches a contact form only as a valid international number", () => {
+  for (const phone of ["uiadcna", "555-0142", "(212) 555-0142", "+1 555", "+91 12345", "+1 212-555-0142 ext. 9"])
+    assert.deepEqual(contactAnswerFields({ first_name: "Jane", phone }, OPPORTUNITY_CONTACT_FORM), { contact_first_name: "Jane" }, phone);
+  assert.deepEqual(contactAnswerFields({ phone: "+1 212-555-0142" }, CONTACT_FORM), { phone: "+1 212-555-0142" });
+  assert.deepEqual(contactAnswerFields({ phone: "+91 98765 43210" }, OPPORTUNITY_CONTACT_FORM), { contact_phone: "+91 98765 43210" });
+  const fields = contactAutofillFields(CONTACT_FORM);
+  // an untouched phone from an earlier profile is cleared when the new profile has no usable number
+  const earlier = autofillPlan({ phone: "+1 212-555-0142" }, { phone: "+1 212-555-0142" }, contactAnswerFields({ phone: "uiadcna" }), fields);
+  assert.equal(earlier.set.phone, "");
+  // a number the user typed (even an invalid one) is never erased by a lookup: the field shows it as invalid instead
+  const typed = autofillPlan({ phone: "uiadcna" }, {}, contactAnswerFields({ first_name: "Jane" }), fields);
+  assert.equal("phone" in typed.set, false);
+  assert.equal(phoneFieldError("uiadcna", "IN", { touched: true }), "Enter a valid phone number for India (+91).");
+});
+
+test("Contact forms: no browser autofill of the phone; a lookup re-checks the phone the field holds", () => {
+  assert.equal(PHONE_RECHECK_EVENT, "crm-phone-recheck");
+  const phone = source("./PhoneField.jsx");
+  assert.match(phone, /autoComplete="off"/);
+  assert.doesNotMatch(phone, /autoComplete="tel"/);
+  assert.match(phone, /element\?\.addEventListener\(PHONE_RECHECK_EVENT, recheck\);/);
+  assert.match(phone, /if \(value\.trim\(\)\) setTouched\(true\);/); // an empty phone stays quiet (it's optional)
+  const field = source("./LeadAutofill.jsx");
+  const apply = field.slice(field.indexOf("const apply = "), field.indexOf("const clearUnlessSame"));
+  assert.match(apply, /if \(phone\) inputs\[phone\.field\]\?\.dispatchEvent\(new Event\(PHONE_RECHECK_EVENT, \{ bubbles: true \}\)\);/);
+  // both contact forms turn the browser's autofill off (the lead form is unchanged)
+  assert.match(source("./Modal.jsx"), /autoComplete=\{type === "contact" \|\| type === "newOpportunity" \? "off" : undefined\}/);
+});
+
+test("New Opportunity: switching to an existing contact drops the new-contact draft; each open starts blank", () => {
+  const opp = source("./NewOpportunity.jsx");
+  assert.match(opp, /useEffect\(\(\) => \{\s*if \(!showNewContact\) setPerson\(\{ first: "", last: "", email: "" \}\);\s*\}, \[showNewContact\]\);/);
+  // the phone, title, country and LinkedIn inputs aren't kept in state: they start blank whenever the fields appear
+  assert.match(opp, /<input name=\{F\.job_title\} maxLength=\{100\} \/>/);
+  assert.match(source("./PhoneField.jsx"), /const \[now, setNow\] = useState\(\{ value: "", country: DEFAULT_PHONE_COUNTRY \}\);/);
+  assert.doesNotMatch(source("./PhoneField.jsx"), /defaultValue=\{value|localStorage|sessionStorage/);
+  // the dialog itself is removed when closed and created again when opened (no draft carried over)
+  assert.match(source("./App.jsx"), /\{modal && <Modal modal=\{modal\} close=\{\(\) => setModal\(null\)\}/);
 });

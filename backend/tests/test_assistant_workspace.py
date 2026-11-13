@@ -80,8 +80,8 @@ def test_each_user_sees_only_their_own_chats(client, ai):
 
 def test_confirm_uses_the_saved_action_not_what_the_browser_sends(client, ai):
     script, _ = ai
-    keep = client.post("/api/leads", json={"last_name": "Keep", "company": "Acme"}).json()
-    target = client.post("/api/leads", json={"last_name": "Sen", "company": "Acme"}).json()
+    keep = client.post("/api/leads", json={"first_name": "Test", "source": "Website", "last_name": "Keep", "company": "Acme"}).json()
+    target = client.post("/api/leads", json={"first_name": "Test", "source": "Website", "last_name": "Sen", "company": "Acme"}).json()
     script += [[call("delete_lead", lead_id=target["id"])]]
     first = chat(client, "delete Sen")
     assert first["pending"]["tool"] == "delete_lead" and first["chat"][-1]["pending"]
@@ -251,7 +251,7 @@ def test_files_that_cant_be_used_are_refused(client, ai):
 
 def test_a_demo_is_booked_from_just_the_lead_and_the_time(client, ai):
     script, seen = ai
-    lead = client.post("/api/leads", json={"first_name": "Mira", "last_name": "Shah", "company": "Orbit"}).json()
+    lead = client.post("/api/leads", json={"source": "Website", "first_name": "Mira", "last_name": "Shah", "company": "Orbit"}).json()
     when = (datetime.now() + timedelta(days=3)).replace(hour=15, minute=0).strftime("%Y-%m-%dT%H:%M")
     script += [[call("move_lead_stage", lead_id=lead["id"], stage="Demo", demo_date=when,
                      completed_stages=["Nurturing"])], "Booked."]
@@ -281,7 +281,7 @@ def test_new_opportunity_from_the_chat(client, ai):
     assert opp["expected_value"] == 40000 and opp["account_name"] == "Orbit Analytics"
     # the same deal again is refused (no duplicates); without a note it isn't tried at all
     script += [[tool("create_opportunity", dict(name="Orbit BI Rollout", account_name="Orbit Analytics", contact_last_name="Park",
-                     contact_first_name="Lena", note="again", task_title="t", task_due_date="2030-01-15T10:00"))], "Exists."]
+                     contact_first_name="Lena", contact_email="lena@orbit.test", note="again", task_title="t", task_due_date="2030-01-15T10:00"))], "Exists."]
     chat(client, "add Orbit BI rollout again")
     assert "already" in json.loads(seen[-1][-1]["content"])["error"]
     script += [[tool("create_opportunity", dict(name="Other", account_name="Orbit Analytics", contact_last_name="Park",
@@ -294,9 +294,9 @@ def test_more_crm_tools(client, ai):
     script, seen = ai
     acc = client.post("/api/accounts", json={"name": "Northwind Health", "industry": "Healthcare", "phone": "+1 555 0100"}).json()
     task = client.post("/api/tasks", json={"title": "Call back", "due_date": "2030-01-10T09:00"}).json()
-    lead = client.post("/api/leads", json={"last_name": "Iyer", "company": "Globex"}).json()
+    lead = client.post("/api/leads", json={"first_name": "Test", "source": "Website", "last_name": "Iyer", "company": "Globex"}).json()
     script += [[call("list_accounts", search="North"), call("create_contact", account_id=acc["id"], first_name="Dev",
-                                                              last_name="Rao", email="dev@northwind.test", phone="+1 555 0101")],
+                                                              last_name="Rao", email="dev@northwind.test", phone="+1 212-555-0101")],
                [call("get_account", account_id=acc["id"]), call("update_task", task_id=task["id"], due_date="2030-02-01T09:00",
                                                                 priority="High")],
                "Done."]
@@ -324,18 +324,20 @@ def test_more_crm_tools(client, ai):
 def test_reports_are_counted_in_the_database(client, ai):
     script, seen = ai
     # Ravi: 3 leads (1 converted, 1 lost), 2 deals (1 won 30,000; 1 open 10,000). Priya: 1 lead, 1 open deal 50,000
-    leads = [client.post("/api/leads", json={"last_name": f"L{i}", "company": f"C{i}", "source": "Referral"}).json()
+    leads = [client.post("/api/leads", json={"first_name": "Test", "last_name": f"L{i}", "company": f"C{i}", "source": "Referral"}).json()
              for i in range(3)]
     won = client.post(f"/api/leads/{leads[0]['id']}/convert", json={
         "task": TASK, "note": NOTE, "expected_value": 30000, "completed_stages": ["Nurturing", "Demo"]}).json()["opportunity"]
     finish_stage_tasks(client, won["id"])
     client.post(f"/api/opportunities/{won['id']}/won", json={"task": TASK, "note": NOTE, "completed_stages": ["Discovery", "Proposal"]})
     client.post(f"/api/leads/{leads[1]['id']}/lost", json={"lost_reason": "Price", "lost_notes": NOTE})
-    client.post("/api/opportunities", json={"name": "Open deal", "account_name": "C9", "contact_last_name": "X",
+    client.post("/api/opportunities", json={"name": "Open deal", "account_name": "C9", "contact_first_name": "Xi", "contact_last_name": "X",
+                                             "contact_email": "x@c9.example",
                                              "expected_value": 10000, "note": NOTE, "task": TASK})
     priya = login_as(client, PRIYA)
-    priya.post("/api/leads", json={"last_name": "P", "company": "PC"})
-    priya.post("/api/opportunities", json={"name": "Big deal", "account_name": "PC", "contact_last_name": "P",
+    priya.post("/api/leads", json={"first_name": "Test", "source": "Website", "last_name": "P", "company": "PC"})
+    priya.post("/api/opportunities", json={"name": "Big deal", "account_name": "PC", "contact_first_name": "Pia", "contact_last_name": "P",
+                                           "contact_email": "p@pc.example",
                                            "expected_value": 50000, "note": NOTE, "task": TASK})
     # Ravi sees only his own records
     login_as(client, RAVI)
@@ -423,7 +425,7 @@ def test_an_uploaded_list_creates_every_lead_and_stays_readable_later(client, ai
     rows = "\n".join(f"Person{i},Lastname{i},Company {i},person{i}@company{i}.test" for i in range(1, 121))
     file = upload(client, "expo-leads.csv", ("first,last,company,email\n" + rows).encode()).json()
     script += [[call("create_lead", first_name=f"Person{i}", last_name=f"Lastname{i}", company=f"Company {i}",
-                     email=f"person{i}@company{i}.test", company_website=f"company{i}.test",
+                     email=f"person{i}@company{i}.test", company_website=f"company{i}.test", source="Event",
                      company_linkedin_url=f"https://www.linkedin.com/company/company{i}") for i in range(1, 4)], "Created the first 3 leads."]
     first = chat(client, "Create leads for the first three rows", file_ids=[file["id"]])
     assert len(first["links"]) == 3

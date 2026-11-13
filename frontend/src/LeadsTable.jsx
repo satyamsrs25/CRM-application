@@ -349,7 +349,7 @@ export default function LeadsTable({
   // the rows seen so far, so a lead ticked on another page can still be opened in the Convert popup
   const seen = useRef(new Map());
   items.forEach((lead) => seen.current.set(lead.id, lead));
-  // Convert to Opportunity: one open lead you may convert (owner or "Edit team records"; Admins don't convert)
+  // Convert to Opportunity: one open lead you may convert (owner or "Edit team records"; the Admin included)
   const convertChoice = leadConvertChoice([...selected].map((id) => seen.current.get(id)), (lead) => ({
     canEdit: lead.owner_id === user?.id || can(user, "edit_team_records"),
     canCreateSales: canCreateSales(user),

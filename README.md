@@ -31,13 +31,22 @@ email, tasks and reminders, notifications, lead conversion, closing a deal, and 
 **Sales pipeline**
 - Leads and opportunities with list views, search, sorting and an opportunity Kanban board.
 - Stage path on every record, with enforced stage order and a full stage history.
-- One-step lead conversion into an Account, a Contact and an Opportunity.
+- One-step lead conversion into an Account, a Contact and an Opportunity, by the lead's owner, a Manager or the Admin
+  (the records stay with the lead's owner; the same comment, task, stage and duplicate rules apply to everyone).
   Start it from the lead page, the Kanban board, or the Leads list: tick one lead and choose
   **Convert to Opportunity** in the selection bar (the same Convert popup; only for one open lead you may convert,
   otherwise the button says why). **Opportunities > Convert a Lead** opens the Leads list.
-- New Account needs **Phone** and **Industry**; New Contact needs **Email** (a valid address) and **Phone**, on the
-  forms, in the API and in the AI Assistant. Accounts and contacts made by converting a lead, by New Opportunity
-  or by an import, and older records, may still have them empty.
+- New Account needs **Account Name** and **Industry**; **Website** and **Company LinkedIn URL** are optional (checked
+  as web addresses when given). There is no Phone on New Account; older accounts keep and show theirs.
+- New Contact (Contacts and Account pages) and New Opportunity's **New contact** need **First Name**, **Last Name** and
+  **Email** (a valid address); New Contact also needs the account. **Phone** is optional, with a country beside it
+  (India, +91, by default; every country is listed with its calling code). A given number is checked against that
+  country's numbering rules and saved in international format (e.g. +91 98765 43210); this checks the format only,
+  not that the number exists or belongs to the person. An optional **LinkedIn Profile URL** (a person's profile) can
+  fill the person's details from Apollo; the account is never chosen or changed by it, and another current employer
+  is shown as a warning. The same rules apply in the API and the AI Assistant. Choosing an existing contact on New
+  Opportunity reuses it as it is. Accounts and contacts made by converting a lead or by an import, and older records,
+  may still have fields empty or phones in older formats.
 - Automatic follow-up tasks and reminders at each stage.
 - One lead per email: an email already on any lead or contact can't be used again (the user is told whose record
   it is).
@@ -56,8 +65,13 @@ email, tasks and reminders, notifications, lead conversion, closing a deal, and 
   a request to save them as .docx, .pptx or .xlsx. Files can also be chosen in the Change Stage popup (up to 5); they
   are saved together with the stage change and labelled with the new stage. Files chosen in the Mark as Won popup are
   saved together with the win and labelled Proposal. **Add Files** in the opportunity's Activity tab opens the picker.
-- Lead research fields: LinkedIn profile, company website, company LinkedIn page (clickable, required with email),
-  turnover, headcount and location.
+- Lead research fields: LinkedIn profile, company website, company LinkedIn page (clickable), turnover, headcount and
+  location. The company website and LinkedIn page are optional (checked as web addresses when given).
+- New Lead needs **First Name**, Last Name, Company, Email and a **Lead Source** (Website, LinkedIn, Referral, Phone,
+  Email, Event, Social Media or Other). **LinkedIn** needs the LinkedIn Profile URL (otherwise it's optional); **Other**
+  shows a required **Specify lead source** box (up to 100 characters), saved with the lead and shown beside its source.
+  Older leads without these values stay viewable, and an edit that doesn't touch them still saves (the rule applies
+  when the user changes that field or the Lead Source). The same rules apply in the API and the AI Assistant.
 - LinkedIn autofill on New Lead: paste a LinkedIn profile URL and the empty fields are filled with the details Apollo
   returns (name, title, a work email Apollo marks verified, direct business phone, and the current employer's
   company name, industry, website and LinkedIn page). These are Apollo's data, not checked by the CRM: review them
@@ -92,6 +106,8 @@ email, tasks and reminders, notifications, lead conversion, closing a deal, and 
 - Upload up to 100,000 leads at a time from Excel (.xlsx) or CSV. The file is checked
   first (rows ready, duplicates of open leads, invalid rows), then uploaded. No emails are sent to uploaded leads.
 - Uploaded leads appear in the normal lead lists with Lead Source **Upload**, and in the **Uploaded Leads** list view.
+  A file's Lead Source column is kept (LinkedIn stays LinkedIn; a row without a profile URL gets a "Check" note), and
+  a **Lead Source Details** column is kept for Other; downloads include **Lead Source Details**.
   Only Last Name and Company are required; a wrong email, link or number is left blank (and listed) instead of
   skipping the row, so the salesperson can fill it in later. A personal email (gmail.com...) is left blank; an email
   on a different company domain than the website is kept with a "Check" note.

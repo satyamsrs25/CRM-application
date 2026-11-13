@@ -115,8 +115,8 @@ def list_contacts(
 def create_contact(data: schemas.ContactCreate, db: Session = Depends(get_db)):
     account = get_or_404(db, Account, data.account_id, "Account")
     require_view(account.owner_id, "account")
-    contact = Contact(
-        **data.model_dump(exclude={"owner_id"}), owner_id=resolve_user_id(db, owner_for_new(data.owner_id))
+    contact = Contact(  # phone: already checked for its country and in international format (schemas.ContactCreate)
+        **data.model_dump(exclude={"owner_id", "phone_country"}), owner_id=resolve_user_id(db, owner_for_new(data.owner_id))
     )
     db.add(contact)
     db.commit()

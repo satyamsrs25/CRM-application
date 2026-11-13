@@ -2,9 +2,11 @@
 // No duplicates: the company's existing account and the person's existing contact are reused (same company name; same
 // email or same name), and the same open opportunity for one person at one company can't be handled by two salespeople.
 // The server decides (GET /opportunities/duplicate-check); records the user can't open show only their owner.
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { api } from "./api";
-import { SALUTATIONS } from "./domain";
+import { contactAnswerFields, contactAutofillFields, OPPORTUNITY_CONTACT_FORM, SALUTATIONS } from "./domain";
+import LinkedInField from "./LeadAutofill";
+import PhoneField from "./PhoneField";
 import { AmountField, Icon } from "./ui";
 
 // Asks the server what would happen, shortly after the user stops typing
@@ -98,18 +100,35 @@ export function ConvertCheck({ leadId, values, onBlocked }) {
   return <DuplicateNotice result={result} />;
 }
 
-const input = (label, name, value, onChange, { required = false, type = "text", ...rest } = {}) => (
+// error: the form's message for this field (shown under it until the field is changed)
+const input = (label, name, value, onChange, { required = false, type = "text", error = "", ...rest } = {}) => (
   <label className="field">
     <span>
       {label}
       {required && <i> *</i>}
     </span>
-    <input name={name} type={type} required={required} value={value} onChange={(e) => onChange(e.target.value)} {...rest} />
+    <input
+      name={name}
+      type={type}
+      required={required}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      aria-invalid={error ? true : undefined}
+      aria-describedby={error ? `${name}-field-error` : undefined}
+      {...rest}
+    />
+    {error && (
+      <small id={`${name}-field-error`} className="field-error">
+        {error}
+      </small>
+    )}
   </label>
 );
+const F = OPPORTUNITY_CONTACT_FORM;
 
-// The account, contact and deal fields of New Opportunity (the note, first task and owner come from the Modal)
-export function NewOpportunityFields({ data, defaults, owner, onBlocked }) {
+// The account, contact and deal fields of New Opportunity (the note, first task and owner come from the Modal).
+// errors / onFix: the Modal's messages for the new contact's fields (contactProblems) and how to clear one.
+export function NewOpportunityFields({ data, defaults, owner, onBlocked, errors = {}, onFix = () => {} }) {
   const [accountId, setAccountId] = useState(defaults?.account_id ? String(defaults.account_id) : "");
   const [accountName, setAccountName] = useState("");
   const [contactId, setContactId] = useState("");
@@ -123,6 +142,12 @@ export function NewOpportunityFields({ data, defaults, owner, onBlocked }) {
   const accounts = [...data.accounts].sort((a, b) => a.name.localeCompare(b.name));
 
   useEffect(() => setContactId(""), [accountId]);
+  // the New Contact fields go away when an existing contact is chosen (or the account has contacts to pick from): the
+  // draft goes with them, so "+ New contact" always starts blank (no other draft's names or email)
+  const showNewContact = newContact && !!(accountId || !accounts.length);
+  useEffect(() => {
+    if (!showNewContact) setPerson({ first: "", last: "", email: "" });
+  }, [showNewContact]);
   const params = {
     account_id: existingAccount || "",
     company: newAccount ? accountName.trim() : "",
@@ -136,7 +161,26 @@ export function NewOpportunityFields({ data, defaults, owner, onBlocked }) {
   const result = useDuplicateCheck(params, ready);
   const blocked = ready && !!result?.duplicate;
   useEffect(() => onBlocked(blocked), [blocked]); // eslint-disable-line react-hooks/exhaustive-deps
-  const setP = (key) => (value) => setPerson((p) => ({ ...p, [key]: value }));
+  const setP = (key, field) => (value) => {
+    if (errors[field]) onFix(field);
+    setPerson((p) => ({ ...p, [key]: value }));
+  };
+  // LinkedIn autofill: the chosen account (or the new company typed) is only compared with Apollo's employer
+  const company = existingAccount ? data.accounts.find((a) => a.id === existingAccount)?.name || "" : accountName.trim();
+  const contactBox = useRef(null);
+  const contactForm = () => contactBox.current?.closest("form");
+  // autofill puts names and the email into this component's state (they drive the duplicate check), the rest directly
+  const writeContact = (set) => {
+    const next = {};
+    for (const [field, value] of Object.entries(set)) {
+      if (field === F.first_name) next.first = value;
+      else if (field === F.last_name) next.last = value;
+      else if (field === F.email) next.email = value;
+      else if (contactForm()?.elements[field]) contactForm().elements[field].value = value;
+    }
+    if (Object.keys(next).length) setPerson((p) => ({ ...p, ...next }));
+  };
+  const fix = (field) => (errors[field] ? () => onFix(field) : undefined);
 
   return (
     <>
@@ -179,9 +223,28 @@ export function NewOpportunityFields({ data, defaults, owner, onBlocked }) {
         )}
         {existingAccount && contacts.length > 0 && <span />}
       </div>
-      {newContact && (accountId || !accounts.length) && (
-        <fieldset className="stage-task">
+      {/* a new contact: the same fields and rules as New Contact (an existing contact is reused as it is, with no
+          lookup) */}
+      {showNewContact && (
+        <fieldset className="stage-task" ref={contactBox}>
           <legend>New Contact</legend>
+          <LinkedInField
+            autofill
+            defaultValue=""
+            name={F.linkedin_url}
+            form={contactForm}
+            fields={contactAutofillFields(F)}
+            lookup={(url, chosen) => api.enrichContact(url, chosen)}
+            toForm={(values) => contactAnswerFields(values, F)}
+            write={writeContact}
+            company={company}
+            phone={{ field: F.phone, country: F.phone_country }}
+            needed={[F.first_name, F.last_name, F.email]}
+            noun="contact"
+            compact
+            error={errors[F.linkedin_url] || ""}
+            onInput={fix(F.linkedin_url)}
+          />
           <div className="form-grid">
             <label className="field">
               <span>Salutation</span>
@@ -194,17 +257,17 @@ export function NewOpportunityFields({ data, defaults, owner, onBlocked }) {
                 ))}
               </select>
             </label>
-            {input("First Name", "contact_first_name", person.first, setP("first"), { maxLength: 50 })}
-            {input("Last Name", "contact_last_name", person.last, setP("last"), { required: true, maxLength: 50 })}
-            {input("Email", "contact_email", person.email, setP("email"), { type: "email", maxLength: 255 })}
+            {input("First Name", F.first_name, person.first, setP("first", F.first_name), {
+              required: true, maxLength: 50, error: errors[F.first_name] })}
+            {input("Last Name", F.last_name, person.last, setP("last", F.last_name), {
+              required: true, maxLength: 50, error: errors[F.last_name] })}
+            {input("Email", F.email, person.email, setP("email", F.email), {
+              type: "email", required: true, maxLength: 255, error: errors[F.email] })}
             <label className="field">
               <span>Title</span>
-              <input name="contact_title" maxLength={100} />
+              <input name={F.job_title} maxLength={100} />
             </label>
-            <label className="field">
-              <span>Phone</span>
-              <input name="contact_phone" type="tel" maxLength={30} />
-            </label>
+            <PhoneField name={F.phone} countryName={F.phone_country} error={errors[F.phone] || ""} onInput={fix(F.phone)} />
           </div>
         </fieldset>
       )}
@@ -242,6 +305,8 @@ export function newOpportunityPayload(v, extra) {
     contact_email: contactNew ? text(v.contact_email) : null,
     contact_title: contactNew ? text(v.contact_title) : null,
     contact_phone: contactNew ? text(v.contact_phone) : null,
+    // the phone's country (checked and saved in international format by the server) and the person's LinkedIn profile
+    ...(contactNew ? { contact_phone_country: v.contact_phone_country || "IN", contact_linkedin_url: text(v.contact_linkedin_url) } : {}),
     ...extra,
   };
 }

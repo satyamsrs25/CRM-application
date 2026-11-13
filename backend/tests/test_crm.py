@@ -27,12 +27,13 @@ LEAD = {"salutation": "Mr.", "first_name": "Arjun", "last_name": "Mehta", "compa
 
 
 def new_lead(client, name=None, **extra):
-    """name="Neha Gupta" is split into first_name / last_name, like the Salesforce form."""
+    """name="Neha Gupta" is split into first_name / last_name, like the Salesforce form (a one-word name gets the first
+    name "Test": new leads need one)."""
     if name:
         first, _, last = name.rpartition(" ")
-        extra = {"first_name": first or None, "last_name": last, **extra}
+        extra = {"first_name": first or "Test", "last_name": last, **extra}
     extra.setdefault("email", f"lead{next(EMAILS)}@bf.in")  # one open lead per email (duplicate check)
-    res = client.post("/api/leads", json={**LEAD, **extra})
+    res = client.post("/api/leads", json={"first_name": "Test", "source": "Website", **LEAD, **extra})
     assert res.status_code == 201, res.text
     return res.json()
 
@@ -73,12 +74,12 @@ def test_create_lead_starts_at_new_with_first_task(client):
 
 
 def test_lead_validation(client):
-    assert client.post("/api/leads", json={"company": "x"}).status_code == 422  # last name required
-    assert client.post("/api/leads", json={"last_name": "x"}).status_code == 422  # company required
-    assert client.post("/api/leads", json={"last_name": "x", "company": "c", "source": "Fax"}).status_code == 422
-    assert client.post("/api/leads", json={"last_name": "x", "company": "c", "salutation": "Sir"}).status_code == 422
-    assert client.post("/api/leads", json={"last_name": "x", "company": "c", "owner_id": 99}).status_code == 400  # no such user
-    assert login_as(client, 1).post("/api/leads", json={"last_name": "x", "company": "c", "owner_id": 99}).status_code == 400
+    assert client.post("/api/leads", json={"first_name": "Test", "source": "Website", "company": "x"}).status_code == 422  # last name required
+    assert client.post("/api/leads", json={"first_name": "Test", "source": "Website", "last_name": "x"}).status_code == 422  # company required
+    assert client.post("/api/leads", json={"first_name": "Test", "last_name": "x", "company": "c", "source": "Fax"}).status_code == 422
+    assert client.post("/api/leads", json={"first_name": "Test", "source": "Website", "last_name": "x", "company": "c", "salutation": "Sir"}).status_code == 422
+    assert client.post("/api/leads", json={"first_name": "Test", "source": "Website", "last_name": "x", "company": "c", "owner_id": 99}).status_code == 400  # no such user
+    assert login_as(client, 1).post("/api/leads", json={"first_name": "Test", "source": "Website", "last_name": "x", "company": "c", "owner_id": 99}).status_code == 400
     assert client.get("/api/leads/999").status_code == 404
 
 
@@ -258,7 +259,7 @@ def test_home_page(client):
     deals = cards["close_deals"]
     assert (deals["total_pipeline"], deals["open"], deals["won"], deals["lost"]) == (130000, 40000, 90000, 0)
     assert [d["name"] for d in cards["key_deals"]] == ["Open Co - Opportunity", "Later Co - Opportunity"]
-    assert [(e["type"], e["name"]) for e in cards["todays_events"]] == [("Demo", "E")]
+    assert [(e["type"], e["name"]) for e in cards["todays_events"]] == [("Demo", "Test E")]
     assert cards["accounts"]["total"] == 3 and cards["contacts"]["total"] == 3
     assert cards["build_pipeline"]["leads_last_30_days"] == 6
     assert cards["recent_records"]
@@ -282,15 +283,28 @@ def test_edit_lead_name_updates_full_name(client):
 
 
 def test_lead_without_first_name(client):
-    lead = new_lead(client, first_name=None, last_name="Gupta")
+    # new leads need a first name...
+    res = client.post("/api/leads", json={**LEAD, "first_name": None, "last_name": "Gupta", "email": "gupta@bf.in"})
+    assert res.status_code == 422 and "Enter the lead's first name." in res.text
+    # ...but an older lead without one is still shown by its last name, and other edits save
+    from app.database import get_db
+    from app.main import app
+    from app.models import Lead
+    db = next(app.dependency_overrides[get_db]())
+    old = Lead(first_name=None, last_name="Gupta", company="Older Co", source="Website", owner_id=2, stage="New")
+    db.add(old)
+    db.commit()
+    lead = client.get(f"/api/leads/{old.id}").json()
     assert lead["name"] == "Gupta"
+    assert client.put(f"/api/leads/{old.id}", json={"title": "Owner", "first_name": None}).json()["name"] == "Gupta"
+    db.close()
 
 
 def test_contacts_and_probability_edit(client):
     acc = client.post("/api/accounts", json={"name": "Sunrise Hospitals", "industry": "Healthcare", "phone": "+1 555 0111"}).json()
     c = client.post("/api/contacts", json={"salutation": "Dr.", "first_name": "Meera", "last_name": "Iyer",
                                            "job_title": "Director", "email": "meera@sunrise.test",
-                                           "phone": "+1 555 0112", "account_id": acc["id"]}).json()
+                                           "phone": "+1 212-555-0112", "account_id": acc["id"]}).json()
     assert c["full_name"] == "Meera Iyer" and c["account_name"] == "Sunrise Hospitals"
     assert client.post("/api/contacts", json={"first_name": "x", "email": "x@sunrise.test", "phone": "+1 555 0113",
                                               "account_id": acc["id"]}).status_code == 422  # no last name

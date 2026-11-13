@@ -38,7 +38,7 @@ def new_opportunity(client, owner=RAVI, stage_task="Synthetic kickoff call") -> 
     work) and the system's close-date reminder (a date reminder)."""
     login_as(client, owner)
     n = next(NAMES)
-    lead = client.post("/api/leads", json={"first_name": "Test", "last_name": f"Buyer{n}", "company": f"Synthetic Co {n}",
+    lead = client.post("/api/leads", json={"source": "Website", "first_name": "Test", "last_name": f"Buyer{n}", "company": f"Synthetic Co {n}",
                                            "email": f"buyer{n}@example.test", "welcome_email": False}).json()
     res = client.post(f"/api/leads/{lead['id']}/convert", json={
         "task": {**TASK, "title": stage_task}, "completed_stages": ["New", "Nurturing", "Demo"], "expected_value": 1000,

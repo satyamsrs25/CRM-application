@@ -170,7 +170,7 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
   const closed = ["Won", "Lost", "Converted", "Unqualified"].includes(item.stage);
   // Salespeople change only their own records; Managers and Admins can change any (the backend checks it too)
   const canEdit = canEditRecord(user, item);
-  const canConvert = canEdit && canCreateSales(user); // Lead conversion is reserved for Managers and Salespeople
+  const canConvert = canEdit && canCreateSales(user); // the Admin, Managers and Salespeople convert leads they may edit
   const canTransfer = lead && canTransferLead(user, item); // Admin: any lead; owner with "Transfer leads": their own
   const transfers = (lead && item.transfers) || [];
   const tasks = data.tasks.filter((t) => t.relatedId === item.id && t.relatedType === collection);
@@ -411,7 +411,10 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
                 <Field label="Phone" onEdit={editField}><PhoneReveal value={item.phone} /></Field>
                 <Field label="Lead LinkedIn URL" onEdit={editField}><ExternalLink href={item.linkedin_url} /></Field>
                 <Field label="Location" onEdit={editField}>{item.location}</Field>
-                <Field label="Lead Source" onEdit={editField}>{item.source}</Field>
+                <Field label="Lead Source" onEdit={editField}>
+                  {item.source}
+                  {item.source === "Other" && item.source_detail ? ` (${item.source_detail})` : ""}
+                </Field>
                 <Field label="Demo Date">
                   <span className="demo-date-value">
                     <span>{formatBusiness(item.demo_at)}</span>
