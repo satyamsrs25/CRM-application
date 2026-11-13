@@ -41,7 +41,7 @@ def sent(monkeypatch, client):
 
 def new_lead(client, **extra):
     n = next(EMAILS)
-    res = client.post("/api/leads", json={"first_name": "Test", "last_name": f"Buyer{n}", "company": "Synthetic Co",
+    res = client.post("/api/leads", json={"source": "Website", "first_name": "Test", "last_name": f"Buyer{n}", "company": "Synthetic Co",
                                           "email": f"stage.note{n}@example.test", "welcome_email": False, **extra})
     assert res.status_code == 201, res.text
     return res.json()

@@ -17,7 +17,7 @@ REVISIT_ON = "2030-03-02T09:00:00"
 
 
 def new_lead(client, **extra):
-    res = client.post("/api/leads", json={"last_name": "Stage", "company": "Stage Synthetic Co", **extra})
+    res = client.post("/api/leads", json={"first_name": "Test", "source": "Website", "last_name": "Stage", "company": "Stage Synthetic Co", **extra})
     assert res.status_code == 201, res.text
     return res.json()
 
@@ -33,7 +33,7 @@ def to_stages(client, kind, record_id):
 def test_a_new_lead_starts_at_new_with_a_first_contact_task(client):
     lead = new_lead(client)
     assert lead["stage"] == "New"
-    assert [t["title"] for t in lead["tasks"]] == ["Make first contact - Stage"]
+    assert [t["title"] for t in lead["tasks"]] == ["Make first contact - Test Stage"]
     assert client.get("/api/notifications").json()[0]["title"] == "Lead created"
     assert to_stages(client, "leads", lead["id"]) == ["New"]
 

@@ -6923,3 +6923,10 @@ p.list-state {
   flex-wrap: wrap;
   gap: 8px;
 }
+
+/* Phone with its country (New Contact, New Opportunity > New contact): the country, then the number */
+.phone-inputs {
+  display: grid;
+  grid-template-columns: minmax(0, 11rem) minmax(0, 1fr);
+  gap: 8px;
+}

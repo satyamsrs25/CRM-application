@@ -1,4 +1,5 @@
 import { businessNow } from "./businessTime.js";
+import { DEFAULT_PHONE_COUNTRY, phoneProblem } from "./phone.js";
 
 // Lead path (same as backend/app/constants.py): New -> Nurturing -> Revisit -> Demo -> Converted. New leads start at
 // New. Revisit is optional ("not now": the lead asked to be contacted on a later date), so it can be passed over;
@@ -58,6 +59,7 @@ export function skippedStages(flow, from, to, optional = []) {
 }
 export const LEAD_SOURCES = [
   "Website",
+  "LinkedIn",
   "Referral",
   "Phone",
   "Email",
@@ -67,6 +69,61 @@ export const LEAD_SOURCES = [
 ];
 // leads created by a bulk upload (not offered on the New Lead form)
 export const UPLOAD_SOURCE = "Upload";
+
+// New Lead / Edit Lead rules, as the API checks them (backend/app/schemas.py LeadCreate, routers/leads.py
+// check_new_lead_rules): First Name; the LinkedIn Profile URL when Lead Source is LinkedIn; what the source is
+// ("Specify lead source") when it is Other. An older lead may lack these values: when editing, a rule applies only
+// if the lead already had that value or the edit changes the Lead Source to it, so an unrelated edit still saves.
+export const LEAD_FIRST_NAME_REQUIRED = "Enter the lead's first name.";
+export const SOURCE_DETAIL_REQUIRED = "Specify the lead source.";
+export const LINKEDIN_PROFILE_REQUIRED = "Enter the lead's LinkedIn Profile URL (required when Lead Source is LinkedIn).";
+export const SOURCE_DETAIL_MAX = 100; // leads.source_detail VARCHAR(100)
+// New Lead: after a successful LinkedIn lookup (Apollo matched the pasted profile), Lead Source becomes LinkedIn while it
+// is still the form's untouched default (Other) or blank. A source the user chose (any change of the list, or a
+// description typed for Other) is kept. Returns the source to select, or null to leave it as it is. The source is
+// never inferred from an email, employer or website, and saved leads aren't changed.
+export const NEW_LEAD_DEFAULT_SOURCE = "Other";
+export function sourceAfterLinkedInMatch({ current, chosen = false, detail = "" }) {
+  if (current === "LinkedIn") return null;
+  if (!current) return "LinkedIn"; // blank
+  if (chosen || current !== NEW_LEAD_DEFAULT_SOURCE || filled(detail)) return null;
+  return "LinkedIn";
+}
+const filled = (value) => !!String(value ?? "").trim();
+export function leadFieldsRequired(source, record = null) {
+  const had = (name) => filled(record?.[name]);
+  return {
+    first_name: !record || had("first_name"),
+    source_detail: source === "Other" && (!record || record.source !== "Other" || had("source_detail")),
+    linkedin_url: source === "LinkedIn" && (!record || record.source !== "LinkedIn" || had("linkedin_url")),
+  };
+}
+// A web address as the API accepts it (schemas.clean_url): a dot in the host and no spaces; LinkedIn links on
+// linkedin.com. "" when empty or fine.
+export function webAddressProblem(value, { linkedin = false } = {}) {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+  const host = text.replace(/^https?:\/\//i, "").split("/")[0].toLowerCase();
+  if (!host.includes(".") || /\s/.test(text)) return "Enter a valid web address";
+  if (linkedin && host !== "linkedin.com" && !host.endsWith(".linkedin.com")) return "Enter a LinkedIn address (linkedin.com/...)";
+  return "";
+}
+// { field: message } for the lead form's values (record: the lead being edited, or null for a new lead).
+// Company Website and Company LinkedIn URL are optional; when given, they must be valid addresses.
+export function leadFormProblems(values, record = null) {
+  const problems = {};
+  const need = leadFieldsRequired(values.source, record);
+  if (need.first_name && !filled(values.first_name)) problems.first_name = LEAD_FIRST_NAME_REQUIRED;
+  if (need.source_detail && !filled(values.source_detail)) problems.source_detail = SOURCE_DETAIL_REQUIRED;
+  else if (values.source === "Other" && String(values.source_detail ?? "").trim().length > SOURCE_DETAIL_MAX)
+    problems.source_detail = `Use at most ${SOURCE_DETAIL_MAX} characters.`;
+  if (need.linkedin_url && !filled(values.linkedin_url)) problems.linkedin_url = LINKEDIN_PROFILE_REQUIRED;
+  for (const [name, linkedin] of [["linkedin_url", true], ["company_website", false], ["company_linkedin_url", true]]) {
+    const problem = !problems[name] && webAddressProblem(values[name], { linkedin });
+    if (problem) problems[name] = problem;
+  }
+  return problems;
+}
 export const LOST_REASONS = [
   "Price",
   "Competitor",
@@ -127,12 +184,14 @@ export const AUTOFILL_FIELDS = {
 // current: the form's values now; previous: values Apollo filled earlier that are still unchanged; incoming: the
 // current profile's values ({} removes the earlier profile's values). Fills empty fields, replaces or clears
 // unchanged earlier autofill, and never changes what the user typed.
-export function autofillPlan(current, previous, incoming) {
+// fields: the form's fields Apollo can fill ({ input name: label }): the lead form's by default, or a contact form's
+// (contactAutofillFields).
+export function autofillPlan(current, previous, incoming, fields = AUTOFILL_FIELDS) {
   const set = {},
     autofilled = {},
     filled = [],
     kept = [];
-  for (const name of Object.keys(AUTOFILL_FIELDS)) {
+  for (const name of Object.keys(fields)) {
     const now = current[name] ?? "";
     const untouched = previous[name] !== undefined && now === previous[name];
     const value = incoming[name];
@@ -150,15 +209,15 @@ export function autofillPlan(current, previous, incoming) {
 export const AUTOFILL_MATCHED = "Apollo returned a matching profile URL. Review all details before saving.";
 export const AUTOFILL_EMAIL_SOURCE =
   "Email verification status is provided by Apollo; ownership has not been independently confirmed by this CRM.";
-const fieldNames = (list) => list.map((name) => AUTOFILL_FIELDS[name]).join(", ");
 // filled, kept: from autofillPlan. email: the Apollo note, only when Apollo's email was put in the form.
-export function autofillSummary({ filled, kept }) {
+export function autofillSummary({ filled, kept }, fields = AUTOFILL_FIELDS) {
+  const fieldNames = (list) => list.map((name) => fields[name]).join(", ");
   const parts = [
     AUTOFILL_MATCHED,
     filled.length ? `Filled by Apollo: ${fieldNames(filled)}.` : "Nothing was filled: the fields already had your entries.",
   ];
   if (kept.length) parts.push(`Kept your entries for ${fieldNames(kept)}.`);
-  return { text: parts.join(" "), email: filled.includes("email") ? AUTOFILL_EMAIL_SOURCE : "" };
+  return { text: parts.join(" "), email: filled.some((name) => fields[name] === "Email") ? AUTOFILL_EMAIL_SOURCE : "" };
 }
 export const PRIORITIES = ["Low", "Normal", "High"];
 export const dateKey = (date = new Date()) =>
@@ -405,24 +464,78 @@ export function toRecordContact(to, recordEmail) {
 // into accounts and contacts, and older records, may have these empty).
 const EMAIL_FORMAT = /^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$/; // the server's email check
 export const CONTACT_EMAIL_INVALID = "Enter a valid email address, like name@company.com.";
+// New Account: Account Name and Industry (Website and Company LinkedIn URL optional, checked when given; no Phone).
+// New Contact: the account, then the contact's own fields (contactProblems).
 const NEW_RECORD_REQUIRED = {
   account: [
     ["name", "Enter the account name."],
     ["industry", "Enter the account's industry."],
-    ["phone", "Enter the account's phone number."],
   ],
-  contact: [
-    ["last_name", "Enter the last name."],
-    ["account_id", "Choose the account."],
-    ["email", "Enter the contact's email address."],
-    ["phone", "Enter the contact's phone number."],
-  ],
+  contact: [["account_id", "Choose the account."]],
 };
+// A new contact's fields, on New Contact and on New Opportunity > New contact (the same rules as the API's
+// schemas.ContactCreate and OpportunityCreate): First Name, Last Name and Email are required; Phone is optional and
+// checked for its country; the LinkedIn Profile URL is optional and must be a person's profile. form: the input
+// names on that form.
+export const CONTACT_FORM = {
+  first_name: "first_name",
+  last_name: "last_name",
+  job_title: "job_title",
+  email: "email",
+  phone: "phone",
+  phone_country: "phone_country",
+  linkedin_url: "linkedin_url",
+};
+export const OPPORTUNITY_CONTACT_FORM = {
+  first_name: "contact_first_name",
+  last_name: "contact_last_name",
+  job_title: "contact_title",
+  email: "contact_email",
+  phone: "contact_phone",
+  phone_country: "contact_phone_country",
+  linkedin_url: "contact_linkedin_url",
+};
+export const CONTACT_FIRST_NAME_REQUIRED = "Enter the contact's first name.";
+export const CONTACT_LAST_NAME_REQUIRED = "Enter the contact's last name.";
+export const CONTACT_EMAIL_REQUIRED = "Enter the contact's email address.";
+const CONTACT_AUTOFILL_LABELS = { first_name: "First Name", last_name: "Last Name", job_title: "Title", email: "Email", phone: "Phone" };
+// The contact fields Apollo can fill on that form ({ input name: label }), and Apollo's answer in that form's names
+export const contactAutofillFields = (form = CONTACT_FORM) =>
+  Object.fromEntries(Object.entries(CONTACT_AUTOFILL_LABELS).map(([field, label]) => [form[field], label]));
+// A phone from Apollo is used only when it carries its country code and is valid (the server checks it too); anything
+// else is left out, so an untouched Phone stays blank.
+export const contactAnswerFields = (values, form = CONTACT_FORM) =>
+  Object.fromEntries(
+    Object.entries(values || {})
+      .filter(([field, value]) => form[field] && (field !== "phone" || (String(value).trim().startsWith("+") && !phoneProblem(value))))
+      .map(([field, value]) => [form[field], value]),
+  );
+export function contactProblems(values, form = CONTACT_FORM) {
+  const problems = {};
+  const text = (field) => String(values[form[field]] ?? "").trim();
+  if (!text("first_name")) problems[form.first_name] = CONTACT_FIRST_NAME_REQUIRED;
+  if (!text("last_name")) problems[form.last_name] = CONTACT_LAST_NAME_REQUIRED;
+  if (!text("email")) problems[form.email] = CONTACT_EMAIL_REQUIRED;
+  else if (!EMAIL_FORMAT.test(text("email"))) problems[form.email] = CONTACT_EMAIL_INVALID;
+  const phone = phoneProblem(values[form.phone], values[form.phone_country] || DEFAULT_PHONE_COUNTRY);
+  if (phone) problems[form.phone] = phone;
+  if (text("linkedin_url")) {
+    const { error } = linkedInProfileUrl(text("linkedin_url"));
+    if (error) problems[form.linkedin_url] = error;
+  }
+  return problems;
+}
 // { field name: message } for the fields to fix (empty when the form can be sent)
 export function newRecordProblems(type, values) {
   const problems = {};
   for (const [name, message] of NEW_RECORD_REQUIRED[type] || []) if (!String(values[name] ?? "").trim()) problems[name] = message;
-  if (type === "contact" && !problems.email && !EMAIL_FORMAT.test(String(values.email).trim())) problems.email = CONTACT_EMAIL_INVALID;
+  if (type === "contact") Object.assign(problems, contactProblems(values));
+  if (type === "account") {
+    const website = webAddressProblem(values.website);
+    const page = webAddressProblem(values.linkedin_url, { linkedin: true });
+    if (website) problems.website = website;
+    if (page) problems.linkedin_url = page;
+  }
   return problems;
 }
 // Leads list > tick a lead > Convert to Opportunity: exactly one open lead the user may convert, by the same rules as the
@@ -430,18 +543,19 @@ export function newRecordProblems(type, values) {
 // a note to show when several leads are ticked (nothing is converted or sent), or the reason the action is off.
 export const CONVERT_ONE = "Select exactly one lead to convert.";
 export const CONVERT_ONE_AT_A_TIME = "Only one lead can be converted at a time. Please select one lead.";
-const ADMINS_DONT_CONVERT = "Admins don't convert leads. The lead's owner or a Manager converts it.";
+// canCreateSales (permissions.js): the Admin, Managers and Salespeople convert leads; any other role can't
+const ROLE_CANT_CONVERT = "Your role can't convert leads. The lead's owner, a Manager or the Admin converts it.";
 export function leadConvertChoice(leads, rights) {
   if (leads.length > 1) {
     const loaded = leads.find(Boolean);
-    if (loaded && !rights(loaded).canCreateSales) return { reason: ADMINS_DONT_CONVERT }; // the role rule still applies
+    if (loaded && !rights(loaded).canCreateSales) return { reason: ROLE_CANT_CONVERT }; // the role rule still applies
     return { explain: CONVERT_ONE_AT_A_TIME };
   }
   if (leads.length !== 1 || !leads[0]) return { reason: CONVERT_ONE };
   const [lead] = leads;
   if (!LEAD_OPEN_STAGES.includes(lead.stage)) return { reason: `This lead is ${lead.stage}. Only open leads can be converted.` };
   const { canEdit, canCreateSales } = rights(lead);
-  if (!canCreateSales) return { reason: ADMINS_DONT_CONVERT };
+  if (!canCreateSales) return { reason: ROLE_CANT_CONVERT };
   if (!canEdit) return { reason: "You can convert only your own leads (or others' with the Edit team records permission)." };
   return { action: leadStageAction(lead, "Converted", { canEdit, canConvert: true }) };
 }

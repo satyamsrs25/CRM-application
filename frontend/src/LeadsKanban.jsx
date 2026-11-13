@@ -19,7 +19,7 @@ const EXCLUDED_HELP = {
 
 export default function LeadsKanban({ columns, board, user, setModal, size, pages = {}, busy = {}, onPage }) {
   const [over, setOver] = useState(null);
-  // Salespeople change only their own leads, Managers and Admins any; Admins don't convert (as on the lead page)
+  // Salespeople change only their own leads, Managers and Admins any; converting follows the same rule (as on the lead page)
   const rights = (lead) => {
     const canEdit = lead.owner_id === user?.id || can(user, "edit_team_records");
     return { canEdit, canConvert: canEdit && canCreateSales(user) };

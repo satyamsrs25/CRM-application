@@ -69,7 +69,7 @@ def file_rows() -> int:
 def new_opportunity(client, owner=RAVI) -> dict:
     login_as(client, owner)
     n = next(NAMES)
-    lead = client.post("/api/leads", json={"first_name": "Test", "last_name": f"Buyer{n}", "company": f"Office Co {n}",
+    lead = client.post("/api/leads", json={"source": "Website", "first_name": "Test", "last_name": f"Buyer{n}", "company": f"Office Co {n}",
                                            "email": f"office{n}@example.test", "welcome_email": False}).json()
     res = client.post(f"/api/leads/{lead['id']}/convert", json={"task": TASK, "completed_stages": ["New", "Nurturing", "Demo"],
                                                                  "expected_value": 1000, "note": "Synthetic conversion"})

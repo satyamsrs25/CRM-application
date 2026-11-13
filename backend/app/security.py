@@ -195,15 +195,6 @@ def require(permission: str) -> Acting:
     return me
 
 
-def forbid_admin_create(what: str) -> Acting:
-    """Lead-conversion role restriction; direct opportunity creation does not use this check."""
-    me = acting_user()
-    if me.role == "Admin":
-        raise HTTPException(status_code=403, detail=f"Admins can't create {what} by converting a lead. "
-                            "Use New Opportunity instead. Lead conversion is available to Managers and Salespeople.")
-    return me
-
-
 def can_transfer_lead(owner_id: int) -> bool:
     """Who can give a lead to someone else: the Admin and Managers (Reassign owner: any lead they can see),
     or a user with Transfer own leads (Salespeople: their own leads)."""

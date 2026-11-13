@@ -8,7 +8,7 @@ LEAD = {"first_name": "Maria", "last_name": "Lopez", "company": "Bluebird", "ema
 
 
 def new_lead(client, **extra):
-    res = client.post("/api/leads", json={**LEAD, **extra})
+    res = client.post("/api/leads", json={"first_name": "Test", "source": "Website", **LEAD, **extra})
     assert res.status_code == 201, res.text
     return res.json()
 
@@ -35,7 +35,7 @@ def test_owner_transfers_own_lead_without_approval_and_history_is_saved(client):
 
 
 def test_salesperson_cannot_transfer_someone_elses_lead(client):
-    priyas = login_as(client, 1).post("/api/leads", json={**LEAD, "email": "p@x.example"}).json()
+    priyas = login_as(client, 1).post("/api/leads", json={"first_name": "Test", "source": "Website", **LEAD, "email": "p@x.example"}).json()
     # Ravi can't even see Priya's lead
     assert login_as(client, 2).post(f"/api/leads/{priyas['id']}/transfer", json={"to_user_id": 2}).status_code == 404
 
@@ -68,7 +68,7 @@ def test_admin_can_turn_off_transfer_for_salespeople(client):
 # ---------- Admin creates leads (item 1) ----------
 
 def test_admin_creates_and_edits_leads(client):
-    made = login_as(client, 3).post("/api/leads", json={**LEAD, "owner_id": 2})
+    made = login_as(client, 3).post("/api/leads", json={"first_name": "Test", "source": "Website", **LEAD, "owner_id": 2})
     assert made.status_code == 201 and made.json()["owner_name"] == "Ravi Kumar"
     assert client.put(f"/api/leads/{made.json()['id']}", json={"title": "CTO"}).json()["title"] == "CTO"
 

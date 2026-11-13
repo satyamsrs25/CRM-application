@@ -37,7 +37,7 @@ Calls to `/api` are forwarded to `http://127.0.0.1:8001` (see `vite.config.js`).
 | Opportunity page | Path (Opportunity → Proposal → Won), Mark as Won / Lost, Activity, Details |
 | Accounts / Contacts | Lists and record pages with related contacts and opportunities |
 | Tasks | My Open Tasks, Today, Overdue, Completed, All; complete with the checkbox |
-| Send Email | From a lead, opportunity, contact or account: To, Cc, subject, message and attachments; sent emails show on the record |
+| Send Email | From a lead, opportunity or contact: To, Cc, subject, message and attachments; sent emails show on the record (accounts list their email history) |
 
 More screenshots in `docs/`: [lead page](docs/lead-page.png), [send email](docs/send-email.png), [opportunity Kanban](docs/opportunities-kanban.png), [App Launcher](docs/app-launcher.png), [login](docs/login.png).
 

@@ -30,8 +30,8 @@ from sqlalchemy.orm import Session
 
 from app import schemas
 from app.assistant_reports import PERIODS, crm_report
-from app.constants import (CURRENCIES, LEAD_FLOW, LEAD_STAGES, OPPORTUNITY_FLOW, OPPORTUNITY_STAGES, REVISIT_REASONS,
-                           UNQUALIFIED_REASONS)
+from app.constants import (CURRENCIES, LEAD_FLOW, LEAD_SOURCE_DETAIL_MAX, LEAD_SOURCES, LEAD_STAGES, OPPORTUNITY_FLOW,
+                           OPPORTUNITY_STAGES, REVISIT_REASONS, UNQUALIFIED_REASONS)
 from app.models import Lead, User
 from app.routers import accounts, activity, home, leads, opportunities, tasks
 from app.security import acting_user
@@ -86,8 +86,12 @@ CURRENCY = {"type": "string", "enum": CURRENCIES, "description": "Currency of th
 LEAD_FIELDS = {
     "salutation": {"type": "string", "enum": ["Mr.", "Ms.", "Mrs.", "Dr.", "Prof."]},
     "first_name": S, "last_name": S, "company": S, "title": S, "industry": S, "email": S, "phone": S,
-    "source": {"type": "string", "enum": ["Website", "Referral", "Phone", "Email", "Event", "Social Media", "Other"]},
-    "location": S, "linkedin_url": S, "company_website": S, "company_linkedin_url": S,
+    "source": {"type": "string", "enum": [s for s in LEAD_SOURCES if s != "Upload"],  # Upload: bulk upload only
+               "description": "Lead Source. LinkedIn needs linkedin_url; Other needs source_detail"},
+    "source_detail": {"type": "string", "description": "What the source is, when source is Other (the user's words, "
+                      f"at most {LEAD_SOURCE_DETAIL_MAX} characters)"},
+    "location": S, "linkedin_url": {"type": "string", "description": "The person's LinkedIn Profile URL"},
+    "company_website": S, "company_linkedin_url": S,
     "annual_revenue": {"type": "number", "description": "Turnover, in the lead's currency"},
     "currency": CURRENCY,
     "employees": {"type": "integer", "description": "Headcount"},
@@ -122,20 +126,29 @@ TOOLS = [
     _tool("list_accounts", "List accounts (companies) the user can see.", {"search": S}),
     _tool("get_account", "One account with its contacts and opportunities.", {"account_id": I}, ["account_id"]),
     _tool("list_contacts", "List contacts (people at accounts).", {"search": S, "account_id": I}),
-    _tool("create_account", "Create an account (company) without a lead. Industry and phone are required: take them "
-          "from what the user gave, otherwise ask; never make them up.", {
-        "name": S, "industry": S, "phone": S, "website": S, "address": S}, ["name", "industry", "phone"]),
-    _tool("create_contact", "Add a contact (person) to an account. Email and phone are required: take them from what "
-          "the user gave, otherwise ask; never make them up.", {
+    _tool("create_account", "Create an account (company) without a lead. Account Name and Industry are required "
+          "(Website and Company LinkedIn URL are optional): take them from what the user gave, otherwise ask; never make "
+          "them up.", {
+        "name": S, "industry": S, "website": S, "linkedin_url": {"type": "string", "description": "The company's "
+        "LinkedIn page"}, "address": S}, ["name", "industry"]),
+    _tool("create_contact", "Add a contact (person) to an account. First Name, Last Name and Email are required; Phone "
+          "and the person's LinkedIn Profile URL are optional. Take them from what the user gave, otherwise ask; never "
+          "make them up.", {
         "account_id": I, "salutation": LEAD_FIELDS["salutation"], "first_name": S, "last_name": S, "job_title": S,
-        "email": S, "phone": S}, ["account_id", "last_name", "email", "phone"]),
+        "email": S, "phone": {"type": "string", "description": "Optional. Checked for phone_country (default IN, India) unless it starts with + and its country code"}, "phone_country": {"type": "string", "description": "Two-letter country of the phone number, e.g. IN, US, GB (default IN)"}, "linkedin_url": {"type": "string", "description": "The person's LinkedIn profile "
+        "(linkedin.com/in/...)"}}, ["account_id", "first_name", "last_name", "email"]),
     _tool("create_opportunity", "Create a new opportunity directly (without converting a lead). Give the account "
           "(account_id, or account_name: an existing account with that company name is reused) and the contact "
-          "(contact_id, or contact_last_name and the rest: an existing contact with that email or name is reused). "
+          "(contact_id, or a new contact's contact_first_name, contact_last_name and contact_email, which are required, "
+          "like New Contact: an existing contact with that email or name is reused). "
           "The same open opportunity for the same person and company can't be created twice.", {
               "name": {"type": "string", "description": "Opportunity name"}, "account_id": I, "account_name": S,
               "contact_id": I, "contact_first_name": S, "contact_last_name": S, "contact_email": S, "contact_title": S,
-              "contact_phone": S, "amount": N, "currency": CURRENCY, "close_date": DATE,
+              "contact_phone": {"type": "string", "description": "Optional. Checked for contact_phone_country (default "
+                                "IN) unless it starts with + and its country code"},
+              "contact_phone_country": {"type": "string", "description": "Two-letter country of contact_phone (default IN)"},
+              "contact_linkedin_url": {"type": "string", "description": "The new contact's LinkedIn profile"},
+              "amount": N, "currency": CURRENCY, "close_date": DATE,
               "owner_name": {"type": "string", "description": "Only when the user names another owner"},
               "note": {"type": "string", "description": "Required: why the opportunity is opened, in the user's own "
                        "words (take them from what the user said; ask only if they gave no reason)."},
@@ -150,11 +163,12 @@ TOOLS = [
         "description": S}, ["task_id"]),
     _tool("reopen_lead", "Bring an Unqualified lead back to New.", {"lead_id": I, "note": NOTE, **TASK_ARGS},
           ["lead_id", "note", *TASK_REQUIRED]),
-    _tool("create_lead", "Create a lead at stage New. Required, like the New Lead form: Last Name, Company, Email, "
-          "Company Website and Company LinkedIn URL (Lead Source defaults to Other). Take them from what the user gave; "
-          "ask only for the missing required ones, never make them up.", {
+    _tool("create_lead", "Create a lead at stage New. Required, like the New Lead form: First Name, Last Name, Company, "
+          "Email and Lead Source; the LinkedIn Profile URL when the source is LinkedIn, and what the source is "
+          "(source_detail) when it is Other. Company Website and Company LinkedIn URL are optional. Take them from what "
+          "the user gave; ask only for the missing required ones, never make them up.", {
         **LEAD_FIELDS, "owner_name": {"type": "string", "description": "Only when the user names another owner"}},
-        ["last_name", "company", "email", "company_website", "company_linkedin_url"]),
+        ["first_name", "last_name", "company", "email", "source"]),
     _tool("update_lead", "Change details of a lead (not its stage or owner).", {"lead_id": I, **LEAD_FIELDS}, ["lead_id"]),
     _tool("move_lead_stage", "Move a lead to New, Nurturing, Revisit or Demo. Demo needs demo_date; Revisit needs revisit_date and revisit_reason.", {
         "lead_id": I, "stage": {"type": "string", "enum": LEAD_FLOW}, "demo_date": DATE_TIME,
@@ -214,11 +228,10 @@ TASK_MISSING = (f"{schemas.STAGE_TASK_REQUIRED} Ask the user for the task's subj
 # run: the model is told to ask the user for exactly those, in one question. (New account / contact: the API's own
 # checks already name the missing Industry, Phone or Email.)
 REQUIRED_FIELDS = {
-    "create_lead": [("last_name", "Last Name"), ("company", "Company"), ("email", "Email"),
-                    ("company_website", "Company Website"), ("company_linkedin_url", "Company LinkedIn URL")],
+    "create_lead": [("first_name", "First Name"), ("last_name", "Last Name"), ("company", "Company"), ("email", "Email"),
+                    ("source", "Lead Source")],
     "create_task": [("title", "Subject"), ("due_date", "Due Date")],
-    "create_opportunity": [("name", "Opportunity Name"), (("account_id", "account_name"), "Account (company)"),
-                           (("contact_id", "contact_last_name"), "Contact Last Name")],
+    "create_opportunity": [("name", "Opportunity Name"), (("account_id", "account_name"), "Account (company)")],
 }
 
 
@@ -231,6 +244,15 @@ def missing_required(name: str, args: dict) -> list[str]:
     for keys, label in REQUIRED_FIELDS.get(name, []):
         if not any(given(k) for k in (keys if isinstance(keys, tuple) else (keys,))):
             missing.append(label)
+    if name == "create_lead":  # what the chosen Lead Source needs, as on the New Lead form
+        if args.get("source") == "LinkedIn" and not given("linkedin_url"):
+            missing.append("LinkedIn Profile URL")
+        if args.get("source") == "Other" and not given("source_detail"):
+            missing.append("Specify lead source")
+    if name == "create_opportunity" and not given("contact_id"):  # a new contact: the New Contact fields
+        missing += [label for key, label in (("contact_first_name", "Contact First Name"),
+                                             ("contact_last_name", "Contact Last Name"),
+                                             ("contact_email", "Contact Email")) if not given(key)]
     return missing
 
 
@@ -247,23 +269,27 @@ SALES_TOOLS = {"create_lead", "update_lead", "move_lead_stage", "reschedule_demo
                "mark_lead_lost", "cancel_demo", "mark_opportunity_won", "mark_opportunity_lost", "mark_lead_unqualified",
                "reopen_lead"}
 NEEDS_PERMISSION = {"transfer_lead": ("transfer_leads", "reassign_owner")}
+# The Admin converts leads like Managers and Salespeople (the same API checks); no other sales action is offered.
+ADMIN_ACTIONS = {"convert_lead"}
 
 
 def tools_for(me) -> list[dict]:
     """The tools offered to this user, by role and permissions:
-    - Admin: reports, lists and user information only - no sales actions (leads, stages, deals, tasks)
+    - Admin: reports, lists and user information, and lead conversion - no other sales actions (creating or changing
+      leads, other stage changes, deals, tasks)
     - Manager / Salesperson: the sales tools; transfer and delete only with those permissions.
     Record access is unchanged: every tool runs through the same API as the screens, as this user."""
     if me.role == "Admin":
-        return [t for t in TOOLS if t["function"]["name"] in READ_TOOLS]
+        return [t for t in TOOLS if t["function"]["name"] in READ_TOOLS | ADMIN_ACTIONS]
     return [t for t in TOOLS if not (need := NEEDS_PERMISSION.get(t["function"]["name"])) or any(me.can(p) for p in need)]
 
 
 def role_guidance(me) -> str:
     if me.role == "Admin":
-        return ("Role: Admin. Help with reports, statistics, record look-ups and user information. You don't do sales "
-                "work (creating or changing leads, deals, stages, tasks or notes): if asked, say that the record's owner "
-                "or their Manager does it in SalesTrack.\n")
+        return ("Role: Admin. Help with reports, statistics, record look-ups and user information, and convert a lead "
+                "into an opportunity when asked (convert_lead, with the same Conversion Comment, task and stage rules). "
+                "You don't do other sales work (creating or changing leads, other stage changes, deals, tasks or "
+                "notes): if asked, say that the record's owner or their Manager does it in SalesTrack.\n")
     if me.role == "Manager":
         return ("Role: Manager. You can work on the team's records and report on the team. For a report about one "
                 "salesperson, pass their name as the owner.\n")
@@ -424,12 +450,13 @@ def run_tool(db: Session, name: str, args: dict) -> tuple[dict, dict | None]:
                                                                         search=a.get("search"), db=db)]
         return {"count": len(rows), "contacts": rows[:MAX_LIST], "more": max(0, len(rows) - MAX_LIST)}, None
     if name == "create_account":
-        data = schemas.AccountCreate(**{k: a[k] for k in ("name", "industry", "phone", "website", "address") if k in a})
+        data = schemas.AccountCreate(**{k: a[k] for k in ("name", "industry", "phone", "website", "linkedin_url", "address")
+                                        if k in a})
         out = _plain(accounts.create_account(data=data, db=db))
         return _account_row(out), _link("Account", out)
     if name == "create_contact":
-        fields = {k: a[k] for k in ("salutation", "first_name", "last_name", "job_title", "email", "phone", "account_id")
-                  if k in a}
+        fields = {k: a[k] for k in ("salutation", "first_name", "last_name", "job_title", "email", "phone",
+                                    "phone_country", "linkedin_url", "account_id") if k in a}
         out = _plain(accounts.create_contact(data=schemas.ContactCreate(**fields), db=db))
         return _contact_row(out), _link("Contact", out)
     if name == "create_opportunity":
@@ -439,7 +466,8 @@ def run_tool(db: Session, name: str, args: dict) -> tuple[dict, dict | None]:
             account_id=a.get("account_id"), account_name=a.get("account_name"), primary_contact_id=a.get("contact_id"),
             contact_first_name=a.get("contact_first_name"), contact_last_name=a.get("contact_last_name"),
             contact_email=a.get("contact_email"), contact_title=a.get("contact_title"),
-            contact_phone=a.get("contact_phone"))
+            contact_phone=a.get("contact_phone"), contact_linkedin_url=a.get("contact_linkedin_url"),
+            **({"contact_phone_country": a["contact_phone_country"]} if a.get("contact_phone_country") else {}))
         out = _plain(opportunities.create_opportunity(data=data, db=db))
         opp = out.get("opportunity") or {}
         return {"opportunity": _opp_row(opp), "account": (out.get("account") or {}).get("name"),
@@ -655,10 +683,14 @@ def system_prompt() -> str:
         "- Every stage change except Lost and Unqualified also needs a new task: its subject and due date (for Won, "
         "a post-sale task such as handover or onboarding). Take them from what the user said; otherwise ask.\n"
         "- Required fields are the ones marked * in SalesTrack's forms:\n"
-        "  - New lead: Last Name, Company, Email, Company Website, Company LinkedIn URL (Lead Source defaults to Other).\n"
-        "  - New account: Account Name, Industry, Phone. New contact: Account, Last Name, Email, Phone.\n"
+        "  - New lead: First Name, Last Name, Company, Email and Lead Source; also the LinkedIn Profile URL when the "
+        "source is LinkedIn, and what the source is when it is Other (Company Website and Company LinkedIn URL are "
+        "optional).\n"
+        "  - New account: Account Name, Industry (Website and Company LinkedIn URL optional). New contact: Account, "
+        "First Name, Last Name, Email (Phone and LinkedIn Profile URL optional).\n"
         "  - New task: Subject and Due Date (Priority defaults to Normal).\n"
-        "  - New opportunity: Opportunity Name, Account (company), Contact Last Name, the user's comment, and a task "
+        "  - New opportunity: Opportunity Name, Account (company), the contact (an existing one, or a new contact's "
+        "First Name, Last Name and Email), the user's comment, and a task "
         "(subject and due date).\n"
         "  When the user starts a task without the details (e.g. 'Create a new lead'), ask for the required fields of "
         "that form only, as a short list, and add one line saying any other details (title, phone, industry...) are "

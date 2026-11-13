@@ -652,7 +652,8 @@ def test_autofilled_company_details_are_saved_and_conversion_copies_them_to_the_
     with next(app.dependency_overrides[get_db]()) as db:
         assert db.scalars(select(Lead.id)).all() == [] and db.scalars(select(Account.id)).all() == []  # lookup saves nothing
     # what the New Lead form sends when the user keeps the autofilled values
-    res = client.post("/api/leads", json={**fields, "linkedin_url": JANE, "source": "Other", "welcome_email": False})
+    # (Lead Source LinkedIn: the pasted profile is the one LinkedIn Profile URL the source needs)
+    res = client.post("/api/leads", json={"first_name": "Test", **fields, "linkedin_url": JANE, "source": "LinkedIn", "welcome_email": False})
     assert res.status_code == 201, res.text
     lead = res.json()
     company = ("Synthetic Co", "information technology & services", SITE, PAGE)
@@ -664,7 +665,7 @@ def test_autofilled_company_details_are_saved_and_conversion_copies_them_to_the_
     assert (account["name"], account["industry"], account["website"], account["linkedin_url"]) == company
 
 def test_a_new_lead_keeps_the_profile_in_one_form_and_conversion_copies_it(client):
-    res = client.post("/api/leads", json={"first_name": "Jane", "last_name": "Doe", "company": "Synthetic Co",
+    res = client.post("/api/leads", json={"source": "Website", "first_name": "Jane", "last_name": "Doe", "company": "Synthetic Co",
                                           "email": "jane.doe@synthetic-co.example", "welcome_email": False,
                                           "linkedin_url": "https://WWW.linkedin.com/in/Jane-Doe-Synthetic/?trk=x"})
     assert res.status_code == 201, res.text
@@ -677,10 +678,10 @@ def test_a_new_lead_keeps_the_profile_in_one_form_and_conversion_copies_it(clien
         assert contact.linkedin_url == JANE
 
     # other LinkedIn links are kept as before (no new rule for them), and editing a lead works as before
-    other = client.post("/api/leads", json={"last_name": "Roe", "company": "Synthetic Co", "welcome_email": False,
+    other = client.post("/api/leads", json={"first_name": "Test", "source": "Website", "last_name": "Roe", "company": "Synthetic Co", "welcome_email": False,
                                             "linkedin_url": "linkedin.com/company/synthetic-co"})
     assert other.status_code == 201 and other.json()["linkedin_url"] == "https://linkedin.com/company/synthetic-co"
     edited = client.put(f"/api/leads/{other.json()['id']}", json={"linkedin_url": "linkedin.com/in/Roe-Synthetic/"})
     assert edited.status_code == 200 and edited.json()["linkedin_url"] == "https://linkedin.com/in/Roe-Synthetic/"
-    assert client.post("/api/leads", json={"last_name": "X", "company": "Y", "welcome_email": False,
+    assert client.post("/api/leads", json={"first_name": "Test", "source": "Website", "last_name": "X", "company": "Y", "welcome_email": False,
                                            "linkedin_url": "https://example.test/in/x"}).status_code == 422

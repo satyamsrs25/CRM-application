@@ -21,7 +21,7 @@ def isolate_key_configuration(monkeypatch):
 @pytest.fixture
 def record(client, monkeypatch):
     monkeypatch.setattr(mailer, "send", lambda *a, **kw: None)
-    response = client.post('/api/leads', json={"first_name": "Jack", "last_name": "Jones", "company": "Bluebird", "email": "jack@bluebird.example", "welcome_email": False})
+    response = client.post('/api/leads', json={"source": "Website", "first_name": "Jack", "last_name": "Jones", "company": "Bluebird", "email": "jack@bluebird.example", "welcome_email": False})
     assert response.status_code == 201, response.text
     return response.json()
 
@@ -164,7 +164,7 @@ def test_requires_login(client, record, provider):
 
 def test_cannot_draft_for_another_owners_record(client, record, provider):
     login_as(client, 1)
-    other = client.post('/api/leads', json={"last_name": "Private", "company": "Private Inc", "welcome_email": False}).json()
+    other = client.post('/api/leads', json={"first_name": "Test", "source": "Website", "last_name": "Private", "company": "Private Inc", "welcome_email": False}).json()
     login_as(client, 2)
     assert client.post('/api/emails/draft', json=request(other)).status_code == 404
     assert not provider[0]
@@ -371,7 +371,7 @@ def test_stage_specific_choice_reaches_the_real_provider_adapter(client, record,
 def test_draft_menu_requires_record_access_and_email_permission(client, record):
     url=f"/api/emails/draft-options?record_field=lead_id&record_id={record['id']}"
     login_as(client,1)
-    other=client.post('/api/leads',json={'last_name':'Other','company':'Private','welcome_email':False}).json()
+    other=client.post('/api/leads',json={'first_name': 'Test', 'source': 'Website', 'last_name':'Other','company':'Private','welcome_email':False}).json()
     login_as(client,2)
     assert client.get(f"/api/emails/draft-options?record_field=lead_id&record_id={other['id']}").status_code == 404
     db=next(app.dependency_overrides[get_db]())

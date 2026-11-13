@@ -23,7 +23,8 @@ def test_tools_follow_the_role(client):
     admin = Acting(id=3, role="Admin", full_name="Asha Rao", email="asha@crm.test", permissions=frozenset())
     names = {t["function"]["name"] for t in assistant.tools_for(admin)}
     assert "crm_report" in names and "list_users" in names
-    assert not names & {"create_lead", "convert_lead", "mark_opportunity_won", "create_task"}
+    assert "convert_lead" in names  # the Admin converts leads, as on the screens
+    assert not names & {"create_lead", "update_lead", "move_lead_stage", "mark_opportunity_won", "create_task"}
     seller = Acting(id=2, role="Salesperson", full_name="Ravi Kumar", email="ravi@crm.test", permissions=frozenset({"transfer_leads"}))
     names = {t["function"]["name"] for t in assistant.tools_for(seller)}
     assert {"create_lead", "convert_lead", "transfer_lead"} <= names
@@ -37,7 +38,8 @@ def test_ai_changes_are_in_the_admins_activity_log(client, monkeypatch):
         {"role": "assistant", "content": None, "tool_calls": [{"id": "c1", "type": "function", "function": {
             "name": "create_lead", "arguments": json.dumps({"first_name": "Rhea", "last_name": "Kapoor", "company": "Lumen",
                                                             "email": "rhea@lumen.example", "company_website": "lumen.example",
-                                                            "company_linkedin_url": "https://www.linkedin.com/company/lumen-example"})}}]},
+                                                            "company_linkedin_url": "https://www.linkedin.com/company/lumen-example",
+                                                            "source": "Referral"})}}]},
         {"role": "assistant", "content": "Done: Rhea Kapoor."},
     ])
     monkeypatch.setattr(assistant, "call_model", lambda messages: next(replies))
@@ -89,14 +91,15 @@ def test_the_assistant_asks_for_the_required_fields_of_the_form(client, monkeypa
         {"role": "assistant", "content": None, "tool_calls": [{"id": "c1", "type": "function", "function": {
             "name": "create_lead", "arguments": json.dumps({"first_name": "Janu", "last_name": "Rao", "company": "Northwind",
                                                             "email": "janu@northwind.example"})}}]},
-        {"role": "assistant", "content": "Please give the Company Website and Company LinkedIn URL."},
+        {"role": "assistant", "content": "What is the lead source?"},
     ])
     monkeypatch.setattr(assistant, "call_model", lambda messages: seen.append(messages) or next(replies))
     res = client.post("/api/assistant/chat", json={"message": "New lead Janu Rao, Northwind, janu@northwind.example"}).json()
     assert res["links"] == []
     told = json.loads(seen[1][-1]["content"])["error"]
-    assert "Company Website, Company LinkedIn URL" in told and "Email" not in told
-    assert "New lead: Last Name, Company, Email, Company Website, Company LinkedIn URL" in seen[0][0]["content"]
+    assert "Lead Source" in told and "Email" not in told
+    assert "Company Website" not in told and "Company LinkedIn URL" not in told  # optional now
+    assert "New lead: First Name, Last Name, Company, Email and Lead Source" in seen[0][0]["content"]
     assert assistant.missing_required("create_task", {"title": "Call", "due_date": " "}) == ["Due Date"]
     assert assistant.missing_required("create_opportunity", {"name": "Deal", "account_name": "Northwind",
                                                              "contact_id": 4}) == []

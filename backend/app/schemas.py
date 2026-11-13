@@ -12,7 +12,9 @@ from urllib.parse import quote, unquote, urlsplit
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_serializer, field_validator, model_validator
 from pydantic_core import PydanticCustomError
 
-LeadSource = Literal["Website", "Referral", "Phone", "Email", "Event", "Social Media", "Other", "Upload"]
+from app.constants import LEAD_SOURCE_DETAIL_MAX
+
+LeadSource = Literal["Website", "LinkedIn", "Referral", "Phone", "Email", "Event", "Social Media", "Other", "Upload"]
 LostReason = Literal["Price", "Competitor", "No response", "No budget", "Not interested", "Other"]
 UnqualifiedReason = Literal["Not a fit", "No budget", "No authority", "No current need", "Bad timing", "Bad data", "Other"]
 RevisitReason = Literal["Bad timing", "Budget next period", "Asked to call back", "No response yet", "Demo cancelled",
@@ -275,11 +277,25 @@ class LeadLinks(BaseModel):
         return " ".join(v.split()) or None if v else None
 
 
+# New Lead rules (the form, the API and the AI Assistant). Older leads may lack these values: an edit enforces a rule
+# only when it changes that field or the Lead Source (routers/leads.py, update_lead).
+FIRST_NAME_REQUIRED = "Enter the lead's first name."
+SOURCE_DETAIL_REQUIRED = "Specify the lead source (required when Lead Source is Other)."
+LINKEDIN_PROFILE_REQUIRED = "Enter the lead's LinkedIn Profile URL (required when Lead Source is LinkedIn)."
+SOURCE_DETAIL_MAX = LEAD_SOURCE_DETAIL_MAX  # leads.source_detail VARCHAR(100)
+
+
+def trimmed(value):
+    """Spaces around a text are dropped; only spaces counts as empty (None)."""
+    return (value.strip() or None) if isinstance(value, str) else value
+
+
 class LeadCreate(LeadLinks):
-    """Like the Salesforce "New Lead" form: Last Name and Company are required."""
+    """Like the Salesforce "New Lead" form: First Name, Last Name and Company are required. Lead Source LinkedIn needs
+    the LinkedIn Profile URL; Other needs source_detail (what the source is)."""
 
     salutation: Salutation | None = None
-    first_name: str | None = Field(None, max_length=50)
+    first_name: Annotated[str | None, BeforeValidator(trimmed)] = Field(None, max_length=50)  # required: checked below
     last_name: str = Field(..., min_length=1, max_length=50)
     company: str = Field(..., min_length=1, max_length=200)
     title: str | None = Field(None, max_length=100)
@@ -287,6 +303,7 @@ class LeadCreate(LeadLinks):
     email: str | None = Field(None, max_length=255)
     phone: str | None = Field(None, max_length=30)
     source: LeadSource = "Other"
+    source_detail: Annotated[str | None, BeforeValidator(trimmed)] = Field(None, max_length=SOURCE_DETAIL_MAX)
     currency: Currency = "USD"  # of the turnover
     owner_id: int | None = None  # default: the logged-in user
     created_by_id: int | None = None  # ignored: the logged-in user creates it
@@ -301,12 +318,24 @@ class LeadCreate(LeadLinks):
         except ValueError:
             return v
 
+    @model_validator(mode="after")
+    def _new_lead_rules(self):
+        if not self.first_name:
+            raise ValueError(FIRST_NAME_REQUIRED)
+        if self.source == "Other" and not self.source_detail:
+            raise ValueError(SOURCE_DETAIL_REQUIRED)
+        if self.source == "LinkedIn" and not self.linkedin_url:
+            raise ValueError(LINKEDIN_PROFILE_REQUIRED)
+        if self.source != "Other":
+            self.source_detail = None  # only Other has a description
+        return self
+
 
 class LeadUpdate(LeadLinks):
     """Send only the fields to change. Stage changes use /stage, /lost and /convert."""
 
     salutation: Salutation | None = None
-    first_name: str | None = Field(None, max_length=50)
+    first_name: Annotated[str | None, BeforeValidator(trimmed)] = Field(None, max_length=50)
     last_name: str | None = Field(None, min_length=1, max_length=50)
     company: str | None = Field(None, min_length=1, max_length=200)
     title: str | None = Field(None, max_length=100)
@@ -314,6 +343,7 @@ class LeadUpdate(LeadLinks):
     email: str | None = Field(None, max_length=255)
     phone: str | None = Field(None, max_length=30)
     source: LeadSource | None = None
+    source_detail: Annotated[str | None, BeforeValidator(trimmed)] = Field(None, max_length=SOURCE_DETAIL_MAX)
     currency: Currency | None = None
     demo_date: datetime | None = None
     owner_id: int | None = None
@@ -342,6 +372,7 @@ class LeadOut(Out):
     untouched: bool = False  # uploaded and not worked on yet
     uploaded_from: str | None = None  # file name when the lead came from a bulk upload
     source: str
+    source_detail: str | None = None  # Lead Source Other: what the source is (older Other leads may have none)
     stage: str
     demo_date: datetime | None  # server time, no zone (as stored)
     demo_at: datetime | None = None  # the same moment in UTC: the app shows it in IST and calendars use it
@@ -594,13 +625,92 @@ class AccountOut(Out):
         return money(value)
 
 
-# New Account / New Contact (and the Assistant's tools for them) need these filled in. Lead conversion, New Opportunity
-# and imports build accounts and contacts themselves, and older records may have them empty.
+# New Account / New Contact (and the Assistant's tools for them), and New Opportunity's new contact, need these filled
+# in. Lead conversion and imports build accounts and contacts themselves, and older records may have them empty.
+ACCOUNT_NAME_REQUIRED = "Enter the account name."
 ACCOUNT_INDUSTRY_REQUIRED = "Enter the account's industry."
-ACCOUNT_PHONE_REQUIRED = "Enter the account's phone number."
+CONTACT_FIRST_NAME_REQUIRED = "Enter the contact's first name."
+CONTACT_LAST_NAME_REQUIRED = "Enter the contact's last name."
 CONTACT_EMAIL_REQUIRED = "Enter the contact's email address."
 CONTACT_EMAIL_INVALID = "Enter a valid email address, like name@company.com."
-CONTACT_PHONE_REQUIRED = "Enter the contact's phone number."
+# The contact's phone is optional; a given one is checked against the numbering rules of its country (Google's
+# libphonenumber, the same rules as the form's libphonenumber-js) and saved in international format (+91 98765 43210).
+# This checks the format only: it doesn't show that the number exists or belongs to the contact.
+DEFAULT_PHONE_COUNTRY = "IN"  # India (+91), the form's default
+PHONE_CHARACTERS = re.compile(r"\+?[0-9 ().\-]+")  # digits, spaces, brackets, hyphens, dots; an optional leading +
+PHONE_WITH_CODE_INVALID = "Enter a valid phone number, including its country code after the +."
+
+
+def phone_country_label(region: str) -> str:
+    """'IN' -> 'India (+91)': the name and calling code, as the form's country list shows them."""
+    import phonenumbers
+    from phonenumbers import geocoder
+
+    example = phonenumbers.example_number(region)
+    name = geocoder.country_name_for_number(example, "en") if example else ""
+    return f"{name or region} (+{phonenumbers.country_code_for_region(region)})"
+
+
+def international_phone(value, country: str | None) -> str | None:
+    """A contact's phone number checked for its country, in international format ("" or only spaces -> None).
+    Without a leading +, the number must be valid in the chosen country; with one, its own country code decides."""
+    import phonenumbers
+
+    if value is not None and not isinstance(value, str):
+        raise PydanticCustomError("phone_type", "Enter the phone number as text.")
+    text = (value or "").strip()
+    if not text:
+        return None
+    region = (country or DEFAULT_PHONE_COUNTRY).strip().upper()
+    if region not in phonenumbers.SUPPORTED_REGIONS:
+        raise PydanticCustomError("phone_country", "Choose the phone number's country.")
+    message = PHONE_WITH_CODE_INVALID if text.startswith("+") else f"Enter a valid phone number for {phone_country_label(region)}."
+    if not PHONE_CHARACTERS.fullmatch(text):
+        raise PydanticCustomError("phone_invalid", message)
+    try:
+        number = phonenumbers.parse(text, region)
+    except phonenumbers.NumberParseException:
+        raise PydanticCustomError("phone_invalid", message) from None
+    valid = (phonenumbers.is_valid_number(number) if text.startswith("+")
+             else phonenumbers.is_valid_number_for_region(number, region))
+    if not valid:
+        raise PydanticCustomError("phone_invalid", message)
+    return phonenumbers.format_number(number, phonenumbers.PhoneNumberFormat.INTERNATIONAL)
+
+
+def valid_international_phone(value) -> str | None:
+    """A phone number that carries its country code and is valid for it, in international format; otherwise None.
+    For numbers from outside the form (Apollo): one without +country, or malformed, is never used."""
+    import phonenumbers
+
+    text = value.strip() if isinstance(value, str) else ""
+    if not text.startswith("+") or not PHONE_CHARACTERS.fullmatch(text):
+        return None
+    try:
+        number = phonenumbers.parse(text, None)
+    except phonenumbers.NumberParseException:
+        return None
+    return phonenumbers.format_number(number, phonenumbers.PhoneNumberFormat.INTERNATIONAL) \
+        if phonenumbers.is_valid_number(number) else None
+
+
+def contact_linkedin(value) -> str | None:
+    """A contact's own LinkedIn profile (optional), saved in one form: https://linkedin.com/in/<name>."""
+    text = trimmed(value)
+    if not text:
+        return None
+    try:
+        return linkedin_profile_url(text)
+    except ValueError as error:
+        raise PydanticCustomError("linkedin_profile", str(error)) from None
+
+
+def web_address(value, *, linkedin: bool = False) -> str | None:
+    """An optional web address, checked like the lead form's (clean_url); "" -> None."""
+    try:
+        return clean_url(value, linkedin=linkedin)
+    except ValueError as error:
+        raise PydanticCustomError("web_address", str(error)) from None
 
 
 def required_text(value, message: str) -> str:
@@ -623,25 +733,33 @@ def contact_email(value) -> str:
     return value
 
 
+AccountName = Annotated[str, BeforeValidator(lambda v: required_text(v, ACCOUNT_NAME_REQUIRED))]
 AccountIndustry = Annotated[str, BeforeValidator(lambda v: required_text(v, ACCOUNT_INDUSTRY_REQUIRED))]
-AccountPhone = Annotated[str, BeforeValidator(lambda v: required_text(v, ACCOUNT_PHONE_REQUIRED))]
+ContactFirstName = Annotated[str, BeforeValidator(lambda v: required_text(v, CONTACT_FIRST_NAME_REQUIRED))]
+ContactLastName = Annotated[str, BeforeValidator(lambda v: required_text(v, CONTACT_LAST_NAME_REQUIRED))]
 ContactEmail = Annotated[str, BeforeValidator(contact_email)]
-ContactPhone = Annotated[str, BeforeValidator(lambda v: required_text(v, CONTACT_PHONE_REQUIRED))]
+ContactLinkedIn = Annotated[str | None, BeforeValidator(contact_linkedin)]
+Website = Annotated[str | None, BeforeValidator(web_address)]
+CompanyLinkedIn = Annotated[str | None, BeforeValidator(lambda v: web_address(v, linkedin=True))]
 
 
 class AccountCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=200)
+    """New Account: Account Name and Industry are required; Website and Company LinkedIn URL are optional (checked
+    when given). There is no Phone on the form: a phone sent through the API is optional and kept as given."""
+
+    name: AccountName = Field(..., max_length=200)
     industry: AccountIndustry = Field(..., max_length=100)
-    phone: AccountPhone = Field(..., max_length=30)
-    website: str | None = Field(None, max_length=255)
+    phone: Annotated[str | None, BeforeValidator(trimmed)] = Field(None, max_length=30)
+    website: Website = Field(None, max_length=255)
+    linkedin_url: CompanyLinkedIn = Field(None, max_length=300)  # the company's LinkedIn page
     address: str | None = Field(None, max_length=500)
     owner_id: int | None = None
 
     @model_validator(mode="before")
     @classmethod
     def _required_left_out(cls, data):
-        """A request without industry or phone gets their own messages too (not just "Field required")."""
-        return {"industry": None, "phone": None, **data} if isinstance(data, dict) else data
+        """A request without a name or industry gets their own messages too (not just "Field required")."""
+        return {"name": None, "industry": None, **data} if isinstance(data, dict) else data
 
 
 class ContactOut(Out):
@@ -663,20 +781,41 @@ class ContactOut(Out):
 
 
 class ContactCreate(BaseModel):
+    """New Contact: First Name, Last Name, Email and the account are required. Phone is optional and checked for the
+    chosen country (phone_country, default India); the LinkedIn Profile URL is optional (a person's profile)."""
+
     salutation: Salutation | None = None
-    first_name: str | None = Field(None, max_length=50)
-    last_name: str = Field(..., min_length=1, max_length=50)
+    first_name: ContactFirstName = Field(..., max_length=50)
+    last_name: ContactLastName = Field(..., max_length=50)
     job_title: str | None = Field(None, max_length=100)
     email: ContactEmail = Field(..., max_length=255)
-    phone: ContactPhone = Field(..., max_length=30)
+    phone_country: str = Field(DEFAULT_PHONE_COUNTRY, min_length=2, max_length=2)  # not saved: the number says it
+    phone: str | None = Field(None, max_length=30)
+    linkedin_url: ContactLinkedIn = Field(None, max_length=300)
     account_id: int
     owner_id: int | None = None
 
     @model_validator(mode="before")
     @classmethod
     def _required_left_out(cls, data):
-        """A request without email or phone gets their own messages too (not just "Field required")."""
-        return {"email": None, "phone": None, **data} if isinstance(data, dict) else data
+        """A request without a name or email gets their own messages too (not just "Field required")."""
+        return {"first_name": None, "last_name": None, "email": None, **data} if isinstance(data, dict) else data
+
+    @field_validator("phone_country")
+    @classmethod
+    def _country(cls, value):
+        import phonenumbers
+
+        if value.upper() not in phonenumbers.SUPPORTED_REGIONS:
+            raise PydanticCustomError("phone_country", "Choose the phone number's country.")
+        return value.upper()
+
+    @field_validator("phone")
+    @classmethod
+    def _phone(cls, value, info):
+        if "phone_country" not in info.data and (value or "").strip():  # an invalid country: never assume India
+            raise PydanticCustomError("phone_country", "Choose the phone number's country.")
+        return international_phone(value, info.data.get("phone_country"))
 
 
 # ---------- Opportunities ----------
@@ -754,19 +893,27 @@ class OpportunityCreate(NeedsTask):
     account_id: int | None = None
     account_name: str | None = Field(None, max_length=200)
     primary_contact_id: int | None = None
+    # a new contact (no primary_contact_id): the same fields and rules as New Contact
     contact_salutation: Salutation | None = None
     contact_first_name: str | None = Field(None, max_length=50)
     contact_last_name: str | None = Field(None, max_length=50)
     contact_email: str | None = Field(None, max_length=255)
     contact_title: str | None = Field(None, max_length=100)
+    contact_phone_country: str = Field(DEFAULT_PHONE_COUNTRY, min_length=2, max_length=2)  # not saved
     contact_phone: str | None = Field(None, max_length=30)
+    contact_linkedin_url: str | None = Field(None, max_length=300)
 
     @model_validator(mode="after")
     def _account_and_contact(self):
         if self.account_id is None and not (self.account_name or "").strip():
             raise ValueError("Choose an account or enter the company name")
-        if self.primary_contact_id is None and not (self.contact_last_name or "").strip():
-            raise ValueError("Choose a contact or enter the contact's last name")
+        if self.primary_contact_id is not None:
+            return self  # an existing contact is reused as it is: no new contact fields are needed or checked
+        self.contact_first_name = required_text(self.contact_first_name, CONTACT_FIRST_NAME_REQUIRED)
+        self.contact_last_name = required_text(self.contact_last_name, CONTACT_LAST_NAME_REQUIRED)
+        self.contact_email = contact_email(self.contact_email)
+        self.contact_phone = international_phone(self.contact_phone, self.contact_phone_country)
+        self.contact_linkedin_url = contact_linkedin(self.contact_linkedin_url)
         return self
 
 

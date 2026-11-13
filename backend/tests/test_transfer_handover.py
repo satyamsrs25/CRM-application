@@ -8,7 +8,7 @@ NOTE = "Interested, wants pricing"
 
 def test_transfer_keeps_the_stage_and_moves_the_open_tasks_to_the_new_owner(client):
     ravi = login_as(client, 2)
-    lead = ravi.post("/api/leads", json={"last_name": "Handover", "company": "Relay Co"}).json()
+    lead = ravi.post("/api/leads", json={"first_name": "Test", "source": "Website", "last_name": "Handover", "company": "Relay Co"}).json()
     ravi.put(f"/api/leads/{lead['id']}/stage", json={"stage": "Nurturing", "note": NOTE, "task": TASK})
     # a task a Manager gave someone else on this lead stays theirs
     other = login_as(client, 1).post("/api/tasks", json={"title": "Manager check", "due_date": "2030-01-20T10:00:00",
@@ -36,19 +36,19 @@ def test_a_task_given_to_a_third_person_stays_with_them(client):
     from app.main import app
     from app.models import Task
     ravi = login_as(client, 2)
-    lead = ravi.post("/api/leads", json={"last_name": "Third", "company": "Relay Co"}).json()
+    lead = ravi.post("/api/leads", json={"first_name": "Test", "source": "Website", "last_name": "Third", "company": "Relay Co"}).json()
     db = next(app.dependency_overrides[get_db]())
     db.add(Task(title="Admin review", due_date=__import__("datetime").datetime(2030, 2, 1, 10), owner_id=3,
                 status="Open", is_auto=False, lead_id=lead["id"]))
     db.commit()
     login_as(client, 1).post(f"/api/leads/{lead['id']}/transfer", json={"to_user_id": 1})
     owners = {t["title"]: t["owner_id"] for t in login_as(client, 1).get(f"/api/leads/{lead['id']}").json()["tasks"]}
-    assert owners["Admin review"] == 3 and owners["Make first contact - Third"] == 1
+    assert owners["Admin review"] == 3 and owners["Make first contact - Test Third"] == 1
 
 
 def test_admin_moves_someones_records_with_transfer_history(client):
     ravi = login_as(client, 2)
-    lead = ravi.post("/api/leads", json={"last_name": "Leaver", "company": "Relay Co"}).json()
+    lead = ravi.post("/api/leads", json={"first_name": "Test", "source": "Website", "last_name": "Leaver", "company": "Relay Co"}).json()
     res = login_as(client, 3).post("/api/users/2/transfer", json={"to_user_id": 1, "deactivate": False})
     assert res.status_code == 200, res.text
     detail = login_as(client, 1).get(f"/api/leads/{lead['id']}").json()
@@ -59,7 +59,7 @@ def test_admin_moves_someones_records_with_transfer_history(client):
 
 def test_opportunity_owner_change_moves_its_follow_ups(client):
     ravi = login_as(client, 2)
-    lead = ravi.post("/api/leads", json={"last_name": "Deal", "company": "Relay Co"}).json()
+    lead = ravi.post("/api/leads", json={"first_name": "Test", "source": "Website", "last_name": "Deal", "company": "Relay Co"}).json()
     opp = ravi.post(f"/api/leads/{lead['id']}/convert", json={
         "note": NOTE, "task": TASK, "completed_stages": ["Nurturing", "Demo"], "expected_value": 1000}).json()["opportunity"]
     res = login_as(client, 3).put(f"/api/opportunities/{opp['id']}", json={"owner_id": 1})

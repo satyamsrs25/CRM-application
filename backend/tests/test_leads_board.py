@@ -11,7 +11,7 @@ BOARD = ["Unqualified", "New", "Nurturing", "Revisit", "Demo", "Converted", "Los
 
 
 def lead(client, last_name, **extra):
-    res = client.post("/api/leads", json={"last_name": last_name, "company": "Board Synthetic Co", "welcome_email": False,
+    res = client.post("/api/leads", json={"first_name": "Test", "source": "Website", "last_name": last_name, "company": "Board Synthetic Co", "welcome_email": False,
                                           "email": f"board{next(EMAILS)}@example.test", **extra})
     assert res.status_code == 201, res.text
     return res.json()
@@ -45,7 +45,7 @@ def test_each_column_counts_only_its_status_within_the_list_view_and_search(clie
                                                               "notify_customer": False}).status_code == 200
 
     assert counts(client) == {"New": 1, "Nurturing": 1, "Revisit": 0, "Demo": 1, "Converted": 1, "Unqualified": 1, "Lost": 1}
-    assert [l["name"] for l in column(client, "Nurturing")["items"]] == ["Warm"]
+    assert [l["name"] for l in column(client, "Nurturing")["items"]] == ["Test Warm"]
     card = column(client, "Nurturing")["items"][0]
     assert (card["company"], card["title"], card["owner_name"]) == ("Board Synthetic Co", "Buyer", "Ravi Kumar")
     # open list views have no closed leads; closed views only their own status
@@ -62,6 +62,6 @@ def test_columns_show_only_leads_the_user_may_see(client):
     lead(client, "Ravis")  # Ravi (Salesperson)
     lead(login_as(client, 1), "Priyas")  # Priya (Manager)
     assert counts(login_as(client, 2))["New"] == 1  # Ravi sees only his own
-    assert [l["name"] for l in column(client, "New")["items"]] == ["Ravis"]
+    assert [l["name"] for l in column(client, "New")["items"]] == ["Test Ravis"]
     assert counts(login_as(client, 1))["New"] == 2  # a Manager sees the team
     assert counts(login_as(client, 1), view="my_open")["New"] == 1

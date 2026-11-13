@@ -19,7 +19,8 @@ def outbox(monkeypatch):
 
 
 def new_lead(client, **extra):
-    body = {"last_name": "Menon", "first_name": "Priya", "company": "Brightline", "welcome_email": False} | extra
+    body = {"last_name": "Menon", "first_name": "Priya", "company": "Brightline", "source": "Website",
+            "welcome_email": False} | extra
     res = client.post("/api/leads", json=body)
     assert res.status_code == 201, res.text
     return res.json()
@@ -50,7 +51,7 @@ def test_lead_links_are_saved_cleaned_and_copied_on_convert(client, outbox):
     assert lead["linkedin_url"] == "https://linkedin.com/in/priya"
     assert lead["company_website"] == "https://brightline.example"
     assert lead["annual_revenue"] == 5000000 and lead["employees"] == 120
-    bad = client.post("/api/leads", json={"last_name": "X", "company": "Y", "linkedin_url": "twitter.com/x"})
+    bad = client.post("/api/leads", json={"first_name": "Test", "source": "Website", "last_name": "X", "company": "Y", "linkedin_url": "twitter.com/x"})
     assert bad.status_code == 422
     res = client.post(f"/api/leads/{lead['id']}/convert", json={"task": TASK, "completed_stages": ["New", "Nurturing", "Demo"], "note": "Synthetic test note"}).json()
     assert res["account"]["website"] == "https://brightline.example" and res["account"]["employees"] == 120

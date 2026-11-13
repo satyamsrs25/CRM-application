@@ -27,7 +27,7 @@ def ist(delta=timedelta(0)) -> str:
 
 
 def new_lead(client, name="Demo"):
-    res = client.post("/api/leads", json={"last_name": name, "company": f"{name} Synthetic Co"})
+    res = client.post("/api/leads", json={"first_name": "Test", "source": "Website", "last_name": name, "company": f"{name} Synthetic Co"})
     assert res.status_code == 201, res.text
     return res.json()
 

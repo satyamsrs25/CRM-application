@@ -12,7 +12,7 @@ PRIYA, RAVI, ASHA = 1, 2, 3
 
 
 def new_lead(client, email, company="Brightline Logistics", first="Mira", last="Shah", **extra):
-    res = client.post("/api/leads", json={"first_name": first, "last_name": last, "company": company, "email": email,
+    res = client.post("/api/leads", json={"source": "Website", "first_name": first, "last_name": last, "company": company, "email": email,
                                           "welcome_email": False, **extra})
     assert res.status_code == 201, res.text
     return res.json()
@@ -23,6 +23,12 @@ def convert(client, lead_id, **body):
 
 
 def create(client, **body):
+    """New Opportunity. A new contact gets New Contact's required fields when the test leaves them out: the first name
+    "Test" and an email from the last name (the same last name is the same person, as before)."""
+    if "primary_contact_id" not in body:
+        body.setdefault("contact_first_name", "Test")
+        if body.get("contact_last_name"):
+            body.setdefault("contact_email", f"{body['contact_last_name'].lower()}@contact.example")
     return client.post("/api/opportunities", json={"task": TASK, "note": "Synthetic opening note", **body})
 
 
@@ -91,8 +97,8 @@ def test_a_different_opportunity_or_person_is_allowed_and_a_closed_one_can_be_re
 
 def test_from_the_account_page_with_an_existing_contact(client):
     acc = client.post("/api/accounts", json={"name": "Northwind Health", "industry": "Healthcare", "phone": "+1 555 0100"}).json()
-    contact = client.post("/api/contacts", json={"last_name": "Fernandes", "email": "fernandes@northwind.test",
-                                                 "phone": "+1 555 0120", "account_id": acc["id"]}).json()
+    contact = client.post("/api/contacts", json={"first_name": "Rui", "last_name": "Fernandes", "email": "fernandes@northwind.test",
+                                                 "phone": "+1 212-555-0120", "account_id": acc["id"]}).json()
     res = create(client, name="Northwind pilot", account_id=acc["id"], primary_contact_id=contact["id"])
     assert res.status_code == 201 and res.json()["reused"] == {"account": True, "contact": True}
     assert create(client, name="Northwind pilot", account_id=acc["id"], primary_contact_id=contact["id"]).status_code == 409
@@ -103,9 +109,11 @@ def test_from_the_account_page_with_an_existing_contact(client):
 def test_new_opportunity_rules(client):
     assert create(client, name="X", contact_last_name="Shah").status_code == 422  # no account
     assert create(client, name="X", account_name="Acme").status_code == 422  # no contact
-    res = client.post("/api/opportunities", json={"name": "X", "account_name": "Acme", "contact_last_name": "S", "task": TASK})
+    res = client.post("/api/opportunities", json={"name": "X", "account_name": "Acme", "contact_first_name": "Sam",
+                                                   "contact_last_name": "S", "contact_email": "s@acme.test", "task": TASK})
     assert res.status_code == 422  # no note
-    res = client.post("/api/opportunities", json={"name": "X", "account_name": "Acme", "contact_last_name": "S", "note": "n"})
+    res = client.post("/api/opportunities", json={"name": "X", "account_name": "Acme", "contact_first_name": "Sam",
+                                                   "contact_last_name": "S", "contact_email": "s@acme.test", "note": "n"})
     assert res.status_code == 422  # no first task
     # a Salesperson can't give it to someone else; a Manager can
     assert create(login_as(client, RAVI), name="X", account_name="Acme", contact_last_name="S",
@@ -139,7 +147,7 @@ def test_convert_reuses_the_account_and_contact_and_blocks_a_second_salesperson(
 def test_convert_with_a_chosen_account_still_reuses_the_contact(client):
     acc = client.post("/api/accounts", json={"name": "Northwind Health", "industry": "Healthcare", "phone": "+1 555 0100"}).json()
     contact = client.post("/api/contacts", json={"first_name": "Mira", "last_name": "Shah", "email": "mira@northwind.test",
-                                                 "phone": "+1 555 0121", "account_id": acc["id"]}).json()
+                                                 "phone": "+1 212-555-0121", "account_id": acc["id"]}).json()
     lead = new_lead(client, "mira.s@northwind.test", company="Something Else")
     res = convert(client, lead["id"], account_id=acc["id"])
     assert res.status_code == 200, res.text
