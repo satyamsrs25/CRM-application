@@ -858,6 +858,144 @@ function EmailDashboard({ totals, tab, setTab }) {
 }
 
 // After New Campaign: how many emails were queued and when sending finishes (the backend paces them)
+// ---------- Bulk-email progress pop-up ----------
+// A campaign that was just sent (from Email Campaigns, or from leads selected on the Leads page) opens a small pop-up in
+// the corner: Sent, Queued and Failed (Bounced / Not sent only when there are any), refreshed every few seconds while
+// you keep working anywhere in the app. It says when sending is done, and can be minimised or closed (sending carries on).
+const WATCH_KEY = "crm-campaign-watch"; // the campaigns being watched, kept for this browser tab
+const WATCH_EVENT = "crm-campaign-sending";
+const POLL_MS = 5000;
+
+export function watchCampaign(campaign) {
+  window.dispatchEvent(new CustomEvent(WATCH_EVENT, { detail: campaign }));
+}
+
+function readWatched() {
+  try {
+    return JSON.parse(sessionStorage.getItem(WATCH_KEY) || "[]");
+  } catch {
+    return [];
+  }
+}
+
+function saveWatched(ids) {
+  try {
+    sessionStorage.setItem(WATCH_KEY, JSON.stringify(ids));
+  } catch {
+    /* private window: not kept after a refresh */
+  }
+}
+
+function CampaignProgressCard({ id, first, onClose }) {
+  const [c, setC] = useState(first || null);
+  const [min, setMin] = useState(false);
+  const [error, setError] = useState("");
+  const counts = c?.counts || {};
+  const done = c && (["Completed", "Cancelled"].includes(c.status) || (c.status !== "Scheduled" && !counts.Queued && counts.total > 0));
+  useEffect(() => {
+    let live = true;
+    const load = () =>
+      api
+        .campaign(id, { limit: 1 })
+        .then((value) => live && (setC(value), setError("")))
+        .catch((err) => live && setError(err.message));
+    load();
+    const timer = done ? null : setInterval(load, POLL_MS);
+    return () => {
+      live = false;
+      if (timer) clearInterval(timer);
+    };
+  }, [id, done]);
+  const total = (counts.total || 0) - (counts.Skipped || 0) - (counts.Cancelled || 0);
+  const finished = (counts.Sent || 0) + (counts.Invalid || 0) + (counts.Failed || 0);
+  const pct = total ? Math.round((finished / total) * 100) : 0;
+  const tiles = [
+    ["Sent", counts.Sent, "ok"],
+    ["Queued", counts.Queued, "info"],
+    ["Failed", counts.Failed, "bad"],
+    ...(counts.Invalid ? [["Bounced", counts.Invalid, "bad"]] : []),
+    ...(counts.Skipped ? [["Not sent", counts.Skipped, "warn"]] : []),
+  ];
+  const state = !c ? "Loading…" : done ? (c.status === "Cancelled" ? "Cancelled" : "Sending finished") : c.status === "Paused" ? "Paused" : "Sending…";
+  return (
+    <section className={`campaign-pop${min ? " min" : ""}${done ? " done" : ""}`} role="status" aria-live="polite" aria-label={`Bulk email ${c?.name || ""}`}>
+      <header>
+        <Icon name="mail" size={16} />
+        <div>
+          <b>{c?.name || "Bulk email"}</b>
+          <small>
+            {state}
+            {!done && c && ` • ${pct}%`}
+          </small>
+        </div>
+        <button className="icon-btn" aria-label={min ? "Show progress" : "Minimise"} title={min ? "Show" : "Minimise"} onClick={() => setMin(!min)}>
+          <Icon name={min ? "up" : "down"} size={14} />
+        </button>
+        <button className="icon-btn" aria-label="Close" title={done ? "Close" : "Close (sending carries on)"} onClick={onClose}>
+          <Icon name="close" size={14} />
+        </button>
+      </header>
+      {!min && (
+        <div className="campaign-pop-body">
+          <div className="campaign-progress">
+            <div className="bar">
+              <span style={{ width: `${pct}%` }} />
+            </div>
+          </div>
+          <ul className="campaign-pop-counts">
+            {tiles.map(([label, value, tone]) => (
+              <li key={label} className={tone}>
+                <b>{n(value)}</b>
+                <span>{label}</span>
+              </li>
+            ))}
+          </ul>
+          {error && <p className="form-error">{error}</p>}
+          {!done && c?.eta?.finish_by && counts.Queued > 0 && (
+            <small className="muted">Should finish by {new Date(c.eta.finish_by).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}. You can keep working.</small>
+          )}
+          {done && counts.Failed > 0 && <small className="muted">Some emails failed: open the campaign to see why.</small>}
+          <a className="sf-button small" href={`#/campaigns/${id}`}>
+            View Campaign
+          </a>
+        </div>
+      )}
+    </section>
+  );
+}
+
+// Rendered once by App: every campaign being watched, newest at the bottom
+export function CampaignProgressPopups() {
+  const [watched, setWatched] = useState(() => readWatched().map((id) => ({ id })));
+  useEffect(() => {
+    const add = (e) => {
+      const c = e.detail;
+      if (!c?.id) return;
+      setWatched((list) => {
+        const next = [...list.filter((w) => w.id !== c.id), { id: c.id, first: c }].slice(-3);
+        saveWatched(next.map((w) => w.id));
+        return next;
+      });
+    };
+    window.addEventListener(WATCH_EVENT, add);
+    return () => window.removeEventListener(WATCH_EVENT, add);
+  }, []);
+  const close = (id) =>
+    setWatched((list) => {
+      const next = list.filter((w) => w.id !== id);
+      saveWatched(next.map((w) => w.id));
+      return next;
+    });
+  if (!watched.length) return null;
+  return (
+    <div className="campaign-pops">
+      {watched.map((w) => (
+        <CampaignProgressCard key={w.id} id={w.id} first={w.first} onClose={() => close(w.id)} />
+      ))}
+    </div>
+  );
+}
+
 export function queuedMessage(c) {
   const count = c.counts?.Queued ?? 0;
   const finish = c.eta?.finish_by ? new Date(c.eta.finish_by) : null;
@@ -1006,6 +1144,7 @@ export default function CampaignsPage({ id, user, data, notify }) {
           onCreated={(c) => {
             setCreating(false);
             notify(queuedMessage(c));
+            watchCampaign(c); // the progress pop-up
             window.location.hash = `#/campaigns/${c.id}`;
           }}
         />

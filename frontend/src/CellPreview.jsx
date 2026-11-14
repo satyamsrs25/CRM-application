@@ -1,7 +1,7 @@
-// Leads table: long values (name, company, title, email, owner, created by) stay on one line and end in "…", so rows
+// Leads table: long values (name, company, title, email, owner) stay on one line and end in "…", so rows
 // stay compact. The full value opens in one floating preview for the whole table:
 // - hover the cell (the preview stays while the pointer is on it, so its text can be selected and copied);
-// - keyboard: focus the name or email link, or the ⋯ button of a cut-off company, title, owner or creator;
+// - keyboard: focus the name or email link, or the ⋯ button of a cut-off company, title or owner;
 // - touch: tap ⋯ (shown on every cut-off value); tap it again, or anywhere else, to close.
 // Escape, scrolling and resizing close it, and it is placed inside the viewport. Phone numbers are never shown here
 // (the Phone column keeps its own eye button).

@@ -1,5 +1,5 @@
 import AssistantPage from "./AssistantPage";
-import CampaignsPage from "./CampaignsPage";
+import CampaignsPage, { CampaignProgressPopups } from "./CampaignsPage";
 import React, { useEffect, useState } from "react";
 import { api, setToken } from "./api";
 import { senderClosing } from "./domain";
@@ -334,6 +334,8 @@ function Workspace({ user, onLogout, onUserChanged }) {
           }}
         />
       )}
+      {/* bulk emails being sent: Sent / Queued / Failed, refreshed while you work */}
+      <CampaignProgressPopups />
       {toast && (
         <div className="toast" role="status">
           <Icon name="check" size={16} />

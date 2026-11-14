@@ -1725,7 +1725,7 @@ test("Home: one dashboard per role, each card with its permission", async () => 
 
 test("Lead transfer requests, the lead list's Created By / Transferred To, and duplicate warnings", () => {
   const table = source("./LeadsTable.jsx");
-  assert.match(table, /\["Created By", "created_by", \d+\]/);
+  assert.doesNotMatch(table, /"Created By"/); // the owner who added a lead is its Owner: only Owner and Transferred To
   assert.match(table, /\["Transferred To", "transferred", \d+\]/);
   assert.match(table, /l\.last_transferred_to/);
   const api = source("./api.js");
@@ -2310,8 +2310,10 @@ test("New Campaign: the button says Send and the number of recipients is shown b
 test("Leads table: no Wrap text; cut-off names, companies, emails and owners open in a preview, never the phone", () => {
   const table = source("./LeadsTable.jsx");
   assert.doesNotMatch(table, /setWrap|tool-toggle|"wrap"|>\s*Wrap text/);
-  for (const label of ["name", "company", "title", "email", "owner", "creator"])
+  for (const label of ["name", "company", "title", "email", "owner"])
     assert.match(table, new RegExp(`label="${label}"`), label);
+  // Owner and Transferred To (no Created By column): the Owner keeps the preview; every row cell has its column
+  assert.doesNotMatch(table, /label="creator"|created_by_name/);
   assert.match(table, /<PhoneReveal value=\{l\.phone\} \/>/); // the phone keeps its own mask and eye button
   assert.doesNotMatch(table, /value=\{l\.phone\}\s+label=/);
   assert.match(table, /<CellPreview ref=\{preview\} \/>/);
@@ -2390,4 +2392,22 @@ test("New Lead form wiring: Phone with its country beside it, required star; the
   assert.equal("phone_country" in leadPayload(values, true), false); // edits don't send it
   // Contact Phone stays optional
   assert.equal(contactProblems({ first_name: "Mia", last_name: "Noph", email: "mia@phone-optional.example", phone: "" }).phone, undefined);
+});
+
+test("Bulk email: a progress pop-up with Sent / Queued / Failed opens when a campaign is sent", () => {
+  const page = source("./CampaignsPage.jsx");
+  for (const label of ['["Sent", counts.Sent', '["Queued", counts.Queued', '["Failed", counts.Failed']) assert.ok(page.includes(label), label);
+  assert.match(page, /export function CampaignProgressPopups\(\)/);
+  assert.match(page, /api\s*\.campaign\(id, \{ limit: 1 \}\)/); // refreshed while sending (one recipient row is enough)
+  // opened from Email Campaigns and from leads selected on the Leads page
+  assert.match(page, /watchCampaign\(c\); \/\/ the progress pop-up/);
+  assert.match(source("./LeadsTable.jsx"), /watchCampaign\(c\); \/\/ the progress pop-up/);
+  assert.match(source("./App.jsx"), /<CampaignProgressPopups \/>/);
+});
+
+test("Account page: a Leads card with the account's leads", () => {
+  const pages = source("./RelatedPages.jsx");
+  assert.match(pages, /<AccountLeads accountId=\{account\.id\} \/>/);
+  assert.match(pages, /api\s*\.accountLeads\(accountId\)/);
+  assert.match(source("./api.js"), /accountLeads: \(id\) => apiRequest\(`\/accounts\/\$\{id\}\/leads`\)/);
 });

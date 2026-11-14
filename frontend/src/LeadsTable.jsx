@@ -9,7 +9,7 @@ import { api, apiRequest } from "./api";
 import { CellPreview, markCutCells, PreviewCell } from "./CellPreview";
 import { leadBoardColumns, leadConvertChoice } from "./domain";
 import LeadsKanban from "./LeadsKanban";
-import { NewCampaign, queuedMessage } from "./CampaignsPage";
+import { NewCampaign, queuedMessage, watchCampaign } from "./CampaignsPage";
 import { can, canCreateSales } from "./permissions";
 import { DateCell, Icon, PAGE_SIZES, Pagination, PhoneReveal, StageBadge } from "./ui";
 import { dateTime } from "./format";
@@ -40,7 +40,6 @@ const COLUMNS = [
   ["Status", "stage", 124],
   ["Source", "source", 104],
   ["Owner", "owner", 144],
-  ["Created By", "created_by", 144],
   // who the lead was last transferred to, and when (empty when it never changed owner)
   ["Transferred To", "transferred", 200],
   ["Created", "created", 108],
@@ -676,8 +675,9 @@ export default function LeadsTable({
                         <StageBadge stage={l.stage} />
                       </td>
                       <Cell title={l.uploaded_from ? `Uploaded from ${l.uploaded_from}` : l.source}>{l.source}</Cell>
+                      {/* Owner (the full name on hover, focus or ⋯); there is no Created By column: the owner who
+                          added a lead is its Owner, and Transferred To shows a later owner */}
                       <PreviewCell preview={preview} value={l.owner_name} label="owner" className="strong" />
-                      <PreviewCell preview={preview} value={l.created_by_name} label="creator" />
                       <Cell
                         className="transferred"
                         title={l.last_transferred_to ? `Transferred to ${l.last_transferred_to} on ${dateTime(l.last_transferred_at)}` : "Not transferred"}
@@ -766,6 +766,7 @@ export default function LeadsTable({
             setCampaignFor(null);
             setSelected(new Set());
             notify(queuedMessage(c));
+            watchCampaign(c); // the progress pop-up
             window.location.hash = `#/campaigns/${c.id}`;
           }}
         />

@@ -7246,3 +7246,96 @@ p.list-state {
   color: var(--text-weak);
   font-size: 13px;
 }
+
+/* Bulk-email progress pop-up (bottom left: reminders use the bottom right; CampaignsPage.jsx CampaignProgressPopups) */
+.campaign-pops {
+  position: fixed;
+  left: 20px;
+  bottom: 20px;
+  z-index: 60;
+  display: grid;
+  gap: 10px;
+  width: min(340px, calc(100vw - 32px));
+}
+.campaign-pop {
+  background: var(--card, #fff);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 8px 28px rgb(0 0 0 / 0.18);
+  overflow: hidden;
+}
+.campaign-pop header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 12px 12px 16px;
+  background: #eef4ff;
+  color: #0b5cab;
+}
+.campaign-pop.done header {
+  background: #e5f6ea;
+  color: #1b5e2b;
+}
+.campaign-pop header > div {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+}
+.campaign-pop header b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text, #181818);
+}
+.campaign-pop header small {
+  font-size: 12px;
+}
+.campaign-pop-body {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px 16px;
+}
+.campaign-pop-body .sf-button {
+  justify-self: start;
+}
+.campaign-pop-counts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(60px, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.campaign-pop-counts li {
+  display: grid;
+  justify-items: center;
+  padding: 8px 4px;
+  border-radius: 8px;
+  background: #f3f3f3;
+}
+.campaign-pop-counts b {
+  font-size: 20px;
+  font-weight: 600;
+}
+.campaign-pop-counts span {
+  font-size: 12px;
+  color: var(--text-weak);
+}
+.campaign-pop-counts .ok b {
+  color: #2e844a;
+}
+.campaign-pop-counts .info b {
+  color: #0b5cab;
+}
+.campaign-pop-counts .bad b {
+  color: #ba0517;
+}
+.campaign-pop-counts .warn b {
+  color: #8c4b02;
+}
+@media (max-width: 720px) {
+  .campaign-pops {
+    left: 16px;
+    bottom: 16px;
+  }
+}
