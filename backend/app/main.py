@@ -52,8 +52,17 @@ def upgrade_database() -> None:
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_lead_transfers_lead ON lead_transfers (lead_id)"))
         # who added each lead (older leads: their first owner) and requests to have someone else's lead transferred
         conn.execute(text("ALTER TABLE leads ADD COLUMN IF NOT EXISTS created_by_id INT REFERENCES users(id)"))
-        conn.execute(text("""UPDATE leads l SET created_by_id = COALESCE((SELECT t.from_user_id FROM lead_transfers t
-            WHERE t.lead_id = l.id ORDER BY t.id LIMIT 1), l.owner_id) WHERE l.created_by_id IS NULL"""))
+        # Filling in created_by_id must not change a lead's Last Modified: the leads updated_at trigger is switched off
+        # for this one UPDATE only, inside this transaction (a failure rolls both back). Skipped when nothing is missing.
+        if conn.execute(text("SELECT EXISTS (SELECT 1 FROM leads WHERE created_by_id IS NULL)")).scalar():
+            stamped = conn.execute(text("""SELECT EXISTS (SELECT 1 FROM pg_trigger
+                WHERE tgname = 'trg_leads_updated_at' AND tgrelid = 'leads'::regclass)""")).scalar()
+            if stamped:
+                conn.execute(text("ALTER TABLE leads DISABLE TRIGGER trg_leads_updated_at"))
+            conn.execute(text("""UPDATE leads l SET created_by_id = COALESCE((SELECT t.from_user_id FROM lead_transfers t
+                WHERE t.lead_id = l.id ORDER BY t.id LIMIT 1), l.owner_id) WHERE l.created_by_id IS NULL"""))
+            if stamped:
+                conn.execute(text("ALTER TABLE leads ENABLE TRIGGER trg_leads_updated_at"))
         conn.execute(text("""CREATE TABLE IF NOT EXISTS lead_transfer_requests (
             id SERIAL PRIMARY KEY, lead_id INT NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
             requested_by_id INT NOT NULL REFERENCES users(id), owner_id INT NOT NULL REFERENCES users(id),

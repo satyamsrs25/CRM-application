@@ -497,7 +497,8 @@ def run_tool(db: Session, name: str, args: dict) -> tuple[dict, dict | None]:
     if name == "create_lead":
         fields = {k: a[k] for k in LEAD_FIELDS if k in a}
         data = schemas.LeadCreate(**fields, owner_id=_user_id(db, a.get("owner_name")))
-        out = _plain(leads.create_lead(data=data, db=db))
+        # the shared creation (owner and Manager notifications); the New Lead form's required Phone doesn't apply here
+        out = _plain(leads.add_lead(db, data))
         return _lead_row(out), _link("Lead", out)
     if name == "update_lead":
         fields = {k: a[k] for k in LEAD_FIELDS if k in a}

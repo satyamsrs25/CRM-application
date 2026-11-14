@@ -72,6 +72,11 @@ email, tasks and reminders, notifications, lead conversion, closing a deal, and 
   shows a required **Specify lead source** box (up to 100 characters), saved with the lead and shown beside its source.
   Older leads without these values stay viewable, and an edit that doesn't touch them still saves (the rule applies
   when the user changes that field or the Lead Source). The same rules apply in the API and the AI Assistant.
+- The New Lead form (and `POST /api/leads`) also needs a valid **Phone**, with its country beside it as on New Contact
+  (India +91 first chosen; a number starting with + is checked for its own country code; business landlines are
+  fine). It is saved in international format. Uploads and the AI Assistant keep Phone optional, editing a lead keeps
+  it optional, and older leads without a phone still save. LinkedIn autofill fills it only with a valid number that
+  carries its country code; otherwise it stays blank for the user to enter.
 - LinkedIn autofill on New Lead: paste a LinkedIn profile URL and the empty fields are filled with the details Apollo
   returns (name, title, a work email Apollo marks verified, direct business phone, and the current employer's
   company name, industry, website and LinkedIn page). These are Apollo's data, not checked by the CRM: review them
@@ -129,6 +134,13 @@ email, tasks and reminders, notifications, lead conversion, closing a deal, and 
 **Notifications and email**
 - In-app notifications (bell and pop-ups) with a 30-day history, plus due-date reminders.
 - Per-user email notification preferences.
+- New lead: its owner is told ("A new lead has been created and assigned to you.") and so is the owner's active
+  Manager (Reports To): "A new lead has been created for your team member." There is no approval step for new leads.
+  Each person's email follows their own settings (the owner: assignments when someone else created it, otherwise stage
+  updates; the Manager: stage updates); the bell always shows it. A Manager isn't told about a lead they created. An
+  upload sends the Manager one summary per team member, never one per row.
+- Opportunity Won, Opportunity Lost and Lead Lost: the record's owner is told (bell, and email by their stage-updates
+  setting), with the outcome (final amount in the deal's currency, or the lost reason and notes) and a link.
 - Write an email from any record (or draft it with **Help me write**), review To, Cc, Subject and Message, then
   **Open in Outlook** opens it in Outlook on the web in a new tab, where attachments are added and it is sent. The CRM
   doesn't send it or log it as sent. A draft too long for an Outlook link is never cut: the composer offers to copy the

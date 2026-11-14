@@ -218,7 +218,9 @@ def test_every_role_creates_contacts_with_the_same_rules(client, who):
 
 def test_lead_conversion_still_creates_an_account_and_contact_as_before(client):
     lead = client.post("/api/leads", json={"source": "Website", "first_name": "Bo", "last_name": "Lindqvist", "company": "Synthetic Fjord AB",
-                                           "email": "bo@fjord.example", "phone": "12345", "welcome_email": False}).json()
+                                           "email": "bo@fjord.example", "phone": "98765 43210", "welcome_email": False}).json()
+    # an older phone format on the lead (New Lead now needs a valid number; an edit keeps a phone as typed)
+    assert client.put(f"/api/leads/{lead['id']}", json={"phone": "12345"}).status_code == 200
     res = client.post(f"/api/leads/{lead['id']}/convert", json={
         "note": "Synthetic conversion", "task": TASK, "completed_stages": ["New", "Nurturing", "Demo"]})
     assert res.status_code == 200, res.text

@@ -22,6 +22,20 @@ from app.routers.auth import hash_password  # noqa: E402
 from app.security import make_token  # noqa: E402
 
 
+# The New Lead form (POST /api/leads) needs a valid Phone (Manimohan issue 35). Tests about other things don't send one,
+# so a request that doesn't mention "phone" at all gets this valid number. Tests of the phone rule send "phone"
+# themselves (None or "" for a missing one), or use client.request("POST", ...) to send no phone key at all.
+TEST_LEAD_PHONE = "+91 98765 43210"
+
+
+class CrmTestClient(TestClient):
+    def post(self, url, *args, **kwargs):
+        body = kwargs.get("json")
+        if str(url).split("?")[0].rstrip("/") == "/api/leads" and isinstance(body, dict) and "phone" not in body:
+            kwargs["json"] = {**body, "phone": TEST_LEAD_PHONE}
+        return super().post(url, *args, **kwargs)
+
+
 def login_as(client, user_id: int):
     """The next requests are made as this user (same as logging in)."""
     client.headers["Authorization"] = f"Bearer {make_token(user_id)}"
@@ -59,5 +73,5 @@ def client():
             db.close()
 
     app.dependency_overrides[get_db] = override
-    yield login_as(TestClient(app), 2)  # no "with": skips startup, so the real database is never opened
+    yield login_as(CrmTestClient(app), 2)  # no "with": skips startup, so the real database is never opened
     app.dependency_overrides.clear()

@@ -25,6 +25,8 @@ test(
       first_name: "Integration",
       last_name: `Check ${Date.now()}`,
       company: "Temporary test company",
+      phone: "98765 43210", // New Lead needs a valid phone (India +91 unless another country is chosen)
+      phone_country: "IN",
       source: "Phone",
       owner_id: String(login.user.id),
     };

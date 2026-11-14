@@ -43,7 +43,8 @@ export async function apiRequest(path, { method = "GET", body, signal } = {}) {
       : typeof detail === "string"
         ? detail
         : "The backend could not complete this request.";
-    throw new Error(message);
+    // the API's field errors stay with the error, so a form can show each under its field (domain.leadServerProblems)
+    throw Object.assign(new Error(message), { status: response.status, details: Array.isArray(detail) ? detail : null });
   }
   if (result === null)
     throw new Error("The backend returned an unexpected response.");
@@ -77,6 +78,8 @@ export function leadPayload(values, editing = false) {
     owner_id: numeric(values.owner_id),
   };
   if (editing) payload.demo_date = fromBusinessInput(optional(values.demo_date)); // typed in IST, sent with its offset
+  // New Lead: the phone's country from the selector beside it (the server checks the number for it; not saved)
+  else if (values.phone_country) payload.phone_country = values.phone_country;
   if (values.confirm_email_domain === "1") payload.confirm_email_domain = true; // checked: email domain differs from website
   return payload;
 }

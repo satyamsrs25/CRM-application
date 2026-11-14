@@ -194,6 +194,7 @@ export function ContactPage({ id, data, openEmail, emailVersion }) {
               name: contact.full_name,
               email: contact.email,
               firstName: contact.first_name,
+              noEmail: "This contact has no email address.",
             })
           }
         >

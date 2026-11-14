@@ -74,7 +74,17 @@ export const UPLOAD_SOURCE = "Upload";
 // check_new_lead_rules): First Name; the LinkedIn Profile URL when Lead Source is LinkedIn; what the source is
 // ("Specify lead source") when it is Other. An older lead may lack these values: when editing, a rule applies only
 // if the lead already had that value or the edit changes the Lead Source to it, so an unrelated edit still saves.
+// Last Name, Company and Lead Source are always required (the API refuses them empty); Email on every new lead, and when
+// editing a lead that has one. Phone on a new lead (the New Lead form only; the server checks it the same way): a valid
+// number for the chosen country (India +91 by default), or with its own +country code. Editing keeps it as before
+// (optional, as typed), so an older lead without a phone still saves.
 export const LEAD_FIRST_NAME_REQUIRED = "Enter the lead's first name.";
+export const LEAD_LAST_NAME_REQUIRED = "Enter the lead's last name.";
+export const LEAD_COMPANY_REQUIRED = "Enter the lead's company.";
+export const LEAD_EMAIL_REQUIRED = "Enter the lead's email address.";
+export const LEAD_EMAIL_INVALID = "Enter a valid email address, like name@company.com.";
+export const LEAD_SOURCE_REQUIRED = "Choose the lead source.";
+export const LEAD_PHONE_REQUIRED = "Enter the lead's phone number."; // the server's routers/leads.py LEAD_PHONE_REQUIRED
 export const SOURCE_DETAIL_REQUIRED = "Specify the lead source.";
 export const LINKEDIN_PROFILE_REQUIRED = "Enter the lead's LinkedIn Profile URL (required when Lead Source is LinkedIn).";
 export const SOURCE_DETAIL_MAX = 100; // leads.source_detail VARCHAR(100)
@@ -94,6 +104,8 @@ export function leadFieldsRequired(source, record = null) {
   const had = (name) => filled(record?.[name]);
   return {
     first_name: !record || had("first_name"),
+    email: !record || had("email"),
+    phone: !record, // New Lead only
     source_detail: source === "Other" && (!record || record.source !== "Other" || had("source_detail")),
     linkedin_url: source === "LinkedIn" && (!record || record.source !== "LinkedIn" || had("linkedin_url")),
   };
@@ -108,12 +120,25 @@ export function webAddressProblem(value, { linkedin = false } = {}) {
   if (linkedin && host !== "linkedin.com" && !host.endsWith(".linkedin.com")) return "Enter a LinkedIn address (linkedin.com/...)";
   return "";
 }
-// { field: message } for the lead form's values (record: the lead being edited, or null for a new lead).
-// Company Website and Company LinkedIn URL are optional; when given, they must be valid addresses.
+// { field: message } for the lead form's values (record: the lead being edited, or null for a new lead), shown under
+// each field. Company Website and Company LinkedIn URL are optional; when given, they must be valid addresses. The
+// email's format is checked when it is new or changed (an older lead's saved email doesn't block an unrelated edit).
 export function leadFormProblems(values, record = null) {
   const problems = {};
   const need = leadFieldsRequired(values.source, record);
   if (need.first_name && !filled(values.first_name)) problems.first_name = LEAD_FIRST_NAME_REQUIRED;
+  if (!filled(values.last_name)) problems.last_name = LEAD_LAST_NAME_REQUIRED;
+  if (!filled(values.company)) problems.company = LEAD_COMPANY_REQUIRED;
+  const email = String(values.email ?? "").trim();
+  if (!email) {
+    if (need.email) problems.email = LEAD_EMAIL_REQUIRED;
+  } else if (!EMAIL_FORMAT.test(email) && email.toLowerCase() !== String(record?.email ?? "").trim().toLowerCase())
+    problems.email = LEAD_EMAIL_INVALID;
+  if (need.phone) {
+    const problem = filled(values.phone) ? phoneProblem(values.phone, values.phone_country || DEFAULT_PHONE_COUNTRY) : LEAD_PHONE_REQUIRED;
+    if (problem) problems.phone = problem;
+  }
+  if (!filled(values.source)) problems.source = LEAD_SOURCE_REQUIRED;
   if (need.source_detail && !filled(values.source_detail)) problems.source_detail = SOURCE_DETAIL_REQUIRED;
   else if (values.source === "Other" && String(values.source_detail ?? "").trim().length > SOURCE_DETAIL_MAX)
     problems.source_detail = `Use at most ${SOURCE_DETAIL_MAX} characters.`;
@@ -121,6 +146,46 @@ export function leadFormProblems(values, record = null) {
   for (const [name, linkedin] of [["linkedin_url", true], ["company_website", false], ["company_linkedin_url", true]]) {
     const problem = !problems[name] && webAddressProblem(values[name], { linkedin });
     if (problem) problems[name] = problem;
+  }
+  return problems;
+}
+// A lead save the server refused, put under the field it is about ({ field: message }; {} when it isn't about one
+// field, and the message is then shown above the buttons as before). error: what api.js throws (message, and the
+// API's field errors as `details` for a 422).
+const LEAD_FORM_FIELDS = new Set([
+  "linkedin_url", "salutation", "first_name", "last_name", "company", "title", "industry", "email", "phone", "location",
+  "source", "source_detail", "owner_id", "company_website", "company_linkedin_url", "annual_revenue", "employees", "demo_date",
+]);
+const LEAD_REQUIRED = {
+  first_name: LEAD_FIRST_NAME_REQUIRED,
+  last_name: LEAD_LAST_NAME_REQUIRED,
+  company: LEAD_COMPANY_REQUIRED,
+  source: LEAD_SOURCE_REQUIRED,
+};
+function leadMessageField(message) {
+  const text = String(message ?? "").replace(/^Value error, /, "");
+  if (text.startsWith(LEAD_FIRST_NAME_REQUIRED)) return ["first_name", LEAD_FIRST_NAME_REQUIRED];
+  if (text.startsWith("Specify the lead source")) return ["source_detail", SOURCE_DETAIL_REQUIRED];
+  if (text.startsWith("Enter the lead's LinkedIn Profile URL")) return ["linkedin_url", LINKEDIN_PROFILE_REQUIRED];
+  const empty = /^(last_name|company|source) can't be empty/.exec(text);
+  if (empty) return [empty[1], LEAD_REQUIRED[empty[1]]];
+  if (/^(Personal emails|Please check the email|This email is already in the CRM)/.test(text)) return ["email", text];
+  if (/^(Enter the lead's phone number|Enter a valid phone number|Choose the phone number's country)/.test(text)) return ["phone", text];
+  return null;
+}
+export function leadServerProblems(error) {
+  const problems = {};
+  for (const item of Array.isArray(error?.details) ? error.details : []) {
+    const loc = (item?.loc || []).filter((part) => part !== "body");
+    const message = String(item?.msg ?? "").replace(/^Value error, /, "");
+    const [field, text] = loc.length
+      ? [loc[0] === "phone_country" ? "phone" : String(loc[0]), ["missing", "string_too_short"].includes(item?.type) && LEAD_REQUIRED[loc[0]] ? LEAD_REQUIRED[loc[0]] : message]
+      : leadMessageField(message) || [];
+    if (field && LEAD_FORM_FIELDS.has(field) && text && !problems[field]) problems[field] = text;
+  }
+  if (!Object.keys(problems).length) {
+    const [field, text] = leadMessageField(error?.message) || [];
+    if (field) problems[field] = text;
   }
   return problems;
 }
@@ -178,8 +243,10 @@ export const AUTOFILL_FIELDS = {
   industry: "Industry",
   email: "Email",
   phone: "Phone",
+  location: "Location",
   company_website: "Company Website",
   company_linkedin_url: "Company LinkedIn URL",
+  employees: "Headcount",
 };
 // current: the form's values now; previous: values Apollo filled earlier that are still unchanged; incoming: the
 // current profile's values ({} removes the earlier profile's values). Fills empty fields, replaces or clears
@@ -444,6 +511,12 @@ export function companyFromEmail(email) {
 // AI email drafting (New Email). The server decides; these only shape the composer's hints.
 const EMAIL_GREETING = /^(?:hi|hello|hey|dear|greetings|good (?:morning|afternoon|evening))(?:[ \t]+[^\s,!.:;]{1,40}){0,4}[ \t]*[,!.:]?$/i;
 const EMAIL_CLOSING = /^(?:best regards|kind regards|warm regards|regards|best wishes|sincerely|yours sincerely|respectfully)[ \t]*[,!.:]?$/i;
+// The closing of a new email: "Best regards," and the sender's display name only (the server's ai_email.sender_closing).
+// No name on the account: the closing alone, never a made-up name.
+export function senderClosing(senderName = "") {
+  const name = String(senderName ?? "").split(/\s+/).filter(Boolean).join(" ");
+  return name ? `Best regards,\n${name}` : "Best regards,";
+}
 // The user's own words: the draft without its greeting line and the closing + signature ("" for the starter text).
 export function draftContent(body, senderName = "", senderEmail = "") {
   const own = new Set([senderName, senderEmail].map((value) => value.trim().toLowerCase()).filter(Boolean));

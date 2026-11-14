@@ -149,7 +149,14 @@ def sample_draft(context: dict, sender_name: str, sender_email: str, action: str
             subject = "Thank you for choosing us"
             body = "Thank you for choosing to work with us. We appreciate your trust and look forward to supporting your team.\n\nPlease let me know if you have any questions about the next steps."
     greeting = f"Hi {context['first_name']}," if context.get("first_name") else "Hello,"
-    return EmailDraft(subject=subject, body=f"{greeting}\n\n{body}\n\nBest regards,\n{sender_name}\n{sender_email}")
+    return EmailDraft(subject=subject, body=f"{greeting}\n\n{body}\n\n{sender_closing(sender_name)}")
+
+
+def sender_closing(sender_name: str) -> str:
+    """The closing the CRM adds to a draft: "Best regards," and the signed-in sender's display name, nothing else (no
+    role, company or email address). Without a name on the account it is the closing alone: a name is never invented."""
+    name = " ".join((sender_name or "").split())
+    return f"Best regards,\n{name}" if name else "Best regards,"
 
 
 DRAFT_SCHEMA = {
@@ -387,11 +394,12 @@ def without_signature(body: str, sender_name: str, sender_email: str) -> str:
 
 
 def with_sender_signature(body: str, sender_name: str, sender_email: str) -> str:
-    """Remove a trailing model signature and append the real sender's signature once."""
+    """Remove a trailing model signature (also an older one with the sender's email) and append the CRM's closing
+    once: "Best regards," and the sender's name (sender_closing)."""
     text = without_signature(body, sender_name, sender_email)
     if not text:
         raise ValueError("The draft contained only a signature")
-    return f"{text}\n\nBest regards,\n{sender_name}\n{sender_email}"
+    return f"{text}\n\n{sender_closing(sender_name)}"
 
 
 def draft_content(body: str, sender_name: str, sender_email: str) -> str:
@@ -433,10 +441,11 @@ SENDER_COMPANY = re.compile(_COMPANY, re.IGNORECASE)
 
 def without_sender_placeholders(text: str, sender_name: str, sender_email: str) -> str:
     name, email = sender_name.strip(), sender_email.strip()
-    if name:
-        text = SENDER_NAME.sub(lambda _: name, text)
-    if email:
-        text = SENDER_EMAIL.sub(lambda _: email, text)
+    # without a name (or email) on the account the placeholder is removed, never left for the customer to see
+    text, unnamed = SENDER_NAME.subn(lambda _: name, text)
+    text, no_email = SENDER_EMAIL.subn(lambda _: email, text)
+    if (unnamed and not name) or (no_email and not email):
+        text = re.sub(r"[ \t]+([,.;:!?])", r"\1", re.sub(r"[ \t]{2,}", " ", text))
     text = SENDER_TITLE.sub("", text)
     text = SENDER_COMPANY_AFTER.sub("", text)
     text = SENDER_COMPANY_LEAD.sub(lambda m: m.group(1) + m.group(2).upper(), text)
@@ -584,7 +593,7 @@ async def generate_draft(data: DraftRequest, context: dict, sender_name: str, se
         option = OPTIONS[data.option_id]
     if mode() == "sample" and option is not None:
         greeting = f"Hi {context['first_name']}," if context.get("first_name") else "Hello,"
-        return EmailDraft(subject=option.subject, body=f"{greeting}\n\n{option.sample}\n\nBest regards,\n{sender_name}\n{sender_email}")
+        return EmailDraft(subject=option.subject, body=f"{greeting}\n\n{option.sample}\n\n{sender_closing(sender_name)}")
     if mode() == "sample":
         return sample_draft({**context, "current_stage": draft_stage}, sender_name, sender_email, data.action)
     local = mode() == "ollama"
@@ -829,6 +838,21 @@ def campaign_placeholders(text: str) -> str:
     return re.sub(r"[\[{]{1,2}\s*([A-Za-z][A-Za-z _\-]{0,30}?)\s*[\]}]{1,2}", fix, text)
 
 
+# a line that is only a placeholder: [Your Title], <Your Email>, {your_phone} (not the {sender_name} the CRM fills in)
+PLACEHOLDER_LINE = re.compile(r"\[[^\]\n]{1,100}\]|<[^>\n]{1,100}>|\{(?!sender_name\})[^}\n]{1,100}\}")
+
+
+def campaign_signature(body: str) -> str:
+    """A campaign is signed with {sender_name}, filled with each sender's name when it is sent. Sender details the AI
+    left as placeholders ([Your Title], [Your Email], [Company Name]...) are removed instead of being sent: the CRM has
+    no role or company to fill in, and the closing carries the name only. Text the user wrote is kept."""
+    lines = body.replace("\r\n", "\n").split("\n")
+    closing = max((i for i, line in enumerate(lines) if CLOSING_LINE.fullmatch(line.strip())), default=None)
+    if closing is not None:  # the sign-off: placeholder-only lines after the closing are dropped
+        lines = lines[:closing + 1] + [line for line in lines[closing + 1:] if not PLACEHOLDER_LINE.fullmatch(line.strip())]
+    return without_sender_placeholders("\n".join(lines), "{sender_name}", "").rstrip()
+
+
 async def generate_campaign_draft(data: CampaignDraftRequest) -> EmailDraft:
     """Writes or refines a campaign email with placeholders. Never sends anything."""
     refining = data.action != "custom"
@@ -880,8 +904,8 @@ async def generate_campaign_draft(data: CampaignDraftRequest) -> EmailDraft:
         raise HTTPException(422, OUT_OF_SCOPE)
     if reply.outcome == "needs_context":
         raise HTTPException(422, NEEDS_CONTEXT)
-    subject = campaign_placeholders(reply.subject)
-    body = campaign_placeholders(reply.body)
+    subject = without_sender_placeholders(campaign_placeholders(reply.subject), "{sender_name}", "")
+    body = campaign_signature(campaign_placeholders(reply.body))
     supplied = "\n".join((text, data.current_subject, data.current_body))
     body = without_new_links(body, supplied)
     unknown = [f for f in re.findall(r"\{(\w+)\}", subject + body) if f not in CAMPAIGN_FIELDS + ("last_name", "full_name")]

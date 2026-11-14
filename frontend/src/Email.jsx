@@ -262,7 +262,14 @@ export function EmailComposer({ target, user, onClose, onSent }) { // eslint-dis
               <span>
                 To <i>*</i>
               </span>
-              <input name="to" defaultValue={target.email || ""} placeholder="name@company.com" required />
+              <input name="to" defaultValue={target.email || ""} placeholder="name@company.com" required
+                aria-describedby={!target.email && target.noEmail ? "email-to-missing" : undefined} />
+              {/* nothing to fill in To: say why, so an empty field isn't mistaken for a fault */}
+              {!target.email && target.noEmail && (
+                <small id="email-to-missing" className="field-hint">
+                  {target.noEmail} Enter the recipient&apos;s email address.
+                </small>
+              )}
             </label>
             <label className="field">
               <span>Cc</span>

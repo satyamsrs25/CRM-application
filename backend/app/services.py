@@ -28,7 +28,7 @@ from app.constants import (
 )
 from app import mailer
 from app.models import Account, ActivityLog, Contact, Lead, Notification, Opportunity, StageHistory, Task, User
-from app.security import owner_for_new
+from app.security import owner_for_new, user_permissions
 
 
 def now() -> datetime:
@@ -565,12 +565,14 @@ EMAIL_SETTING = {"stage": "email_stage_updates", "assignment": "email_assignment
 
 
 def notify(db: Session, user_id: int, title: str, message: str, *, task_id: int | None = None,
-           link: str | None = None, bell: bool = True, kind: str = "update", category: str | None = None) -> None:
+           link: str | None = None, bell: bool = True, kind: str = "update", category: str | None = None,
+           why: str = "You get this email because you are the owner in SalesTrack CRM.") -> None:
     """Puts a notification on the user's bell and, if their settings say so, emails it (after the save is committed).
 
     category: "stage" (lead/deal moved on), "assignment" (assigned to you) or "reminder";
               default: "reminder" for kind="reminder", otherwise "stage".
     bell=False: saved as already read (no badge), the email still follows the settings.
+    why: the email's last line, saying why this person gets it.
     """
     db.add(Notification(user_id=user_id, task_id=task_id, title=title, message=message[:500], link=link,
                         kind=kind, is_read=not bell))
@@ -581,9 +583,74 @@ def notify(db: Session, user_id: int, title: str, message: str, *, task_id: int 
             db,
             user.email,
             f"[SalesTrack] {title}",
-            f"Hi {user.full_name.split()[0]},\n\n{message}\n\nOpen in SalesTrack: {mailer.app_link(link)}\n\n"
-            "You get this email because you are the owner in SalesTrack CRM.",
+            f"Hi {user.full_name.split()[0]},\n\n{message}\n\nOpen in SalesTrack: {mailer.app_link(link)}\n\n{why}",
         )
+
+
+# ---------- a new lead: its owner, and the owner's Manager (Reports To) ----------
+# There is no approval step for new leads: these say a lead was created, never that it waits for approval.
+# (Requests to have someone else's lead transferred are approved separately, see routers/transfer_requests.py.)
+
+def reporting_manager(db: Session, user: User | None) -> User | None:
+    """The active Manager this user reports to (Manage Access > People > Reports To), or None. Never another
+    Manager, the Admin or anyone else as a stand-in."""
+    if user is None or not user.reports_to_id:
+        return None
+    manager = db.get(User, user.reports_to_id)
+    return manager if manager is not None and manager.is_active and manager.role == "Manager" else None
+
+
+def lead_source_text(lead: Lead) -> str:
+    return f"{lead.source} ({lead.source_detail})" if lead.source == "Other" and lead.source_detail else lead.source
+
+
+def lead_created_notices(db: Session, lead: Lead, *, actor_id: int | None, task: Task | None = None) -> None:
+    """A lead was created (New Lead form or the AI Assistant): one notification for its owner (the one it always
+    had, now saying so plainly) and one for the owner's active Manager, if they have one. Bell now; email only by
+    each person's own settings and only after the save is committed (mailer.queue), so a refused or rolled-back
+    request tells nobody. Owner: "Lead assigned to you" (Email me: assignments) when someone else created it,
+    otherwise "Lead created" (Email me: stage updates), as before. Manager: stage-updates setting. The Manager isn't
+    told about a lead they created themselves, and is never told twice (owner and Manager the same person)."""
+    owner = db.get(User, lead.owner_id)
+    actor = db.get(User, actor_id) if actor_id is not None else None
+    assigned = actor_id is not None and actor_id != lead.owner_id
+    owner_name = owner.full_name if owner else "another user"
+    details = [f"Lead: {lead.name}", f"Company: {lead.company}", f"Source: {lead_source_text(lead)}"]
+    if lead.email:
+        details.append(f"Email: {lead.email}")
+    created_by = f"Created by: {actor.full_name}" if actor else None
+    link = record_link(lead_id=lead.id)
+    notify(db, lead.owner_id, "Lead assigned to you" if assigned else "Lead created",
+           "\n".join(["A new lead has been created and assigned to you.", *details, f"Owner: {owner_name}",
+                      *([created_by] if created_by and assigned else []), *task_line("Next follow-up", task)]),
+           task_id=task.id if task is not None else None, link=link,
+           category="assignment" if assigned else "stage")
+    manager = reporting_manager(db, owner)
+    if manager is None or manager.id in (lead.owner_id, actor_id):
+        return
+    # the details and the link only for a Manager who may open the lead (Manage Access > Permissions)
+    can_open = "view_team_records" in user_permissions(db, manager)
+    lines = ["A new lead has been created for your team member.", f"Owner: {owner_name}"]
+    if can_open:
+        lines += details + ([created_by] if created_by else [])
+    notify(db, manager.id, "Lead created for your team", "\n".join(lines), link=link if can_open else None,
+           category="stage", why=f"You get this email because {owner_name} reports to you in SalesTrack CRM.")
+
+
+def uploaded_leads_team_notice(db: Session, *, owner_id: int, count: int, actor: User, file_name: str) -> None:
+    """Leads uploaded from a file for a team member: one summary for the owner's active Manager per upload (never one
+    per row), unless the Manager uploaded them or owns them. Bell, and email by their stage-updates setting."""
+    owner = db.get(User, owner_id)
+    manager = reporting_manager(db, owner)
+    if manager is None or manager.id in (owner_id, actor.id) or count <= 0:
+        return
+    can_open = "view_team_records" in user_permissions(db, manager)
+    plural = "s have" if count != 1 else " has"
+    notify(db, manager.id, "Leads created for your team",
+           f"{count:,} new lead{plural} been created for your team member.\nOwner: {owner.full_name}\n"
+           f"Uploaded by: {actor.full_name} ({file_name})",
+           link="/leads" if can_open else None, category="stage",
+           why=f"You get this email because {owner.full_name} reports to you in SalesTrack CRM.")
 
 
 def touch_lead(db: Session, lead_id: int | None) -> None:

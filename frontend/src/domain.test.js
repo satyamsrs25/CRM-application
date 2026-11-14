@@ -114,6 +114,17 @@ import {
 import { demoEvent, foldIcsLine, googleCalendarUrl, icsContent, icsText, outlookCalendarUrl } from "./calendarLinks.js";
 import { addressProblem, draftForCopy, OUTLOOK_COMPOSE_URL, OUTLOOK_URL_LIMIT, outlookComposeUrl, outlookHandoff, splitAddresses } from "./outlookDraft.js";
 import { DEFAULT_PHONE_COUNTRY, PHONE_COUNTRIES, PHONE_RECHECK_EVENT, PHONE_WITH_CODE_INVALID, phoneCountryLabel, phoneCountryOf, phoneFieldError, phoneProblem } from "./phone.js";
+import {
+  LEAD_COMPANY_REQUIRED,
+  LEAD_EMAIL_INVALID,
+  LEAD_EMAIL_REQUIRED,
+  LEAD_LAST_NAME_REQUIRED,
+  LEAD_PHONE_REQUIRED,
+  LEAD_SOURCE_REQUIRED,
+  leadServerProblems,
+  senderClosing,
+} from "./domain.js";
+import { previewPlacement } from "./listHelpers.js";
 
 test("lead form sends the backend's fields (the form's own checks are in leadFormProblems)", () => {
   assert.deepEqual(
@@ -681,8 +692,8 @@ test("Apollo autofill fills empty fields and never overwrites what the user type
 });
 test("company details follow the same rules: empty fields only, manual entries kept, untouched autofill replaced", () => {
   assert.deepEqual(
-    Object.entries(AUTOFILL_FIELDS).slice(-2),
-    [["company_website", "Company Website"], ["company_linkedin_url", "Company LinkedIn URL"]],
+    Object.entries(AUTOFILL_FIELDS).slice(-3),
+    [["company_website", "Company Website"], ["company_linkedin_url", "Company LinkedIn URL"], ["employees", "Headcount"]],
   );
   const synthetic = { company: "Synthetic Co", industry: "Software", company_website: "https://synthetic-co.example",
                       company_linkedin_url: "https://www.linkedin.com/company/synthetic-co" };
@@ -1744,7 +1755,7 @@ test("Lead Source: LinkedIn is offered on the form and in the Source filter; Upl
 });
 
 test("New Lead: First Name, Specify lead source (Other), LinkedIn Profile URL (LinkedIn) are required", () => {
-  const ok = { first_name: "Ana", last_name: "Okafor", company: "Harbor", email: "ana@harbor.example", source: "Website" };
+  const ok = { first_name: "Ana", last_name: "Okafor", company: "Harbor", email: "ana@harbor.example", source: "Website", phone: "98765 43210", phone_country: "IN" };
   assert.deepEqual(leadFormProblems(ok), {});
   // First Name: empty or only spaces
   for (const first_name of ["", "   ", "\t"]) assert.equal(leadFormProblems({ ...ok, first_name }).first_name, LEAD_FIRST_NAME_REQUIRED);
@@ -1759,13 +1770,13 @@ test("New Lead: First Name, Specify lead source (Other), LinkedIn Profile URL (L
   assert.deepEqual(leadFormProblems({ ...ok, source: "LinkedIn", linkedin_url: "https://www.linkedin.com/in/ana-okafor" }), {});
   // the LinkedIn Profile URL is optional for every other source; a description typed for Other doesn't matter elsewhere
   assert.deepEqual(leadFormProblems({ ...ok, source: "Referral", linkedin_url: "", source_detail: "" }), {});
-  assert.deepEqual(leadFieldsRequired("Website"), { first_name: true, source_detail: false, linkedin_url: false });
-  assert.deepEqual(leadFieldsRequired("Other"), { first_name: true, source_detail: true, linkedin_url: false });
-  assert.deepEqual(leadFieldsRequired("LinkedIn"), { first_name: true, source_detail: false, linkedin_url: true });
+  assert.deepEqual(leadFieldsRequired("Website"), { first_name: true, email: true, phone: true, source_detail: false, linkedin_url: false });
+  assert.deepEqual(leadFieldsRequired("Other"), { first_name: true, email: true, phone: true, source_detail: true, linkedin_url: false });
+  assert.deepEqual(leadFieldsRequired("LinkedIn"), { first_name: true, email: true, phone: true, source_detail: false, linkedin_url: true });
 });
 
 test("Lead form: Company Website and Company LinkedIn URL are optional, but checked when given", () => {
-  const ok = { first_name: "Ana", last_name: "Okafor", company: "Harbor", email: "ana@harbor.example", source: "Website" };
+  const ok = { first_name: "Ana", last_name: "Okafor", company: "Harbor", email: "ana@harbor.example", source: "Website", phone: "98765 43210", phone_country: "IN" };
   assert.deepEqual(leadFormProblems({ ...ok, company_website: "", company_linkedin_url: "" }), {});
   assert.deepEqual(leadFormProblems({ ...ok, company_website: "harbor.example", company_linkedin_url: "linkedin.com/company/harbor" }), {});
   assert.equal(leadFormProblems({ ...ok, company_website: "harbor" }).company_website, "Enter a valid web address");
@@ -1784,7 +1795,7 @@ test("Edit Lead: an older lead's missing First Name, Other description or Linked
   const legacy = { id: 9, first_name: null, last_name: "Okafor", source: "Other", source_detail: null, linkedin_url: null };
   const form = { first_name: "", last_name: "Okafor", company: "Harbor", email: "ana@harbor.example", source: "Other", source_detail: "" };
   assert.deepEqual(leadFormProblems(form, legacy), {}); // e.g. only the phone changed
-  assert.deepEqual(leadFieldsRequired("Other", legacy), { first_name: false, source_detail: false, linkedin_url: false });
+  assert.deepEqual(leadFieldsRequired("Other", legacy), { first_name: false, email: false, phone: false, source_detail: false, linkedin_url: false });
   // ...but a value the lead has can't be removed, and changing the source asks for what that source needs
   const named = { ...legacy, first_name: "Ana", source_detail: "Trade fair" };
   assert.equal(leadFormProblems({ ...form, source_detail: "Trade fair" }, named).first_name, LEAD_FIRST_NAME_REQUIRED);
@@ -1808,7 +1819,7 @@ test("Lead form wiring: required stars follow the rules; Specify lead source sho
   assert.match(modal, /required=\{leadNeeds\.linkedin_url\}/);
   assert.match(modal, /field\("Company Website", "company_website", "text", false\)/);
   assert.match(modal, /field\("Company LinkedIn URL", "company_linkedin_url", "text", false\)/);
-  assert.match(modal, /const problems = leadFormProblems\(v, record\);/);
+  assert.match(modal, /const problems = leadFormProblems\(Object\.fromEntries\(new FormData\(form\)\), record\);/);
   assert.doesNotMatch(modal, /\["linkedin_url", "LinkedIn Profile URL"\],\s*\["company_website"/); // no longer always required
   assert.match(modal, /name === "source_detail"\s*\? SOURCE_DETAIL_MAX/); // bounded like the database column
   // the LinkedIn Profile URL stays one field, with Apollo autofill on New Lead (looked up only when a profile is pasted)
@@ -2010,8 +2021,9 @@ test("New Lead: a successful LinkedIn lookup selects LinkedIn only while the sou
   // wiring: only after a verified match of the current address, on New Lead only; the user's pick is remembered
   const field = source("./LeadAutofill.jsx");
   const show = field.slice(field.indexOf("const show = "), field.indexOf("const lookup = "));
-  assert.ok(show.indexOf("onMatched?.()") > show.indexOf('answer.status !== "matched" || answer.url_verified !== true'));
-  assert.equal((field.match(/onMatched\?\.\(\)/g) || []).length, 1); // never after a failed, unmatched or late answer
+  assert.ok(show.indexOf("onMatched?.(") > show.indexOf('answer.status !== "matched" || answer.url_verified !== true'));
+  assert.equal((field.match(/onMatched\?\.\(/g) || []).length, 1); // never after a failed, unmatched or late answer
+  assert.match(field, /onMatched\?\.\(Object\.keys\(plan\.set\)\);/); // with the fields it filled, to check them again
   assert.match(field, /if \(alive\.current && current\.current === key\) show\(answer, url\);/);
   const modal = source("./Modal.jsx");
   assert.match(modal, /onMatched=\{linkedInMatched\}/);
@@ -2057,8 +2069,8 @@ test("Phone field wiring: blur, number and country changes, aria-invalid and the
   assert.match(modal, /const problems = newContact \? contactProblems\(values, OPPORTUNITY_CONTACT_FORM\) : \{\};[\s\S]*?event\.target\.elements\[Object\.keys\(problems\)\[0\]\]\?\.focus\(\);/);
   assert.equal(contactProblems({ first_name: "A", last_name: "B", email: "a@b.example", phone: "uiadcna" }).phone,
     "Enter a valid phone number for India (+91).");
-  // the lead form's Phone is unchanged (a plain field, no country)
-  assert.match(modal, /\{field\("Phone", "phone", "tel"\)\}/);
+  // New Lead uses it too, required (Manimohan issue 35); editing a lead keeps the plain optional field
+  assert.match(modal, /\{record \? \(\s*field\("Phone", "phone", "tel"\)\s*\) : \(\s*<PhoneField\s+required/);
 });
 
 test("Contact LinkedIn: no standing helper text or success narration; loading, errors and warnings stay", () => {
@@ -2133,4 +2145,249 @@ test("New Opportunity: switching to an existing contact drops the new-contact dr
   assert.doesNotMatch(source("./PhoneField.jsx"), /defaultValue=\{value|localStorage|sessionStorage/);
   // the dialog itself is removed when closed and created again when opened (no draft carried over)
   assert.match(source("./App.jsx"), /\{modal && <Modal modal=\{modal\} close=\{\(\) => setModal\(null\)\}/);
+});
+
+// ---------- Lead form: each required field's message under it, no browser popups ----------
+
+test("Lead form: Last Name, Company, Email and Lead Source have their own messages; email is checked as typed", () => {
+  const ok = { first_name: "Ana", last_name: "Okafor", company: "Harbor", email: "ana@harbor.example", source: "Website", phone: "98765 43210", phone_country: "IN" };
+  assert.deepEqual(leadFormProblems(ok), {});
+  assert.deepEqual(leadFormProblems({ ...ok, last_name: "  ", company: "", email: "", source: "" }), {
+    last_name: LEAD_LAST_NAME_REQUIRED,
+    company: LEAD_COMPANY_REQUIRED,
+    email: LEAD_EMAIL_REQUIRED,
+    source: LEAD_SOURCE_REQUIRED,
+  });
+  for (const email of ["ana", "ana@harbor", "ana@@harbor.example", "ana harbor@x.example", "a,b@harbor.example"])
+    assert.equal(leadFormProblems({ ...ok, email }).email, LEAD_EMAIL_INVALID, email);
+  assert.deepEqual(leadFormProblems({ ...ok, email: "  Ana.Okafor@Harbor.example  " }), {}); // spaces around are fine
+  // the messages are field-specific, not "Please fill out this field"
+  for (const message of [LEAD_LAST_NAME_REQUIRED, LEAD_COMPANY_REQUIRED, LEAD_EMAIL_REQUIRED, LEAD_SOURCE_REQUIRED])
+    assert.doesNotMatch(message, /fill out this field/i);
+  // optional company links stay optional
+  assert.deepEqual(leadFormProblems({ ...ok, company_website: "", company_linkedin_url: "", location: "" }), {});
+});
+
+test("Edit Lead: an older lead without an email, or with an older saved email, still saves an unrelated edit", () => {
+  const legacy = { id: 7, first_name: "Ana", last_name: "Okafor", company: "Harbor", email: null, source: "Website" };
+  const form = { first_name: "Ana", last_name: "Okafor", company: "Harbor", email: "", source: "Website", phone: "+1 555" };
+  assert.deepEqual(leadFormProblems(form, legacy), {}); // never had an email: not asked for now
+  assert.equal(leadFieldsRequired("Website", legacy).email, false);
+  // a lead that has an email keeps one, and a new or changed email is checked
+  const withEmail = { ...legacy, email: "ana@harbor.example" };
+  assert.equal(leadFormProblems(form, withEmail).email, LEAD_EMAIL_REQUIRED);
+  assert.equal(leadFormProblems({ ...form, email: "ana@harbor" }, legacy).email, LEAD_EMAIL_INVALID);
+  // an older saved email the current check wouldn't accept doesn't block an unrelated edit while it is unchanged
+  const odd = { ...legacy, email: "ana@harbor" };
+  assert.deepEqual(leadFormProblems({ ...form, email: "ANA@harbor " }, odd), {});
+  assert.equal(leadFormProblems({ ...form, email: "ana@harbour" }, odd).email, LEAD_EMAIL_INVALID);
+});
+
+test("Lead form: the server's refusals are shown under the field they are about", () => {
+  // 422 field errors (pydantic): loc names the field; an empty required value gets the form's own message
+  assert.deepEqual(
+    leadServerProblems({
+      message: "last_name: String should have at least 1 character",
+      details: [
+        { loc: ["body", "last_name"], type: "string_too_short", msg: "String should have at least 1 character" },
+        { loc: ["body", "company_website"], type: "value_error", msg: "Value error, Enter a valid web address" },
+        { loc: ["body", "employees"], type: "less_than_equal", msg: "Input should be less than or equal to 10000000" },
+      ],
+    }),
+    { last_name: LEAD_LAST_NAME_REQUIRED, company_website: "Enter a valid web address", employees: "Input should be less than or equal to 10000000" },
+  );
+  // the New Lead rules (model-level, loc ["body"]) and the edit rules (400 with a message)
+  assert.deepEqual(
+    leadServerProblems({ message: ": Value error, Enter the lead's first name.", details: [{ loc: ["body"], type: "value_error", msg: "Value error, Enter the lead's first name." }] }),
+    { first_name: LEAD_FIRST_NAME_REQUIRED },
+  );
+  assert.deepEqual(leadServerProblems({ message: "Specify the lead source (required when Lead Source is Other)." }), { source_detail: SOURCE_DETAIL_REQUIRED });
+  assert.deepEqual(leadServerProblems({ message: LINKEDIN_PROFILE_REQUIRED }), { linkedin_url: LINKEDIN_PROFILE_REQUIRED });
+  assert.deepEqual(leadServerProblems({ message: "company can't be empty" }), { company: LEAD_COMPANY_REQUIRED });
+  const duplicate = "This email is already in the CRM: Lead Ana Okafor, owner Ravi Kumar. Each email can belong to one lead only.";
+  assert.deepEqual(leadServerProblems({ message: duplicate }), { email: duplicate });
+  const personal = "Personal emails (@gmail.com) aren't allowed for a lead. Use the lead's work email, e.g. name@harbor.example.";
+  assert.deepEqual(leadServerProblems({ message: personal }), { email: personal });
+  // anything else stays above the buttons as before
+  assert.deepEqual(leadServerProblems({ message: "Leads can only be assigned to active Managers and Salespeople" }), {});
+  assert.deepEqual(leadServerProblems(new Error("Cannot reach the backend. Check that it is running and try again.")), {});
+  assert.deepEqual(leadServerProblems({ details: [{ loc: ["body", "not_a_form_field"], msg: "x" }] }), {});
+});
+
+test("Lead form wiring: no browser popups, a field is checked when left and again as it is fixed, nothing sent with errors", () => {
+  const modal = source("./Modal.jsx");
+  assert.match(modal, /noValidate=\{newRecord \|\| type === "lead"\}/); // the lead form only, plus New Account / Contact
+  assert.doesNotMatch(modal, /noValidate=\{true\}|noValidate\s*\n/); // not switched off for every form
+  // checked when a field is left (not when leaving for Cancel / Close), and again while it shows a message
+  assert.match(modal, /recheckLead\(event\.currentTarget, \[event\.target\.name\]\)/);
+  assert.match(modal, /event\.relatedTarget\?\.closest\?\.\("\.modal-footer, \.modal-close"\)/);
+  assert.match(modal, /const fixError = \(event, name\) => \(type === "lead" \? recheckLead\(event\.target\.form, \[name\]\) : clearError\(name\)\);/);
+  assert.match(modal, /onInput=\{fieldError\(name\) \? \(event\) => fixError\(event, name\) : undefined\}/);
+  // on Save: every message before anything is sent, focus on the first field to fix (in form order)
+  const submit = modal.slice(modal.indexOf("const submit = async"), modal.indexOf("lock.current = true;"));
+  assert.match(submit, /if \(type === "lead"\) \{\s*\/\/[^\n]*\n\s*const problems = leadProblems\(event\.target\);/);
+  assert.match(submit, /focusFirstProblem\(event\.target, problems\);\s*return;/);
+  assert.match(modal, /\[\.\.\.form\.elements\]\.find\(\(el\) => el\.name && problems\[el\.name\] && el\.type !== "hidden"\)\?\.focus\(\)/);
+  // the old form-level messages are gone
+  assert.doesNotMatch(modal, /Please fill in: Email\.|Last name and company are required\./);
+  // the server's field errors go under their fields; aria-invalid / aria-describedby on the field, text under it
+  assert.match(modal, /const fields = type === "lead" \? leadServerProblems\(err\) : \{\};/);
+  assert.match(modal, /aria-invalid=\{fieldError\(name\) \? true : undefined\}/);
+  assert.match(modal, /aria-describedby=\{fieldError\(name\) \? errorId\(name\) : undefined\}/);
+  assert.match(modal, /field\("Email", "email", "email", leadNeeds\.email\)/);
+  assert.match(modal, /error=\{fieldError\("annual_revenue"\)\}/);
+  const amount = source("./ui.jsx");
+  assert.match(amount, /aria-describedby=\{error \? `\$\{name\}-field-error` : undefined\}/);
+  // api.js keeps the API's field errors with the error
+  assert.match(source("./api.js"), /details: Array\.isArray\(detail\) \? detail : null/);
+});
+
+// ---------- the email closing: "Best regards," and the sender's name only ----------
+
+test("New Email starts with Best regards and the sender's name only; drafts end the same way", () => {
+  assert.equal(senderClosing("Ravi Kumar"), "Best regards,\nRavi Kumar");
+  assert.equal(senderClosing("  Ravi   Kumar "), "Best regards,\nRavi Kumar");
+  assert.equal(senderClosing(""), "Best regards,"); // no name: none is invented
+  assert.equal(senderClosing(undefined), "Best regards,");
+  const app = source("./App.jsx");
+  assert.match(app, /greeting: `Hi \$\{target\.firstName \|\| ""\},\\n\\n\\n\\n\$\{senderClosing\(user\.full_name\)\}`/);
+  assert.doesNotMatch(app, /\$\{user\.email\}/); // no email address in the starter
+  // the new starter is still "nothing written yet" for the AI bar, as the older one with the email was
+  const sign = ["Ravi Kumar", "ravi@crm.test"];
+  assert.equal(draftContent(`Hi Jack,\n\n\n\n${senderClosing("Ravi Kumar")}`, ...sign), "");
+  assert.equal(draftContent("Hi Jack,\n\n\n\nBest regards,\nRavi Kumar\nravi@crm.test", ...sign), "");
+  // the server's closing is the same
+  const backend = readFileSync(new URL("../../backend/app/ai_email.py", import.meta.url), "utf8");
+  assert.match(backend, /return f"Best regards,\\n\{name\}" if name else "Best regards,"/);
+  assert.doesNotMatch(backend, /Best regards,\\n\{sender_name\}\\n\{sender_email\}/);
+});
+
+// ---------- email from any stage, Lost included ----------
+
+test("Send Email works on Lost opportunities and says why To is empty", () => {
+  const record = source("./RecordPage.jsx");
+  // the button isn't hidden for closed records (Lost, Won...): it only drafts and opens Outlook
+  assert.match(record, /<button className="sf-button" onClick=\{sendEmail\}>\s*Send Email/);
+  assert.doesNotMatch(record, /!closed && \(\s*<button className="sf-button" onClick=\{sendEmail\}/);
+  assert.match(record, /: "This opportunity has no primary contact\." \}/);
+  assert.match(record, /`The primary contact, \$\{contact\.full_name \|\| contact\.last_name\}, has no email address\.`/);
+  const email = source("./Email.jsx");
+  assert.match(email, /\{!target\.email && target\.noEmail && \(/);
+  assert.match(email, /aria-describedby=\{!target\.email && target\.noEmail \? "email-to-missing" : undefined\}/);
+  // still the Outlook hand-off: the CRM send stays switched off
+  assert.match(email, /const sending = false;/);
+  assert.match(email, /onSubmit=\{openInOutlook\}/);
+});
+
+// ---------- Apollo: Location and Headcount ----------
+
+test("LinkedIn autofill also fills Location and Headcount (empty fields only, like the others)", () => {
+  assert.equal(AUTOFILL_FIELDS.location, "Location");
+  assert.equal(AUTOFILL_FIELDS.employees, "Headcount");
+  assert.equal(AUTOFILL_FIELDS.annual_revenue, undefined); // Turnover is the user's (Apollo reports US dollars)
+  const plan = autofillPlan({ location: "Pune, India", employees: "" }, {}, { location: "Mumbai", employees: "250" });
+  assert.deepEqual(plan.set, { employees: "250" }); // the typed location stays
+  assert.deepEqual(plan.kept, ["location"]);
+  assert.equal(contactAutofillFields().location, undefined); // contacts have no Location field
+});
+
+// ---------- New Campaign: "Send", with the count beside it ----------
+
+test("New Campaign: the button says Send and the number of recipients is shown beside it", () => {
+  const campaigns = source("./CampaignsPage.jsx");
+  assert.match(campaigns, /\{busy \? "Saving…" : "Send"\}/);
+  assert.doesNotMatch(campaigns, /`Send to \$\{/);
+  assert.match(campaigns, /<span id="campaign-send-count" className="send-count" aria-live="polite">\s*\{plural\(preview\?\.eligible \|\| 0, "recipient"\)\}/);
+  assert.match(campaigns, /aria-describedby="campaign-send-count"/);
+  // the same disabled, busy and duplicate-submit guards as before
+  assert.match(campaigns, /disabled=\{busy \|\| !preview\?\.eligible\}/);
+  assert.match(campaigns, /aria-busy=\{busy\}/);
+  assert.match(campaigns, /if \(!preview\?\.eligible\) return setError\("None of these recipients can be emailed \(see Excluded\)\."\);/);
+});
+
+// ---------- Leads table: full values in a preview instead of Wrap text ----------
+
+test("Leads table: no Wrap text; cut-off names, companies, emails and owners open in a preview, never the phone", () => {
+  const table = source("./LeadsTable.jsx");
+  assert.doesNotMatch(table, /setWrap|tool-toggle|"wrap"|>\s*Wrap text/);
+  for (const label of ["name", "company", "title", "email", "owner", "creator"])
+    assert.match(table, new RegExp(`label="${label}"`), label);
+  assert.match(table, /<PhoneReveal value=\{l\.phone\} \/>/); // the phone keeps its own mask and eye button
+  assert.doesNotMatch(table, /value=\{l\.phone\}\s+label=/);
+  assert.match(table, /<CellPreview ref=\{preview\} \/>/);
+  assert.match(table, /useLayoutEffect\(\(\) => markCutCells\(tableRef\.current\), \[items\]\);/);
+  const preview = source("./CellPreview.jsx");
+  assert.match(preview, /role="tooltip"/);
+  assert.match(preview, /event\.key === "Escape" && close\(\)/);
+  assert.match(preview, /target instanceof Node && !!root\?\.contains\(target\)/); // a scroll of the window closes it, no error
+  assert.match(preview, /createPortal\(/); // not cut off by the table's scrolling box or the frozen columns
+  assert.match(preview, /aria-label=\{`Show full \$\{label\}`\}/);
+  assert.match(preview, /tabIndex=\{href \? -1 : undefined\}/); // links open it from the keyboard themselves
+  assert.doesNotMatch(preview, /from "(?!react|react-dom|\.\/listHelpers)/); // no new UI library
+  const css = source("./styles.css");
+  assert.doesNotMatch(css, /\.leads-table\.wrap|\.tool-toggle/);
+  assert.match(css, /\.leads-table \.cell-line\[data-cut\] \.cell-more,/);
+  assert.match(css, /@media \(hover: hover\) and \(pointer: fine\)/); // on touch screens ⋯ always shows
+});
+
+test("Leads table preview: placed under the cell, above it when needed, and always inside the viewport", () => {
+  const viewport = { width: 1280, height: 720 };
+  const size = { width: 300, height: 40 };
+  assert.deepEqual(previewPlacement({ left: 100, top: 200, bottom: 244 }, size, viewport), { top: 248, left: 100 });
+  // near the bottom: above the cell
+  assert.deepEqual(previewPlacement({ left: 100, top: 660, bottom: 704 }, size, viewport), { top: 616, left: 100 });
+  // near the right edge: moved left; never past the left edge
+  assert.deepEqual(previewPlacement({ left: 1200, top: 200, bottom: 244 }, size, viewport), { top: 248, left: 972 });
+  assert.deepEqual(previewPlacement({ left: -50, top: 200, bottom: 244 }, size, viewport), { top: 248, left: 8 });
+  // a phone screen: wider than the viewport allows is clamped to the margin; a tall preview stays on screen
+  const phone = { width: 360, height: 640 };
+  assert.deepEqual(previewPlacement({ left: 20, top: 300, bottom: 344 }, { width: 344, height: 600 }, phone), { top: 32, left: 8 });
+});
+
+// ---------- New Lead: a valid Phone with its country (Manimohan issue 35) ----------
+
+test("New Lead needs a valid phone for the chosen country; editing an older lead doesn't", () => {
+  const ok = { first_name: "Ana", last_name: "Okafor", company: "Harbor", email: "ana@harbor.example", source: "Website" };
+  for (const phone of [undefined, "", "   "])
+    assert.equal(leadFormProblems({ ...ok, phone, phone_country: "IN" }).phone, LEAD_PHONE_REQUIRED, String(phone));
+  const india = "Enter a valid phone number for India (+91).";
+  assert.equal(leadFormProblems({ ...ok, phone: "uiadcna", phone_country: "IN" }).phone, india); // letters
+  assert.equal(leadFormProblems({ ...ok, phone: "98765 432", phone_country: "IN" }).phone, india); // too short
+  assert.equal(leadFormProblems({ ...ok, phone: "6123 4567", phone_country: "IN" }).phone, india); // valid in Singapore only
+  assert.deepEqual(leadFormProblems({ ...ok, phone: "6123 4567", phone_country: "SG" }), {});
+  assert.deepEqual(leadFormProblems({ ...ok, phone: "98765 43210", phone_country: "IN" }), {}); // mobile
+  assert.deepEqual(leadFormProblems({ ...ok, phone: "011 2345 6789", phone_country: "IN" }), {}); // business landline
+  assert.deepEqual(leadFormProblems({ ...ok, phone: "+44 20 7946 0958", phone_country: "IN" }), {}); // its own +code
+  assert.deepEqual(leadFormProblems({ ...ok, phone: "98765 43210" }), {}); // no country chosen: India, the default
+  assert.equal(leadFormProblems({ ...ok, phone: "+1 555", phone_country: "IN" }).phone, PHONE_WITH_CODE_INVALID);
+  // editing keeps the earlier rule (optional, as typed): an older lead without a phone still saves
+  const legacy = { id: 3, first_name: "Ana", last_name: "Okafor", company: "Harbor", email: "ana@harbor.example", source: "Website", phone: null };
+  assert.deepEqual(leadFormProblems({ ...ok, phone: "" }, legacy), {});
+  assert.deepEqual(leadFormProblems({ ...ok, phone: "Ext. 204" }, legacy), {});
+  assert.equal(leadFieldsRequired("Website", legacy).phone, false);
+  // the server's phone messages go under Phone
+  assert.deepEqual(leadServerProblems({ message: "Enter the lead's phone number." }), { phone: LEAD_PHONE_REQUIRED });
+  assert.deepEqual(leadServerProblems({ message: india }), { phone: india });
+  assert.deepEqual(leadServerProblems({ message: "Choose the phone number's country." }), { phone: "Choose the phone number's country." });
+  assert.deepEqual(
+    leadServerProblems({ details: [{ loc: ["body", "phone_country"], type: "string_too_long", msg: "String should have at most 2 characters" }] }),
+    { phone: "String should have at most 2 characters" },
+  );
+});
+
+test("New Lead form wiring: Phone with its country beside it, required star; the country goes with the new lead only", () => {
+  const modal = source("./Modal.jsx");
+  assert.match(modal, /<PhoneField\s+required\s+error=\{fieldError\("phone"\)\}/);
+  assert.match(modal, /onInput=\{fieldError\("phone"\) \? \(event\) => fixError\(event, "phone"\) : undefined\}/);
+  assert.match(modal, /\{record \? \(\s*field\("Phone", "phone", "tel"\)/); // editing: the plain optional field
+  assert.match(modal, /phone=\{record \? undefined : \{ field: "phone", country: "phone_country" \}\}/); // autofill sets the country
+  const field = source("./PhoneField.jsx");
+  assert.match(field, /\{required && <i> \*<\/i>\}/);
+  assert.match(field, /aria-required=\{required \|\| undefined\}/);
+  assert.match(field, /defaultValue=\{DEFAULT_PHONE_COUNTRY\}/); // India (+91) first chosen
+  const values = { last_name: "Okafor", company: "Harbor", source: "Website", phone: "98765 43210", phone_country: "IN" };
+  assert.equal(leadPayload(values).phone_country, "IN");
+  assert.equal("phone_country" in leadPayload(values, true), false); // edits don't send it
+  // Contact Phone stays optional
+  assert.equal(contactProblems({ first_name: "Mia", last_name: "Noph", email: "mia@phone-optional.example", phone: "" }).phone, undefined);
 });

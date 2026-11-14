@@ -301,7 +301,8 @@ class LeadCreate(LeadLinks):
     title: str | None = Field(None, max_length=100)
     industry: str | None = Field(None, max_length=100)
     email: str | None = Field(None, max_length=255)
-    phone: str | None = Field(None, max_length=30)
+    phone: str | None = Field(None, max_length=30)  # required (and checked) on the New Lead form: routers/leads.py
+    phone_country: str | None = Field(None, max_length=2)  # not saved: the phone's country on the form (default India)
     source: LeadSource = "Other"
     source_detail: Annotated[str | None, BeforeValidator(trimmed)] = Field(None, max_length=SOURCE_DETAIL_MAX)
     currency: Currency = "USD"  # of the turnover

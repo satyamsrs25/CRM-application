@@ -133,9 +133,11 @@ def test_a_match_fills_only_the_lead_fields_and_saves_nothing(client, apollo_api
     assert body["fields"] == {"first_name": "Jane", "last_name": "Doe", "company": "Synthetic Co",
                               "title": "Head of Operations", "industry": "information technology & services",
                               "company_website": SITE, "company_linkedin_url": PAGE,
-                              "email": "jane.doe@synthetic-co.example"}
-    assert set(body["unavailable"]) == {"phone"} and "mobile numbers are not requested" in body["unavailable"]["phone"]
-    for private in ("photo", "Springfield", "headline", "555 0100", "synthetic-1", "synthetic-org-1"):
+                              "email": "jane.doe@synthetic-co.example", "location": "Springfield"}
+    assert set(body["unavailable"]) == {"phone", "employees"}
+    assert "mobile numbers are not requested" in body["unavailable"]["phone"]
+    assert body["unavailable"]["employees"] == "Apollo didn't return it"
+    for private in ("photo", "headline", "555 0100", "synthetic-1", "synthetic-org-1", "phone_international"):
         assert private not in res.text  # nothing else from Apollo reaches the browser (not the company switchboard)
     # nothing saved, nothing sent
     assert lead_count() == leads_before and sent == []
@@ -170,11 +172,14 @@ def test_only_verified_work_emails_are_used(client, apollo_api, email, status, f
 
 
 @pytest.mark.parametrize("numbers, contact, phone, reason", [
-    ([{"type_cd": "mobile", "raw_number": "+1 555 0199"}, {"type_cd": "work_direct", "raw_number": "+1 555 0101"}],
-     None, "+1 555 0101", None),
-    ([{"type_cd": "mobile", "raw_number": "+1 555 0199"}], None, None, "no direct business number"),  # never a mobile
-    (None, {"phone_numbers": [{"type_cd": "work_direct", "sanitized_number": "+15550102"}]}, "+15550102", None),
+    ([{"type_cd": "mobile", "raw_number": "+1 212-555-0199"}, {"type_cd": "work_direct", "raw_number": "+1 212-555-0101"}],
+     None, "+1 212-555-0101", None),
+    ([{"type_cd": "mobile", "raw_number": "+1 212-555-0199"}], None, None, "no direct business number"),  # never a mobile
+    (None, {"phone_numbers": [{"type_cd": "work_direct", "sanitized_number": "+12125550102"}]}, "+1 212-555-0102", None),
     ([{"type_cd": "work_direct", "raw_number": "1" * 31}], None, None, "too long"),  # never cut down
+    # New Lead needs a valid phone: a number without its country code, or not valid, is left blank for the user
+    ([{"type_cd": "work_direct", "raw_number": "(212) 555-0142"}], None, None, "isn't a valid phone number with its country code"),
+    ([{"type_cd": "work_direct", "raw_number": "+1 555 0101"}], None, None, "isn't a valid phone number with its country code"),
 ])
 def test_only_a_direct_business_number_is_used(client, apollo_api, numbers, contact, phone, reason):
     _, replies = apollo_api
@@ -190,7 +195,7 @@ def test_values_that_dont_fit_the_form_are_reported_not_cut(client, apollo_api):
     replies.append(httpx.Response(200, json={"person": person(first_name="J" * 51, title="T" * 101,
                                                               organization={"name": "C" * 201})}))
     body = look_up(client).json()
-    assert body["status"] == "matched" and set(body["fields"]) == {"last_name", "email"}
+    assert body["status"] == "matched" and set(body["fields"]) == {"last_name", "email", "location"}
     for name in ("first_name", "title", "company"):
         assert "too long" in body["unavailable"][name]
     assert body["unavailable"]["industry"] == "Apollo didn't return it"
@@ -685,3 +690,53 @@ def test_a_new_lead_keeps_the_profile_in_one_form_and_conversion_copies_it(clien
     assert edited.status_code == 200 and edited.json()["linkedin_url"] == "https://linkedin.com/in/Roe-Synthetic/"
     assert client.post("/api/leads", json={"first_name": "Test", "source": "Website", "last_name": "X", "company": "Y", "welcome_email": False,
                                            "linkedin_url": "https://example.test/in/x"}).status_code == 422
+
+
+# ---------- Location and Headcount (the lead form's own fields; mocked Apollo answers only) ----------
+
+@pytest.mark.parametrize("changes, location", [
+    ({"city": "Springfield", "state": "Illinois", "country": "United States"}, "Springfield, Illinois, United States"),
+    ({"city": "Singapore", "state": "Singapore", "country": "Singapore"}, "Singapore"),  # each part once
+    ({"city": None, "state": "  Karnataka ", "country": "India"}, "Karnataka, India"),
+])
+def test_the_persons_location_fills_location(client, apollo_api, changes, location):
+    _, replies = apollo_api
+    replies.append(httpx.Response(200, json={"person": person(**changes)}))
+    assert look_up(client).json()["fields"]["location"] == location
+
+
+def test_no_location_is_reported_not_guessed(client, apollo_api):
+    _, replies = apollo_api
+    replies.append(httpx.Response(200, json={"person": person(city=None)}))
+    body = look_up(client).json()
+    assert "location" not in body["fields"] and body["unavailable"]["location"] == "Apollo didn't return it"
+
+
+@pytest.mark.parametrize("employees, filled", [(250, "250"), (250.0, "250"), (0, None), (12.5, None), ("250", None),
+                                               (True, None), (None, None)])
+def test_the_current_employers_headcount_fills_headcount(client, apollo_api, employees, filled):
+    _, replies = apollo_api
+    replies.append(httpx.Response(200, json={"person": person(organization={**person()["organization"],
+                                                                            "estimated_num_employees": employees})}))
+    body = look_up(client).json()
+    assert body["fields"].get("employees") == filled
+    if filled is None:
+        assert "employees" in body["unavailable"]  # never a guess
+
+
+def test_another_employers_headcount_is_not_used(client, apollo_api):
+    _, replies = apollo_api
+    replies.append(httpx.Response(200, json={"person": person(
+        organization_id="another-org", organization={**person()["organization"], "estimated_num_employees": 250})}))
+    body = look_up(client).json()
+    assert "employees" not in body["fields"]
+    assert "aren't for the person's current job" in body["unavailable"]["employees"]
+
+
+def test_turnover_is_not_filled(client, apollo_api):
+    """Apollo's annual revenue is in US dollars while the form's Turnover has its own currency: left to the user."""
+    _, replies = apollo_api
+    replies.append(httpx.Response(200, json={"person": person(organization={**person()["organization"],
+                                                                            "annual_revenue": 5000000})}))
+    body = look_up(client).json()
+    assert "annual_revenue" not in body["fields"] and "5000000" not in str(body)

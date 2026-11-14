@@ -233,3 +233,19 @@ export function latestRequests() {
     forgetAll: () => Object.keys(latest).forEach((name) => (latest[name] = ++count)),
   };
 }
+
+// Leads table: where the full-value preview of a cut-off cell goes (fixed position, px). Under the cell, or above it
+// when there is no room below; always inside the viewport (margin px from each edge), so it is never cut off.
+// anchor: the cell's rectangle; size: the preview's; viewport: { width, height }.
+export function previewPlacement(anchor, size, viewport, { gap = 4, margin = 8 } = {}) {
+  const left = Math.max(margin, Math.min(anchor.left, viewport.width - size.width - margin));
+  const below = anchor.bottom + gap;
+  const above = anchor.top - gap - size.height;
+  const top =
+    below + size.height <= viewport.height - margin
+      ? below
+      : above >= margin
+        ? above
+        : Math.max(margin, viewport.height - size.height - margin);
+  return { top: Math.round(top), left: Math.round(left) };
+}

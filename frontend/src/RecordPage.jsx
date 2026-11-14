@@ -193,11 +193,19 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
   const convertedTo = lead && data.opportunities.find((o) => o.leadId === item.id);
   const sourceLead = !lead && item.leadId && data.leads.find((l) => l.id === item.leadId);
   const contact = !lead && data.contacts.find((c) => c.id === item.primary_contact_id);
+  // Any stage, Lost included: the composer only drafts and opens Outlook (no stage, owner or task changes). To is the
+  // lead's email or the opportunity's primary contact's; noEmail says why it is empty.
   const sendEmail = () =>
     openEmail(
       lead
-        ? { type: "lead", field: "lead_id", id: item.id, name: item.name, email: item.email, firstName: item.first_name, stage: item.stage }
-        : { type: "opportunity", field: "opportunity_id", id: item.id, name: item.name, email: contact?.email, firstName: contact?.first_name, stage: item.stage },
+        ? { type: "lead", field: "lead_id", id: item.id, name: item.name, email: item.email, firstName: item.first_name, stage: item.stage,
+            noEmail: "This lead has no email address." }
+        : { type: "opportunity", field: "opportunity_id", id: item.id, name: item.name, email: contact?.email, firstName: contact?.first_name, stage: item.stage,
+            noEmail: contact
+              ? `The primary contact, ${contact.full_name || contact.last_name}, has no email address.`
+              : item.primary_contact_id
+                ? "The primary contact's email isn't available to you."
+                : "This opportunity has no primary contact." },
     );
 
   const path = lead ? LEAD_PATH : OPP_PATH;

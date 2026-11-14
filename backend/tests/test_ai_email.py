@@ -78,7 +78,8 @@ def test_draft_uses_record_context_and_does_not_send_or_save(client, record, pro
     response = client.post('/api/emails/draft', json=request(record))
     assert response.status_code == 200, response.text
     assert response.json()['subject'] == 'Next steps after our demo'
-    assert response.json()['body'].endswith('Best regards,\nRavi Kumar\nravi@crm.test')
+    assert response.json()['body'].endswith('Best regards,\nRavi Kumar')  # the sender's name only: no role or email
+    assert 'ravi@crm.test' not in response.json()['body']
     payload = json.loads(captured[0].content)
     context = json.loads(payload['input'])
     assert context['crm_context']['first_name'] == 'Jack'
@@ -240,7 +241,7 @@ def test_sample_mode_uses_real_lead_stage_without_a_provider(client, record, mon
     assert draft['subject'] == ai_email.SAMPLE_EMAILS[stage][0]
     assert draft['body'].startswith('Hi Jack,')
     assert 'INTERNAL_LOSS_NOTES' not in draft['body']
-    assert draft['body'].endswith('Ravi Kumar\nravi@crm.test')
+    assert draft['body'].endswith('\n\nBest regards,\nRavi Kumar') and 'ravi@crm.test' not in draft['body']
     assert db.scalar(select(func.count()).select_from(Email)) == before
     assert db.get(Lead, record['id']).stage == stage
     settings = client.get('/api/emails/settings').json()
@@ -482,7 +483,7 @@ def test_model_signature_is_not_added_twice(client, record, provider, closing):
     provider[1]['json']=completed(model_reply('Discussing your priorities', body+'\n\n'+closing))
     response=client.post('/api/emails/draft',json=request(record,action='custom'))
     assert response.status_code == 200, response.text
-    expected=body+'\n\nBest regards,\nRavi Kumar\nravi@crm.test'
+    expected=body+'\n\nBest regards,\nRavi Kumar'
     assert response.json()['body'] == expected
     assert response.json()['body'].count('Best regards,') == 1
 
@@ -540,7 +541,8 @@ def test_default_email_stage_tracks_current_record(client, record, provider):
 
 # ---------- the drafting bar: new email or revision, CRM-only scope (all replies are mocked) ----------
 
-STARTER = 'Hi Jack,\n\n\n\nBest regards,\nRavi Kumar\nravi@crm.test'  # what New Email starts with for Ravi
+STARTER = 'Hi Jack,\n\n\n\nBest regards,\nRavi Kumar'  # what New Email starts with for Ravi (name only)
+OLD_STARTER = 'Hi Jack,\n\n\n\nBest regards,\nRavi Kumar\nravi@crm.test'  # the earlier starter, with the email
 DRAFT = ('Hi Jack,\n\nThank you for the demo on November 12. The proposal covers 25 seats at $40 per seat.\n\n'
          'Best regards,\nRavi Kumar\nravi@crm.test')
 UNRELATED = ['Write a leave request to my manager for next Friday.', 'Apply for vacation from December 20 to January 2.',
@@ -552,7 +554,7 @@ def sent_input(provider):
 
 
 @pytest.mark.parametrize('body,content', [
-    (STARTER, ''), ('', ''), ('Hello,', ''), ('Good morning Jack,\n\nBest regards,', ''),
+    (STARTER, ''), (OLD_STARTER, ''), ('', ''), ('Hello,', ''), ('Good morning Jack,\n\nBest regards,', ''),
     ('  Dear Jack Jones,  \n\n Kind regards,\nRavi Kumar\nravi@crm.test', ''),
     ('Hi Jack, let’s reconnect.', 'Hi Jack, let’s reconnect.'),
     ('Hi Jack,\n\nThanks for your time.\n\nBest regards,\nRavi Kumar', 'Thanks for your time.'),
@@ -562,7 +564,7 @@ def test_draft_content_ignores_only_the_greeting_and_signature(body, content):
     assert ai_email.draft_content(body, 'Ravi Kumar', 'ravi@crm.test') == content
 
 
-@pytest.mark.parametrize('body', ['', STARTER, 'Hello,\n\nBest regards,\nRavi Kumar'])
+@pytest.mark.parametrize('body', ['', STARTER, OLD_STARTER, 'Hello,\n\nBest regards,\nRavi Kumar'])
 def test_a_greeting_and_signature_alone_asks_for_a_new_email(client, record, provider, body):
     response = client.post('/api/emails/draft', json=request(
         record, action='custom', instructions='Invite Jack to a product demo.', current_body=body))
@@ -617,7 +619,9 @@ def test_refine_keeps_the_facts_the_subject_and_one_signature(client, record, pr
     assert response.status_code == 200, response.text
     draft = response.json()
     assert (draft['subject'], draft['draft_type']) == ('Your proposal', 'revision')
-    assert draft['body'].count('Best regards,') == 1 and draft['body'].count('ravi@crm.test') == 1
+    # the older signature (with the email) is replaced by the name-only closing, once
+    assert draft['body'].count('Best regards,') == 1 and 'ravi@crm.test' not in draft['body']
+    assert draft['body'].endswith('\n\nBest regards,\nRavi Kumar')
     assert all(fact in draft['body'] for fact in ('November 12', '25 seats', '$40'))
     sent = sent_input(provider)
     assert sent['task'] == 'revise_email' and sent['user_request'].startswith(label + ':')
@@ -872,7 +876,7 @@ def test_admin_can_draft_and_refine_another_users_lead(client, record, provider,
     original = 'Hi Jack,\n\nCould you confirm your availability for a demo?\n\nBest regards,\nAsha Rao\nasha@crm.test'
     response = client.post('/api/emails/draft', json=request(record, action=action, instructions='Ask Jack when he is available for a demo.' if action == 'custom' else '', current_body=original if action != 'stage' else '', current_subject='Demo availability'))
     assert response.status_code == 200, response.text
-    assert response.json()['body'].endswith('Best regards,\nAsha Rao\nasha@crm.test')
+    assert response.json()['body'].endswith('Best regards,\nAsha Rao') and 'asha@crm.test' not in response.json()['body']
     assert response.json()['subject'] == 'Demo availability'
     after = client.get(f"/api/leads/{record['id']}").json()
     assert (after['owner_id'], after['stage']) == (before['owner_id'], before['stage'])
@@ -1016,5 +1020,106 @@ def test_a_draft_never_returns_sender_placeholders(client, record, provider):
     draft = response.json()
     assert draft['subject'] == 'Introduction'
     assert draft['body'] == ("Hi Jack,\n\nI'm Ravi Kumar. I'd welcome a short call about your priorities.\n\n"
-                             'Best regards,\nRavi Kumar\nravi@crm.test')
+                             'Best regards,\nRavi Kumar')
     assert '[' not in draft['body'] and 'Company' not in draft['body']
+
+
+# ---------- the closing: "Best regards," and the sender's name only (no role or email) ----------
+
+def test_the_closing_is_best_regards_and_the_name_only():
+    assert ai_email.sender_closing('Ravi Kumar') == 'Best regards,' + chr(10) + 'Ravi Kumar'
+    assert ai_email.sender_closing('  Ravi   Kumar ') == 'Best regards,' + chr(10) + 'Ravi Kumar'
+    assert ai_email.sender_closing('') == 'Best regards,'  # no name on the account: none is invented
+    nl = chr(10)
+    body = ai_email.with_sender_signature(nl.join(['Hi Jack,', '', 'Thanks for the call.', '', 'Best regards,',
+                                                   '[Your Name]', '[Your Title]']), '', 'ravi@crm.test')
+    assert body == nl.join(['Hi Jack,', '', 'Thanks for the call.', '', 'Best regards,'])
+
+
+def test_without_a_sender_name_no_name_placeholder_is_left():
+    text = ai_email.without_sender_placeholders("Hi Jack, I'm [Your Name] and I'd welcome a short call.", '', 'ravi@crm.test')
+    assert '[' not in text and 'Your Name' not in text and text.startswith('Hi Jack')
+
+
+def lines(*parts):
+    return chr(10).join(parts)
+
+
+@pytest.mark.parametrize('body, expected', [
+    # sender details the AI left as placeholders are removed; {sender_name} is filled with the sender's name when sent
+    (lines('Hi {first_name},', '', 'Would {company} like a demo?', '', 'Best regards,', '{sender_name}', '[Your Title]',
+           '[Your Company]', '[Your Email]', '{your_phone}'),
+     lines('Hi {first_name},', '', 'Would {company} like a demo?', '', 'Best regards,', '{sender_name}')),
+    # a line the user wrote is kept
+    (lines('Hi {first_name},', '', 'Would {company} like a demo?', '', 'Best regards,', '{sender_name}', 'Head of Sales'),
+     lines('Hi {first_name},', '', 'Would {company} like a demo?', '', 'Best regards,', '{sender_name}', 'Head of Sales')),
+])
+def test_a_campaign_sign_off_keeps_the_name_and_drops_sender_placeholders(body, expected):
+    assert ai_email.campaign_signature(body) == expected
+
+
+def test_a_campaign_draft_never_returns_sender_placeholders(client, provider):
+    provider[1]['json'] = completed(model_reply('Join our demo', lines(  # MOCKED model reply
+        'Hi {first_name},', '', 'Would {company} like a 20-minute demo? Reach me at [Your Email].', '', 'Best regards,',
+        '[Your Name]', '[Your Title]', '[Your Company]', '[Your Email]')))
+    response = client.post('/api/campaigns/draft', json={'instructions': 'Invite them to a demo next week.'})
+    assert response.status_code == 200, response.text
+    body = response.json()['body']
+    assert body.endswith(lines('Best regards,', '{sender_name}'))
+    assert '[' not in body and 'Your ' not in body and body.count('Best regards,') == 1
+
+
+# ---------- email from a Lost opportunity: drafting only, nothing about the deal changes ----------
+
+def lost_opportunity():
+    from app.models import Contact, Task
+    db = next(app.dependency_overrides[get_db]())
+    account = Account(name='Lost customer', owner_id=2)
+    db.add(account)
+    db.flush()
+    contact = Contact(first_name='Mia', last_name='Lopez', email='mia@lost-customer.example', account_id=account.id,
+                      owner_id=2)
+    db.add(contact)
+    db.flush()
+    opportunity = Opportunity(name='Lost deal', account_id=account.id, owner_id=2, stage='Lost',
+                              primary_contact_id=contact.id, lost_reason='Price', lost_notes='INTERNAL_LOSS_NOTES')
+    db.add(opportunity)
+    db.commit()
+    counts = (db.scalar(select(func.count()).select_from(Email)), db.scalar(select(func.count()).select_from(Task)))
+    return db, opportunity, counts, Task
+
+
+@pytest.mark.parametrize('user_id', [2, 1, 3])  # Ravi (Salesperson, the owner), Priya (Manager), Asha (Admin)
+def test_a_lost_opportunity_can_be_emailed_without_changing_it(client, monkeypatch, user_id):
+    monkeypatch.setenv('EMAIL_DRAFT_MODE', 'sample')
+    monkeypatch.setattr(ai_email.httpx, 'AsyncClient', lambda **kw: pytest.fail('Sample mode must not call an AI service'))
+    monkeypatch.setattr(mailer, 'send', lambda *a, **kw: pytest.fail('Drafting must not send mail'))
+    db, opportunity, before, Task = lost_opportunity()
+    login_as(client, user_id)
+    menu = client.get('/api/emails/draft-options', params={'record_field': 'opportunity_id', 'record_id': opportunity.id})
+    assert menu.status_code == 200, menu.text
+    assert menu.json()['stage'] == 'Lost' and len(menu.json()['options']) == 4
+    response = client.post('/api/emails/draft', json={'record_field': 'opportunity_id', 'record_id': opportunity.id,
+                                                      'option_id': menu.json()['options'][0]['option_id']})
+    assert response.status_code == 200, response.text
+    draft = response.json()
+    assert draft['record_stage'] == 'Lost' and draft['body'].startswith('Hi Mia,')
+    assert 'INTERNAL_LOSS_NOTES' not in draft['body'] and 'Price' not in draft['body']  # no internal loss reason
+    assert draft['body'].count('Best regards,') == 1
+    db.expire_all()
+    assert (db.get(Opportunity, opportunity.id).stage, db.get(Opportunity, opportunity.id).owner_id) == ('Lost', 2)
+    assert (db.scalar(select(func.count()).select_from(Email)),
+            db.scalar(select(func.count()).select_from(Task))) == before  # no Sent entry, no task
+    db.close()
+
+
+def test_a_lost_opportunity_still_needs_the_email_permission(client, monkeypatch):
+    monkeypatch.setenv('EMAIL_DRAFT_MODE', 'sample')
+    db, opportunity, _, _ = lost_opportunity()
+    opportunity_id = opportunity.id
+    db.add(RolePermission(role='Salesperson', permission='send_emails', allowed=False))
+    db.commit()
+    db.close()
+    login_as(client, 2)
+    response = client.post('/api/emails/draft', json={'record_field': 'opportunity_id', 'record_id': opportunity_id})
+    assert response.status_code == 403
