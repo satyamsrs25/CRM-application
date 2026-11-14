@@ -1714,7 +1714,7 @@ test("Home: one dashboard per role, each card with its permission", async () => 
 
 test("Lead transfer requests, the lead list's Created By / Transferred To, and duplicate warnings", () => {
   const table = source("./LeadsTable.jsx");
-  assert.match(table, /\["Created By", "created_by", \d+\]/);
+  assert.doesNotMatch(table, /"Created By"/); // the owner who added a lead is its Owner: only Owner and Transferred To
   assert.match(table, /\["Transferred To", "transferred", \d+\]/);
   assert.match(table, /l\.last_transferred_to/);
   const api = source("./api.js");
@@ -2133,4 +2133,22 @@ test("New Opportunity: switching to an existing contact drops the new-contact dr
   assert.doesNotMatch(source("./PhoneField.jsx"), /defaultValue=\{value|localStorage|sessionStorage/);
   // the dialog itself is removed when closed and created again when opened (no draft carried over)
   assert.match(source("./App.jsx"), /\{modal && <Modal modal=\{modal\} close=\{\(\) => setModal\(null\)\}/);
+});
+
+test("Bulk email: a progress pop-up with Sent / Queued / Failed opens when a campaign is sent", () => {
+  const page = source("./CampaignsPage.jsx");
+  for (const label of ['["Sent", counts.Sent', '["Queued", counts.Queued', '["Failed", counts.Failed']) assert.ok(page.includes(label), label);
+  assert.match(page, /export function CampaignProgressPopups\(\)/);
+  assert.match(page, /api\s*\.campaign\(id, \{ limit: 1 \}\)/); // refreshed while sending (one recipient row is enough)
+  // opened from Email Campaigns and from leads selected on the Leads page
+  assert.match(page, /watchCampaign\(c\); \/\/ the progress pop-up/);
+  assert.match(source("./LeadsTable.jsx"), /watchCampaign\(c\); \/\/ the progress pop-up/);
+  assert.match(source("./App.jsx"), /<CampaignProgressPopups \/>/);
+});
+
+test("Account page: a Leads card with the account's leads", () => {
+  const pages = source("./RelatedPages.jsx");
+  assert.match(pages, /<AccountLeads accountId=\{account\.id\} \/>/);
+  assert.match(pages, /api\s*\.accountLeads\(accountId\)/);
+  assert.match(source("./api.js"), /accountLeads: \(id\) => apiRequest\(`\/accounts\/\$\{id\}\/leads`\)/);
 });

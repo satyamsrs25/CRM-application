@@ -31,7 +31,7 @@ Calls to `/api` are forwarded to `http://127.0.0.1:8001` (see `vite.config.js`).
 | Login | Log in (`POST /api/auth/login`); the token is sent on every request |
 | Users (Admin) | Add users, change roles, reset passwords, deactivate, transfer records |
 | Home | One dashboard per role, with a period selector (Past 1 week or a custom range). Salesperson and a Manager's Me view: Action Needed, Scheduled Demos (each with Today and Upcoming), Overall Value, Follow-up Radar, My Scorecard, Recent Activity. Manager's My Team view: Action Needed, Scheduled Demos, Overall Value, Win/Loss Analysis, Team Performance. Admin (every record): Overall Value, Win/Loss Analysis, Lead Sources, Closing Soon, Follow-up Radar, Recent Activity. Each card is shown by its "Home dashboard" permission |
-| Leads | List views (All Open Leads, My Open Leads, Converted, Lost), sort, search, New. Columns include Owner, Created By and Transferred To (to whom and when). Transfer Requests: ask for someone else's lead (Request Transfer on the lead, or from the "email already in the CRM" message) and approve or reject requests for yours |
+| Leads | List views (All Open Leads, My Open Leads, Converted, Lost), sort, search, New. Columns include Owner and Transferred To (to whom and when). Transfer Requests: ask for someone else's lead (Request Transfer on the lead, or from the "email already in the CRM" message) and approve or reject requests for yours |
 | Lead page | Highlights, path (New → Nurturing → Demo → Converted), Convert, Mark as Lost, Details and Activity tabs, notes, stage history |
 | Opportunities | Table or Kanban (drag a deal to change its stage) |
 | Opportunity page | Path (Opportunity → Proposal → Won), Mark as Won / Lost, Activity, Details |

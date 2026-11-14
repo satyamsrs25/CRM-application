@@ -192,6 +192,7 @@ All APIs start with `/api`.
 | Leads list | GET /leads (filters: stage, source, owner_id, search) |
 | New lead | POST /leads |
 | Lead transfer requests (ask for someone else's lead; the owner, the owner's Manager or the Admin approves or rejects; nothing moves without approval) | POST /leads/{id}/transfer-requests, GET /leads/{id}/transfer-requests, GET /transfer-requests?box=to_approve\|mine\|all, POST /transfer-requests/{id}/approve, /reject (reason required), /cancel |
+| An account's leads (converted into it, or the same company name / website) | GET /accounts/{id}/leads |
 | No duplicate accounts / contacts (one account per company name or website, one contact per email) | GET /accounts/duplicates?name=&website=, GET /contacts/duplicates?email=&account_id=&first_name=&last_name= (POST /accounts and /contacts refuse duplicates with 409) |
 | Lead page | GET /leads/{id} (details, tasks, notes and history together) |
 | Edit lead | PUT /leads/{id} |
