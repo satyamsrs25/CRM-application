@@ -409,6 +409,8 @@ export const api = {
     apiRequest("/leads/bulk-transfer", { method: "POST", body: { lead_ids, to_user_id, note: note || null } }),
   bulkDeleteLeads: (lead_ids) => apiRequest("/leads/bulk-delete", { method: "POST", body: { lead_ids } }),
   // email campaigns (see backend/app/campaigns.py)
+  // the account page's Leads: converted into the account, or the same company name / website
+  accountLeads: (id) => apiRequest(`/accounts/${id}/leads`),
   campaignSettings: () => apiRequest("/campaigns/settings"),
   campaigns: () => apiRequest("/campaigns"),
   campaignSummary: () => apiRequest("/campaigns/summary"),

@@ -1,4 +1,5 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
+import { api } from "./api";
 import { EmailList, useEmails } from "./Email";
 import { canCreateOpportunity } from "./permissions";
 import { amount, dateTime, shortDate } from "./format";
@@ -56,6 +57,49 @@ const owner = (data, id) => data.users.find((u) => u.id === id)?.full_name || ""
 const site = (url) => (url ? <a href={/^https?:/.test(url) ? url : `https://${url}`} target="_blank" rel="noreferrer">{url}</a> : "");
 
 // No Send Email here: emails are written from a lead, opportunity or contact. The account's email history stays below.
+// The account page's Leads card: leads converted into this account, and leads from the same company (name or website)
+function AccountLeads({ accountId }) {
+  const [leads, setLeads] = useState(null);
+  useEffect(() => {
+    let live = true;
+    setLeads(null);
+    api
+      .accountLeads(accountId)
+      .then((value) => live && setLeads(value))
+      .catch(() => live && setLeads({ total: 0, items: [] }));
+    return () => {
+      live = false;
+    };
+  }, [accountId]);
+  const items = leads?.items || [];
+  return (
+    <Card title={`Leads (${leads ? leads.total : "…"})`} icon="lead">
+      <ul className="related-records">
+        {items.map((l) => (
+          <li key={l.id}>
+            <a href={`#/leads/${l.id}`}>{l.name}</a>
+            <dl>
+              <dt>Stage:</dt>
+              <dd>
+                <StageBadge stage={l.stage} />
+              </dd>
+              <dt>Owner:</dt>
+              <dd>{l.owner_name}</dd>
+              <dt>Email:</dt>
+              <dd>{l.email}</dd>
+              <dt>Linked by:</dt>
+              <dd>{l.why}</dd>
+            </dl>
+          </li>
+        ))}
+        {leads && !items.length && <p className="muted pad">No leads from this company.</p>}
+        {leads && leads.total > items.length && <p className="muted pad">Showing the newest {items.length} of {leads.total}.</p>}
+        {!leads && <p className="muted pad">Loading…</p>}
+      </ul>
+    </Card>
+  );
+}
+
 export function AccountPage({ id, data, user, openNew, emailVersion }) {
   const account = data.accounts.find((a) => String(a.id) === id);
   const { emails } = useEmails("account_id", account?.id, emailVersion);
@@ -139,6 +183,7 @@ export function AccountPage({ id, data, user, openNew, emailVersion }) {
               {!contacts.length && <p className="muted pad">No contacts yet.</p>}
             </ul>
           </Card>
+          <AccountLeads accountId={account.id} />
           <Card title={`Opportunities (${opps.length})`} icon="opportunity">
             <ul className="related-records">
               {opps.map((o) => (

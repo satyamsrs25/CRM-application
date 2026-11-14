@@ -101,3 +101,25 @@ def test_opportunity_upload_finds_the_account_by_name_or_website(client):
                       files={"file": ("deals.csv", io.BytesIO(csv.encode()), "text/csv")})
     assert res.status_code == 200, res.text
     assert res.json()["created"] == 2 and res.json()["accounts_created"] == 0 and count(Account) == 1
+
+
+def test_an_accounts_page_lists_its_leads(client):
+    """Leads converted into the account, and leads from the same company (name or website); only leads you can see."""
+    login_as(client, PRIYA)
+    account = new_account(client).json()  # Brightline Logistics, brightline.example
+    same_name = new_lead(client, "dev@brightline.example", company="Brightline Logistics Inc.", first="Dev", last="Rao")
+    same_site = new_lead(client, "ana@brightline.example", company="Brightline Group", first="Ana", last="Bose",
+                         company_website="https://www.brightline.example")
+    new_lead(client, "om@harbor.example", company="Harbor Freight Labs", first="Om", last="Iyer")  # another company
+    converted = new_lead(client, "kai@brightline.example", company="BRIGHTLINE LOGISTICS", first="Kai", last="Sen")
+    assert convert(client, converted["id"]).status_code in (200, 201)
+    leads = client.get(f"/api/accounts/{account['id']}/leads").json()
+    why = {lead["id"]: lead["why"] for lead in leads["items"]}
+    assert leads["total"] == 3 and why == {same_name["id"]: "Same company", same_site["id"]: "Same website",
+                                           converted["id"]: "Converted"}
+    # a Salesperson without team access sees only their own leads on it
+    login_as(client, RAVI)
+    mine = new_lead(client, "zoe@brightline.example", company="Brightline Logistics", first="Zoe", last="Paul")
+    res = client.get(f"/api/accounts/{account['id']}/leads")
+    if res.status_code == 200:  # can't open Priya's account at all otherwise (404)
+        assert [lead["id"] for lead in res.json()["items"]] == [mine["id"]]

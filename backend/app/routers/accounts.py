@@ -13,7 +13,8 @@ from app import opportunity_matches as matches
 from app.constants import LEAD_OPEN_STAGES
 from app.models import Account, Contact, Email, Lead, Opportunity, Task
 from app.serializers import account_detail, account_out, contact_out
-from app.services import activity_of, get_or_404, resolve_user_id
+from app.routers.lead_files import company_key
+from app.services import activity_of, get_or_404, resolve_user_id, website_host
 
 router = APIRouter(prefix="/api", tags=["Accounts and contacts"])
 
@@ -118,6 +119,47 @@ def get_account(account_id: int, db: Session = Depends(get_db)):
         detail.contacts = [c for c in detail.contacts if c.owner_id == me.id]
         detail.opportunities = [o for o in detail.opportunities if o.owner_id == me.id]
     return detail
+
+
+ACCOUNT_LEADS_MAX = 50  # the newest leads shown on the account page
+
+
+@router.get("/accounts/{account_id}/leads")
+def account_leads(account_id: int, db: Session = Depends(get_db)):
+    """The account page's Leads: leads converted into this account's opportunities, and leads from the same company
+    (the same company name, "Inc"/"LLC", case and punctuation ignored, or the same website). Only leads the user can
+    see; the newest first."""
+    account = get_or_404(db, Account, account_id, "Account")
+    me = acting_user()
+    if not can_view(account.owner_id) and not db.scalar(select(Account.id).where(Account.id == account.id,
+                                                                                   _worked_on(me.id))):
+        require_view(account.owner_id, "account")
+    found: dict[int, str] = {}  # lead id -> why it is on this account
+    for (lead_id,) in db.execute(visible(select(Lead.id), Lead).join(Opportunity, Opportunity.lead_id == Lead.id)
+                                 .where(Opportunity.account_id == account.id)):
+        found[lead_id] = "Converted"
+    name, host = company_key(account.name), website_host(account.website)
+    words = name.split()
+    candidates = []
+    if words:  # same company name: narrowed in SQL by its first word, then compared exactly
+        candidates += db.execute(visible(select(Lead.id, Lead.company, Lead.company_website), Lead)
+                                 .where(Lead.company.ilike(f"%{words[0]}%")).limit(5000)).all()
+    if "." in host:  # same website
+        candidates += db.execute(visible(select(Lead.id, Lead.company, Lead.company_website), Lead)
+                                 .where(Lead.company_website.ilike(f"%{host}%")).limit(5000)).all()
+    for lead_id, company, website in candidates:
+        if lead_id in found:
+            continue
+        if words and company_key(company) == name:
+            found[lead_id] = "Same company"
+        elif "." in host and website_host(website) == host:
+            found[lead_id] = "Same website"
+    leads = db.scalars(select(Lead).options(joinedload(Lead.owner)).where(Lead.id.in_(found))
+                       .order_by(Lead.created_at.desc(), Lead.id.desc()).limit(ACCOUNT_LEADS_MAX)).all() if found else []
+    return {"total": len(found), "items": [
+        {"id": lead.id, "name": lead.name, "company": lead.company, "email": lead.email, "stage": lead.stage,
+         "owner_name": lead.owner.full_name if lead.owner else None, "created_at": lead.created_at,
+         "why": found[lead.id]} for lead in leads]}
 
 
 @router.get("/contacts", response_model=list[schemas.ContactOut])
