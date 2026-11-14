@@ -472,8 +472,9 @@ export function DateCell({ value }) {
   );
 }
 
-// An amount with its currency: the number and a currency dropdown side by side (sent as `name` and `currencyName`)
-export function AmountField({ label, name, value = "", currency, currencyName = "currency", required = false }) {
+// An amount with its currency: the number and a currency dropdown side by side (sent as `name` and `currencyName`).
+// error: the form's message for the amount, shown under it (onInput: told when it changes, to check it again).
+export function AmountField({ label, name, value = "", currency, currencyName = "currency", required = false, error = "", onInput }) {
   return (
     <div className="field">
       <label htmlFor={`amount-${name}`}>
@@ -483,7 +484,18 @@ export function AmountField({ label, name, value = "", currency, currencyName = 
         </span>
       </label>
       <div className="amount-input">
-        <input id={`amount-${name}`} name={name} type="number" min={0} step="any" required={required} defaultValue={value ?? ""} />
+        <input
+          id={`amount-${name}`}
+          name={name}
+          type="number"
+          min={0}
+          step="any"
+          required={required}
+          defaultValue={value ?? ""}
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? `${name}-field-error` : undefined}
+          onInput={onInput}
+        />
         <select name={currencyName} defaultValue={currency || DEFAULT_CURRENCY} aria-label={`${label} currency`}>
           {CURRENCIES.map((c) => (
             <option key={c} value={c}>
@@ -492,6 +504,11 @@ export function AmountField({ label, name, value = "", currency, currencyName = 
           ))}
         </select>
       </div>
+      {error && (
+        <small id={`${name}-field-error`} className="field-error">
+          {error}
+        </small>
+      )}
     </div>
   );
 }

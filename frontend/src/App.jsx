@@ -2,6 +2,7 @@ import AssistantPage from "./AssistantPage";
 import CampaignsPage, { CampaignProgressPopups } from "./CampaignsPage";
 import React, { useEffect, useState } from "react";
 import { api, setToken } from "./api";
+import { senderClosing } from "./domain";
 import { EmailComposer } from "./Email";
 import Header, { Sidebar } from "./Header";
 import ListView from "./ListView";
@@ -180,11 +181,12 @@ function Workspace({ user, onLogout, onUserChanged }) {
       notify(err.message);
     }
   };
-  // Email composer: target = { type, field, id, name, email, firstName }
+  // Email composer: target = { type, field, id, name, email, firstName, noEmail }. The closing is "Best regards," and
+  // the sender's name only (no role or email address), as the AI drafts end too.
   const openEmail = (target) =>
     setComposer({
       ...target,
-      greeting: `Hi ${target.firstName || ""},\n\n\n\nBest regards,\n${user.full_name}\n${user.email}`.replace("Hi ,", "Hello,"),
+      greeting: `Hi ${target.firstName || ""},\n\n\n\n${senderClosing(user.full_name)}`.replace("Hi ,", "Hello,"),
     });
   const convert = (leadId) => setModal({ type: "convert", record: data.leads.find((lead) => lead.id === leadId) });
 

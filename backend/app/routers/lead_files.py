@@ -24,7 +24,7 @@ from app.models import Account, ActivityLog, Contact, Lead, LeadTransfer, StageH
 from app.security import acting_user, can_view, require, team_ids, visible
 from app.serializers import lead_out
 from app.services import (activity_condition, email_matches_website, is_personal_email, log_activity, notify,
-                          notify_data_owners, now, website_host)
+                          notify_data_owners, now, uploaded_leads_team_notice, website_host)
 
 router = APIRouter(prefix="/api/leads", tags=["Leads: upload and download"])
 
@@ -421,6 +421,9 @@ async def import_leads(
                    f"{me.full_name} uploaded {owner['count']:,} lead{'s' if owner['count'] != 1 else ''} "
                    f"and assigned {'them' if owner['count'] != 1 else 'it'} to you ({file.filename}).",
                    link="/leads", category="assignment")
+        # the owner's Manager: one summary per upload, never one per row (sent with the rest after the save)
+        uploaded_leads_team_notice(db, owner_id=owner["id"], count=owner["count"], actor=me,
+                                   file_name=file.filename or "file")
     db.commit()
     return result
 

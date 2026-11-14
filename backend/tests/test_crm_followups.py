@@ -374,3 +374,15 @@ def test_sources_and_the_description_column_agree_everywhere():
     assert "leads_source_check CHECK (source IN ({sources}))" in upgrade
     # the upgrade only widens the allowed list and adds an empty column: it doesn't update leads' sources or details
     assert "SET source_detail" not in upgrade and "SET source = 'LinkedIn'" not in upgrade
+
+
+def test_filling_in_created_by_keeps_every_leads_last_modified():
+    """The one-off created_by_id backfill for older leads runs with the leads updated_at trigger off, inside the same
+    transaction, and only when a lead is missing it: the upgrade never resets Last Modified."""
+    upgrade = inspect.getsource(main.upgrade_database)
+    off = upgrade.index("ALTER TABLE leads DISABLE TRIGGER trg_leads_updated_at")
+    backfill = upgrade.index("UPDATE leads l SET created_by_id")
+    on = upgrade.index("ALTER TABLE leads ENABLE TRIGGER trg_leads_updated_at")
+    assert upgrade.index("SELECT EXISTS (SELECT 1 FROM leads WHERE created_by_id IS NULL)") < off < backfill < on
+    assert "with engine.begin() as conn:" in upgrade  # one transaction: if the UPDATE fails, the trigger stays on
+    assert "SET updated_at" not in upgrade

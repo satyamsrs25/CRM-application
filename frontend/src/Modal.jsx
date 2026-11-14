@@ -24,8 +24,10 @@ import {
   emailWebsiteProblem,
   websiteHost,
   isPersonalEmail,
+  LEAD_EMAIL_INVALID,
   leadFieldsRequired,
   leadFormProblems,
+  leadServerProblems,
   sourceAfterLinkedInMatch,
   localInput,
   newRecordProblems,
@@ -205,15 +207,18 @@ export default function Modal({ modal, close, data, run, notify, user }) {
   // New Lead: a successful LinkedIn lookup selects LinkedIn while the source is still the untouched default or blank
   // (sourceAfterLinkedInMatch). A source the user picked, or an Other they described, is kept.
   const sourceChosen = useRef(false);
-  const linkedInMatched = () => {
+  // filled: the fields Apollo just filled or cleared; a message they show is checked again
+  const linkedInMatched = (filled = []) => {
     const form = ref.current?.querySelector("form");
     const list = form?.elements.source;
     if (!list) return;
     const next = sourceAfterLinkedInMatch({ current: list.value, chosen: sourceChosen.current, detail: form.elements.source_detail?.value });
-    if (!next) return;
-    list.value = next; // not the user's choice: a later lookup may still update it, and the user can change it
-    setLeadSource(next);
-    setFieldErrors(({ source_detail: _, linkedin_url: __, ...rest }) => rest);
+    if (next) {
+      list.value = next; // not the user's choice: a later lookup may still update it, and the user can change it
+      setLeadSource(next);
+      setFieldErrors(({ source_detail: _, linkedin_url: __, ...rest }) => rest);
+    }
+    recheckLead(form, next ? [...filled, "source"] : filled, true);
   };
   // New Contact: the chosen account, which LinkedIn autofill compares with Apollo's employer (and never changes)
   const [contactAccount, setContactAccount] = useState(String(modal.defaults?.account_id ?? ""));
@@ -228,6 +233,41 @@ export default function Modal({ modal, close, data, run, notify, user }) {
     }
     if (fieldErrors[name]) setFieldErrors(({ [name]: _, ...rest }) => rest);
   };
+  // Lead form (no browser popups): each field's message, from leadFormProblems plus the browser's own checks the form
+  // keeps (a number below 0 or not whole, a demo date already past, an email it can't read), shown under the field.
+  const leadProblems = (form) => {
+    const problems = leadFormProblems(Object.fromEntries(new FormData(form)), record);
+    for (const el of form.elements) {
+      if (!el.name || problems[el.name] || !el.willValidate || el.validity.valid || el.validity.valueMissing) continue;
+      if (el.name !== "email") problems[el.name] = el.validationMessage;
+      else if (el.validity.typeMismatch && el.value.trim().toLowerCase() !== (record?.email || "").trim().toLowerCase())
+        problems.email = LEAD_EMAIL_INVALID; // a saved email of an older lead doesn't block an unrelated edit
+    }
+    return problems;
+  };
+  // A field is checked when it is left, and again as it changes while it shows a message (which then updates, or goes
+  // once the value is right). shownOnly: only fields already showing a message (after LinkedIn autofill).
+  const recheckLead = (form, names, shownOnly = false) => {
+    if (!form || !names.length) return;
+    if (names.includes("email") && emailError) {
+      setEmailError("");
+      setAskFor(null);
+    }
+    const problems = leadProblems(form);
+    setFieldErrors((errors) => {
+      const next = { ...errors };
+      for (const name of names) {
+        if (shownOnly && !(name in errors)) continue;
+        if (problems[name]) next[name] = problems[name];
+        else delete next[name];
+      }
+      return next;
+    });
+  };
+  // the other forms remove a field's message on its first change, as before
+  const fixError = (event, name) => (type === "lead" ? recheckLead(event.target.form, [name]) : clearError(name));
+  const focusFirstProblem = (form, problems) =>
+    [...form.elements].find((el) => el.name && problems[el.name] && el.type !== "hidden")?.focus();
   // an email on another domain than the website is asked about once; saving again with the same pair saves it
   // (some companies use one domain for email and another for the website)
   const [domainWarned, setDomainWarned] = useState("");
@@ -327,7 +367,7 @@ export default function Modal({ modal, close, data, run, notify, user }) {
         }
         aria-invalid={fieldError(name) ? true : undefined}
         aria-describedby={fieldError(name) ? errorId(name) : undefined}
-        onInput={fieldError(name) ? () => clearError(name) : undefined}
+        onInput={fieldError(name) ? (event) => fixError(event, name) : undefined}
       />
       {fieldError(name) && (
         <small id={errorId(name)} className="field-error">
@@ -424,7 +464,7 @@ export default function Modal({ modal, close, data, run, notify, user }) {
         onChange={
           fieldError(name) || onPick
             ? (event) => {
-                if (fieldError(name)) clearError(name);
+                if (fieldError(name)) fixError(event, name);
                 onPick?.(event.target.value);
               }
             : undefined
@@ -611,6 +651,16 @@ export default function Modal({ modal, close, data, run, notify, user }) {
         return;
       }
     }
+    if (type === "lead") {
+      // every message under its field, before anything is sent; the first field to fix gets the focus
+      const problems = leadProblems(event.target);
+      setFieldErrors(problems);
+      if (Object.keys(problems).length) {
+        setError(""); // nothing is sent; what was typed stays
+        focusFirstProblem(event.target, problems);
+        return;
+      }
+    }
     const noteInput = noteField && event.target.elements[noteField];
     const noteMissing = !!noteInput && !stageNote(noteInput.value);
     const taskProblems = taskNeeded ? stageTaskProblems(Object.fromEntries(new FormData(event.target))) : {};
@@ -630,17 +680,7 @@ export default function Modal({ modal, close, data, run, notify, user }) {
     try {
       let saved;
       if (type === "lead") {
-        if (!v.last_name.trim() || !v.company.trim())
-          throw new Error("Last name and company are required.");
-        // First Name, what an Other source is, the LinkedIn Profile URL for LinkedIn, and valid web addresses: shown
-        // under each field (an older lead's missing values don't block an unrelated edit)
-        const problems = leadFormProblems(v, record);
-        if (Object.keys(problems).length) {
-          setFieldErrors(problems);
-          event.target.elements[Object.keys(problems)[0]]?.focus();
-          return; // nothing is sent; what was typed stays
-        }
-        if (!(v.email || "").trim()) throw new Error("Please fill in: Email.");
+        // the fields were checked above (leadProblems); an older lead's missing values don't block an unrelated edit
         const email = (v.email || "").trim().toLowerCase();
         const emailProblem = (text) => {
           setEmailError(text);
@@ -762,7 +802,13 @@ export default function Modal({ modal, close, data, run, notify, user }) {
       if (type === "contact") go(`/contacts/${saved.id}`);
       if (type === "convert" || type === "newOpportunity") go(`/opportunities/${saved.opportunity.id}`);
     } catch (err) {
-      setError(err.message);
+      // the server refused a lead field: its message goes under that field, like the form's own
+      const fields = type === "lead" ? leadServerProblems(err) : {};
+      if (Object.keys(fields).length) {
+        setError("");
+        setFieldErrors((errors) => ({ ...errors, ...fields }));
+        focusFirstProblem(event.target, fields);
+      } else setError(err.message);
     } finally {
       lock.current = false;
       setSubmitting(false);
@@ -834,10 +880,20 @@ export default function Modal({ modal, close, data, run, notify, user }) {
             </div>
           </>
         ) : (
-        /* New Account / New Contact check their fields themselves, so each message shows under its field */
+        /* New Account / New Contact and the lead form check their fields themselves, so each message shows under its
+           field (no browser popups); the lead form also checks a field when it is left */
         <form
           onSubmit={submit}
-          noValidate={newRecord}
+          noValidate={newRecord || type === "lead"}
+          onBlur={
+            type === "lead"
+              ? (event) => {
+                  // not when leaving for Cancel or Close: the message would move the button away from the click
+                  if (!event.target.name || event.relatedTarget?.closest?.(".modal-footer, .modal-close")) return;
+                  recheckLead(event.currentTarget, [event.target.name]);
+                }
+              : undefined
+          }
           // a contact's details are the customer's: the browser doesn't fill in the user's own saved name, email or phone
           autoComplete={type === "contact" || type === "newOpportunity" ? "off" : undefined}
           onInput={(e) => type === "lead" && e.target.name === "company" && lookUpCompany(e.target.value)}
@@ -909,9 +965,10 @@ export default function Modal({ modal, close, data, run, notify, user }) {
               form={() => ref.current?.querySelector("form")}
               onCompany={lookUpCompany}
               onMatched={linkedInMatched}
+              phone={record ? undefined : { field: "phone", country: "phone_country" }}
               required={leadNeeds.linkedin_url}
               error={fieldError("linkedin_url")}
-              onInput={fieldError("linkedin_url") ? () => clearError("linkedin_url") : undefined}
+              onInput={fieldError("linkedin_url") ? (event) => fixError(event, "linkedin_url") : undefined}
             />
             <div className="form-grid">
               {select("Salutation", "salutation", SALUTATIONS)}
@@ -921,8 +978,19 @@ export default function Modal({ modal, close, data, run, notify, user }) {
               {companyBox()}
               {field("Title", "title")}
               {field("Industry", "industry")}
-              {field("Email", "email", "email", true)}
-              {field("Phone", "phone", "tel")}
+              {/* required on a new lead, and on an older lead that has an email */}
+              {field("Email", "email", "email", leadNeeds.email)}
+              {/* New Lead: a valid Phone is required, with its country (as on New Contact); editing keeps the plain
+                  optional field, so an older lead without a phone still saves */}
+              {record ? (
+                field("Phone", "phone", "tel")
+              ) : (
+                <PhoneField
+                  required
+                  error={fieldError("phone")}
+                  onInput={fieldError("phone") ? (event) => fixError(event, "phone") : undefined}
+                />
+              )}
               {field("Location", "location")}
               {select(
                 "Lead Source",
@@ -944,7 +1012,14 @@ export default function Modal({ modal, close, data, run, notify, user }) {
               {/* optional; checked as web addresses when given */}
               {field("Company Website", "company_website", "text", false)}
               {field("Company LinkedIn URL", "company_linkedin_url", "text", false)}
-              <AmountField label="Turnover" name="annual_revenue" value={record?.annual_revenue} currency={record?.currency} />
+              <AmountField
+                label="Turnover"
+                name="annual_revenue"
+                value={record?.annual_revenue}
+                currency={record?.currency}
+                error={fieldError("annual_revenue")}
+                onInput={fieldError("annual_revenue") ? (event) => fixError(event, "annual_revenue") : undefined}
+              />
               {field("Headcount", "employees", "number")}
               {record &&
                 field(

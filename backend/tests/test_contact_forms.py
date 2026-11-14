@@ -152,10 +152,14 @@ def test_a_valid_international_phone_from_apollo_is_used(client, apollo_api, num
     assert look_up(client).json()["fields"]["phone"] == saved
 
 
-def test_the_lead_lookup_phone_is_unchanged(client, apollo_api):
+def test_the_lead_lookup_follows_the_same_phone_rule(client, apollo_api):
+    """New Lead needs a valid phone (Manimohan issue 35): a number without its country code is left blank, with the
+    reason, for the user to enter (it used to be filled as written)."""
     _, replies = apollo_api
     replies.append(httpx.Response(200, json={"person": person(phone_numbers=[{"type_cd": "work_direct", "raw_number": "(212) 555-0142"}])}))
-    assert client.post("/api/leads/enrichment", json={"linkedin_url": JANE}).json()["fields"]["phone"] == "(212) 555-0142"
+    body = client.post("/api/leads/enrichment", json={"linkedin_url": JANE}).json()
+    assert "phone" not in body["fields"]
+    assert "isn't a valid phone number with its country code" in body["unavailable"]["phone"]
 
 
 # ---------- New Opportunity > New contact ----------
@@ -265,3 +269,27 @@ def test_the_assistant_asks_for_the_new_contacts_required_fields():
     assert missing_required("create_opportunity", {"name": "X", "account_name": "Y", "contact_last_name": "Z"}) == [
         "Contact First Name", "Contact Email"]
     assert missing_required("create_opportunity", {"name": "X", "account_id": 4, "contact_id": 9}) == []
+
+
+def test_a_countryless_raw_number_uses_apollos_international_form_of_the_same_line(client, apollo_api):
+    """Apollo often writes the raw number without the country code; its sanitized form (+...) of the same direct line
+    fills the contact's Phone, and New Lead's (both need a valid number with its country)."""
+    _, replies = apollo_api
+    number = [{"type_cd": "work_direct", "raw_number": "(212) 555-0142", "sanitized_number": "+12125550142"}]
+    replies.append(httpx.Response(200, json={"person": person(phone_numbers=number)}))
+    body = look_up(client, company="Synthetic Co").json()
+    assert body["fields"]["phone"] == "+1 212-555-0142" and "phone" not in body["unavailable"]
+    assert "phone_international" not in body
+    replies.append(httpx.Response(200, json={"person": person(phone_numbers=number)}))
+    from app import apollo
+    apollo.reset()  # a new lookup for the lead form (the answer above is kept for 10 minutes)
+    lead = client.post("/api/leads/enrichment", json={"linkedin_url": JANE}).json()
+    assert lead["fields"]["phone"] == "+1 212-555-0142" and "phone_international" not in lead
+
+
+def test_a_mobile_number_is_never_used_for_a_contact_either(client, apollo_api):
+    _, replies = apollo_api
+    number = [{"type_cd": "mobile", "raw_number": "+1 212-555-0199", "sanitized_number": "+12125550199"}]
+    replies.append(httpx.Response(200, json={"person": person(phone_numbers=number)}))
+    body = look_up(client, company="Synthetic Co").json()
+    assert "phone" not in body["fields"] and "555-0199" not in str(body)

@@ -228,7 +228,7 @@ def test_notes_and_notifications(client):
     new_lead(client, name="Given Away")  # Priya (Manager) creates it for Ravi
     login_as(client, 2)
     unread = [n for n in client.get("/api/notifications").json() if not n["is_read"]]
-    assert len(unread) == 1 and unread[0]["title"] == "Lead assigned to you" and "by Priya Sharma" in unread[0]["message"]
+    assert len(unread) == 1 and unread[0]["title"] == "Lead assigned to you" and "Created by: Priya Sharma" in unread[0]["message"]
     client.put(f"/api/notifications/{unread[0]['id']}/read")
     assert [n for n in client.get("/api/notifications").json() if not n["is_read"]] == []
 

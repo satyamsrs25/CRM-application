@@ -43,7 +43,8 @@ export default function LinkedInField({
   needed = [],
   noun = "lead",
   compact = false, // contact forms: no helper text or success narration; only loading, errors and essential warnings
-  onMatched, // called after a verified match of the address now in the field has been applied (New Lead: the source)
+  onMatched, // called after a verified match of the address now in the field has been applied (New Lead: the source),
+  //            with the names of the fields it filled or cleared
 }) {
   const [status, setStatus] = useState({ kind: "idle" });
   const enabled = useRef(null); // null until the server says whether Apollo is set up
@@ -134,7 +135,7 @@ export default function LinkedInField({
       employerMatches: answer.employer_matches ?? null,
       company: companyNow || "",
     });
-    onMatched?.(); // only here: never after a failed, unmatched, unverified or late answer
+    onMatched?.(Object.keys(plan.set)); // only here: never after a failed, unmatched, unverified or late answer
   };
 
   const lookup = async (url) => {

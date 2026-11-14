@@ -164,7 +164,7 @@ def test_every_step_sends_one_notification_and_email(client, outbox):
                         "Opportunity created", "Opportunity moved to Proposal", "Opportunity won"]
     assert all(m["to"] == ["ravi@crm.test"] for m in outbox)
     assert "Demo date:" in outbox[2]["body"] and "Amount: $25,000.00" in outbox[3]["body"]
-    assert "Final amount: $25,000.00" in outbox[5]["body"]
+    assert "Final amount: USD 25,000.00" in outbox[5]["body"]  # the deal's own currency
     bell = [n["title"] for n in client.get("/api/notifications", params={"user_id": 2}).json()]
     assert sorted(bell) == sorted(subjects)
 

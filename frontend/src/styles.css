@@ -6397,17 +6397,6 @@ a.email-off {
   gap: 8px;
   margin-left: auto;
 }
-.sf-button.tool-toggle {
-  height: 34px;
-  padding: 0 14px;
-  color: var(--text);
-}
-.sf-button.tool-toggle[aria-pressed="true"] {
-  border-color: var(--brand);
-  background: #eaf4fe;
-  color: var(--brand-dark);
-  font-weight: 600;
-}
 .toggle-group.view-toggle {
   border-color: var(--border-strong);
   border-radius: 999px;
@@ -6571,11 +6560,75 @@ a.email-off {
 .leads-scroll.scrolled .leads-table .col-name {
   box-shadow: 8px 0 8px -8px rgba(16, 24, 40, 0.28);
 }
-/* Wrap text: long names, companies and emails on several lines instead of ending in "…" */
-.leads-table.wrap td.cell {
+/* long values stay on one line ("…"); ⋯ shows on a cut-off value (always on touch screens, on row hover or focus
+   with a mouse) and opens the full value in .cell-preview (CellPreview.jsx) */
+.leads-table .cell-line {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+.leads-table .cell-value {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.leads-table .cell-more {
+  display: none;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-right: -6px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--brand-dark);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.leads-table .cell-more:hover,
+.leads-table .cell-more[aria-expanded="true"] {
+  background: #eaf4fe;
+}
+.leads-table .cell-line[data-cut] .cell-more,
+.leads-table .cell-line[data-note] .cell-more {
+  display: inline-flex;
+}
+@media (hover: hover) and (pointer: fine) {
+  .leads-table .cell-more {
+    opacity: 0;
+  }
+  .leads-table tbody tr:hover .cell-more,
+  .leads-table .cell-more:focus-visible,
+  .leads-table .cell-more[aria-expanded="true"] {
+    opacity: 1;
+  }
+}
+.cell-preview {
+  position: fixed;
+  z-index: 85;
+  max-width: min(360px, calc(100vw - 16px));
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--white);
+  box-shadow: 0 6px 18px rgba(16, 24, 40, 0.18);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.4;
   white-space: normal;
   overflow-wrap: anywhere;
-  text-overflow: clip;
+  user-select: text;
+}
+.cell-preview small {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-weak);
 }
 /* loading and empty: stay in view when the table is scrolled sideways */
 .list-state {
@@ -7185,6 +7238,13 @@ p.list-state {
   display: grid;
   grid-template-columns: minmax(0, 11rem) minmax(0, 1fr);
   gap: 8px;
+}
+/* New Campaign: the number of recipients beside Send (the button says "Send") */
+.modal-footer .send-count {
+  align-self: center;
+  margin-right: auto;
+  color: var(--text-weak);
+  font-size: 13px;
 }
 
 /* Bulk-email progress pop-up (bottom left: reminders use the bottom right; CampaignsPage.jsx CampaignProgressPopups) */

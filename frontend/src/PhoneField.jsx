@@ -1,5 +1,5 @@
-// A contact's Phone (optional) with its country beside it, India (+91) first chosen. Used by New Contact and by
-// New Opportunity > New contact. Both inputs are read by name (name / countryName) when the form is saved, and LinkedIn
+// A Phone with its country beside it, India (+91) first chosen. Used by New Contact and New Opportunity > New contact
+// (optional), and by New Lead (required). Both inputs are read by name (name / countryName) when the form is saved, and LinkedIn
 // autofill can set them; the number is checked with phoneProblem (phone.js) and again by the server.
 // An invalid number is shown (red border and the message under it, linked with aria-describedby) once the user leaves
 // the field or tries to save; from then on a change of number or country checks it again, and a corrected number (or
@@ -8,7 +8,8 @@
 import React, { useEffect, useRef, useState } from "react";
 import { DEFAULT_PHONE_COUNTRY, PHONE_COUNTRIES, PHONE_RECHECK_EVENT, phoneFieldError } from "./phone";
 
-export default function PhoneField({ name = "phone", countryName = "phone_country", label = "Phone", error = "", onInput }) {
+// required: the red star and aria-required (New Lead); the form itself says when it is empty (error).
+export default function PhoneField({ name = "phone", countryName = "phone_country", label = "Phone", error = "", onInput, required = false }) {
   const errorId = `${name}-field-error`;
   const [touched, setTouched] = useState(false);
   const [now, setNow] = useState({ value: "", country: DEFAULT_PHONE_COUNTRY }); // what the two inputs hold
@@ -39,7 +40,10 @@ export default function PhoneField({ name = "phone", countryName = "phone_countr
   return (
     <div className="field phone-field">
       <label htmlFor={`${name}-input`}>
-        <span>{label}</span>
+        <span>
+          {label}
+          {required && <i> *</i>}
+        </span>
       </label>
       <div className="phone-inputs" ref={box}>
         <select name={countryName} defaultValue={DEFAULT_PHONE_COUNTRY} aria-label={`${label}: country`} onChange={changed}>
@@ -55,6 +59,7 @@ export default function PhoneField({ name = "phone", countryName = "phone_countr
           type="tel"
           maxLength={30}
           autoComplete="off"
+          aria-required={required || undefined}
           aria-invalid={message ? true : undefined}
           aria-describedby={message ? errorId : undefined}
           onInput={changed}

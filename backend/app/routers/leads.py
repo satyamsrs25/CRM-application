@@ -9,6 +9,7 @@ from datetime import date, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
+from pydantic_core import PydanticCustomError
 
 from app import schemas
 from app.constants import (AUTO_TASKS, DEFAULT_CURRENCY, LEAD_FLOW, LEAD_OPEN_STAGES, LEAD_OPTIONAL_STAGES, LEAD_SOURCES, LEAD_STAGES,
@@ -33,6 +34,7 @@ from app.services import (
     future_demo,
     is_personal_email,
     get_for_update,
+    lead_created_notices,
     get_or_404,
     log_activity,
     notify,
@@ -147,10 +149,32 @@ def check_lead_email(db: Session, email: str | None, website: str | None, *, exc
     check_email_free(db, email, exclude_lead_id=exclude_lead_id)
 
 
+LEAD_PHONE_REQUIRED = "Enter the lead's phone number."
+
+
+def manual_lead_phone(data: schemas.LeadCreate) -> str:
+    """New Lead (the form, POST /api/leads): a valid Phone is required, checked for its country like a contact's
+    (phone_country, default India; a number starting with + is checked for its own country code) and saved in
+    international format. Imports and the AI Assistant don't come through here: their phone stays optional."""
+    if not (data.phone or "").strip():
+        raise HTTPException(status_code=422, detail=LEAD_PHONE_REQUIRED)
+    try:
+        return schemas.international_phone(data.phone, data.phone_country or schemas.DEFAULT_PHONE_COUNTRY)
+    except PydanticCustomError as error:
+        raise HTTPException(status_code=422, detail=error.message()) from None
+
+
 @router.post("", response_model=schemas.LeadDetail, status_code=status.HTTP_201_CREATED)
 def create_lead(data: schemas.LeadCreate, db: Session = Depends(get_db)):
-    """Create a lead at stage New. The system adds a 'Make first contact' task for the owner.
-    Admins can create leads too, and choose who owns them."""
+    """Create a lead at stage New (the New Lead form). The system adds a 'Make first contact' task for the owner.
+    Admins can create leads too, and choose who owns them. A valid Phone is required here (manual_lead_phone)."""
+    data.phone = manual_lead_phone(data)
+    return add_lead(db, data)
+
+
+def add_lead(db: Session, data: schemas.LeadCreate):
+    """Creates the lead (the New Lead form, after its phone check, and the AI Assistant): stage New, the owner's
+    first task, and the creation notifications for the owner and their Manager (sent only once this is saved)."""
     # anyone can assign a new lead to an active teammate (Manager or Salesperson); the owner is told
     owner_id = acting_user_id() if data.owner_id is None else resolve_user_id(db, data.owner_id)
     if owner_id != acting_user_id():
@@ -159,21 +183,15 @@ def create_lead(data: schemas.LeadCreate, db: Session = Depends(get_db)):
             raise HTTPException(status_code=400, detail="Leads can only be assigned to active Managers and Salespeople")
     actor_id = acting_user_id()
     check_lead_email(db, data.email, data.company_website, confirmed=data.confirm_email_domain)
-    lead = Lead(**data.model_dump(exclude={"owner_id", "created_by_id", "confirm_email_domain"}),
+    lead = Lead(**data.model_dump(exclude={"owner_id", "created_by_id", "confirm_email_domain", "phone_country"}),
                 owner_id=owner_id, created_by_id=acting_user_id(), stage=LEAD_START)
     db.add(lead)
     db.flush()
     db.refresh(lead)  # loads "name", which the database builds from first + last name
     record_stage_change(db, lead_id=lead.id, from_stage=None, to_stage=LEAD_START, changed_by_id=actor_id)
     task = create_auto_task(db, stage=LEAD_START, owner_id=owner_id, record_name=lead.name, lead_id=lead.id)
-    # one notification for the new lead; it says so when someone else created it for the owner
-    assigned = actor_id != owner_id
-    stage_notice(
-        db, kind="Lead", stage=LEAD_START, record_name=lead.name, owner_id=owner_id,
-        actor_id=actor_id, lead_id=lead.id, task=task,
-        title="Lead assigned to you" if assigned else "Lead created",
-        details=[f"Company: {lead.company}", f"Source: {lead.source}"],
-    )
+    # the owner's notification (as before, one per new lead) and the owner's Manager's
+    lead_created_notices(db, lead, actor_id=actor_id, task=task)
     db.commit()
     db.refresh(lead)
     return lead_detail(lead)

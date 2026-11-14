@@ -306,11 +306,22 @@ export function NewCampaign({ user, users = [], leadIds = null, onClose, onCreat
       busy={busy}
       footer={
         <>
+          {/* the count beside the button, not in it; screen readers hear it with the button */}
+          <span id="campaign-send-count" className="send-count" aria-live="polite">
+            {plural(preview?.eligible || 0, "recipient")}
+          </span>
           <button type="button" className="sf-button" onClick={onClose} disabled={busy}>
             Cancel
           </button>
-          <button type="submit" form="campaign-form" className="sf-button brand" disabled={busy || !preview?.eligible} aria-busy={busy}>
-            {busy ? "Saving…" : `Send to ${plural(preview?.eligible || 0, "recipient")}`}
+          <button
+            type="submit"
+            form="campaign-form"
+            className="sf-button brand"
+            disabled={busy || !preview?.eligible}
+            aria-busy={busy}
+            aria-describedby="campaign-send-count"
+          >
+            {busy ? "Saving…" : "Send"}
           </button>
         </>
       }

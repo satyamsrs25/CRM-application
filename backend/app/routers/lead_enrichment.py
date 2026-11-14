@@ -25,7 +25,8 @@ class EnrichmentOut(BaseModel):
     linkedin_url: str  # the profile address in its saved form
     url_verified: bool = False  # true only when Apollo's returned LinkedIn URL is this same profile
     fields: dict[str, str] = {}  # first_name, last_name, company, title, industry, company_website,
-    #                              company_linkedin_url, email, phone: only those found
+    #                              company_linkedin_url, email, phone (only with its country code), location,
+    #                              employees: only those found
     unavailable: dict[str, str] = {}  # the other fields, with the reason they are empty
     message: str | None = None
     cached: bool = False  # answered from this user's recent lookups (no new Apollo request)
@@ -46,7 +47,31 @@ async def enrich_lead(data: EnrichmentRequest):
         url = linkedin_profile_url(data.linkedin_url)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from None
-    return await apollo.enrich(me.id, url)
+    answer = await apollo.enrich(me.id, url)
+    # the New Lead form requires a valid Phone: only a number with its country code is filled, otherwise it stays blank
+    fields, unavailable = form_phone(answer, dict(answer["fields"]), dict(answer["unavailable"]))
+    out = {key: value for key, value in answer.items() if key != "phone_international"}
+    return out | {"fields": fields, "unavailable": unavailable}
+
+
+PHONE_NOT_USED = "Apollo's number isn't a valid phone number with its country code, so it was not used"
+
+
+def form_phone(answer: dict, fields: dict, unavailable: dict) -> tuple[dict, dict]:
+    """Apollo's direct business number for a form's Phone (New Lead and the contact forms): only a valid number with
+    its country code, in international format. Apollo's raw number is often written without the country code: its
+    sanitized form of the same line (+...) is used then. Anything else stays out (the field is left blank, with the
+    reason); a mobile number is never requested or used. fields / unavailable: copies, changed and returned."""
+    international = answer.get("phone_international") or ""
+    if "phone" in fields or international:
+        phone = valid_international_phone(fields.get("phone", "")) or valid_international_phone(international)
+        if phone:
+            fields["phone"] = phone
+            unavailable.pop("phone", None)
+        else:
+            fields.pop("phone", None)
+            unavailable["phone"] = PHONE_NOT_USED
+    return fields, unavailable
 
 
 # ---------- New Contact and New Opportunity > New contact ----------
@@ -90,14 +115,9 @@ async def enrich_contact(data: ContactEnrichmentRequest):
     answer = await apollo.enrich(me.id, url)
     fields = {CONTACT_FIELDS[k]: v for k, v in answer["fields"].items() if k in CONTACT_FIELDS}
     unavailable = {CONTACT_FIELDS[k]: v for k, v in answer["unavailable"].items() if k in CONTACT_FIELDS}
-    if "phone" in fields:  # only a valid number with its country code reaches the form; anything else stays out
-        phone = valid_international_phone(fields["phone"])
-        if phone:
-            fields["phone"] = phone
-        else:
-            del fields["phone"]
-            unavailable["phone"] = "Apollo's number isn't a valid phone number with its country code, so it was not used"
-    out = {**answer, "fields": fields, "unavailable": unavailable}
+    fields, unavailable = form_phone(answer, fields, unavailable)  # the same phone rule as New Lead
+    out = {key: value for key, value in answer.items() if key != "phone_international"}
+    out |= {"fields": fields, "unavailable": unavailable}
     if answer["status"] == "matched" and not fields:
         out |= {"status": "no_match", "url_verified": False, "unavailable": {},
                 "message": "Apollo matched the profile but returned no contact details."}

@@ -437,7 +437,8 @@ def close_won(db: Session, opp: Opportunity, data: schemas.MarkWon, final_value:
     auto_close_open_tasks(db, opportunity_id=opp.id)
     add_stage_task(db, data.task, owner_id=task_owner, record_owner_id=opp.owner_id, actor_id=by,
                    opportunity_id=opp.id)
-    details = [f"Final amount: ${final_value:,.2f}", f"Note: {data.note}"]
+    # in the deal's own currency (it was always written in dollars)
+    details = [f"Final amount: {opp.currency or DEFAULT_CURRENCY} {final_value:,.2f}", f"Note: {data.note}"]
     stage_notice(db, kind="Opportunity", stage="Won", record_name=opp.name, owner_id=opp.owner_id,
                  actor_id=by, opportunity_id=opp.id, details=details)
 

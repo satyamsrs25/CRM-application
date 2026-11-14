@@ -36,7 +36,7 @@ TIMEOUT = httpx.Timeout(15.0, connect=5.0)
 MAX_RESPONSE_BYTES = 1024 * 1024
 PLACEHOLDER_EMAIL = "email_not_unlocked@domain.com"  # Apollo's stand-in when an email isn't revealed
 LIMITS = {"first_name": 50, "last_name": 50, "company": 200, "title": 100, "industry": 100, "email": 255, "phone": 30,
-          "company_website": 255, "company_linkedin_url": 300}
+          "company_website": 255, "company_linkedin_url": 300, "location": 200, "employees": 8}
 NOT_RETURNED = "Apollo didn't return it"
 COMPANY_PAGE = re.compile(r"/(?:company|school|showcase)/[^/]+/?")  # LinkedIn's organization pages, never /in/ people
 OTHER_EMPLOYER = "Apollo's company details aren't for the person's current job, so they were not used"
@@ -83,14 +83,43 @@ def work_email(person: dict) -> tuple[str, str]:
     return email, ""
 
 
-def business_phone(person: dict) -> str:
-    """A direct business line returned for the person. Mobile and other numbers are never used, and phone reveal is
-    off, so this is often empty. The company's switchboard is not the lead's phone."""
+def work_direct_number(person: dict) -> dict:
+    """Apollo's entry for the person's direct business line ({} when none). Mobile and other numbers are never used,
+    and phone reveal is off, so this is often empty. The company's switchboard is not the person's phone."""
     contact = person.get("contact") if isinstance(person.get("contact"), dict) else {}
     for number in person.get("phone_numbers") or contact.get("phone_numbers") or []:
         if isinstance(number, dict) and (number.get("type_cd") or number.get("type")) == "work_direct":
-            return text(number.get("raw_number")) or text(number.get("sanitized_number"))
-    return ""
+            return number
+    return {}
+
+
+def business_phone(person: dict) -> str:
+    """The direct business line as Apollo wrote it (its raw number, else the sanitized one)."""
+    number = work_direct_number(person)
+    return text(number.get("raw_number")) or text(number.get("sanitized_number"))
+
+
+def business_phone_international(person: dict) -> str:
+    """The same business line in Apollo's sanitized international form (+country code), for the contact forms, which
+    keep only numbers with their country code. "" when Apollo gave none."""
+    return text(work_direct_number(person).get("sanitized_number"))
+
+
+def location(person: dict) -> str:
+    """Where the person is, as Apollo gave it: "City, State, Country" (the parts it returned, each once)."""
+    parts = []
+    for part in (text(person.get(key)) for key in ("city", "state", "country")):
+        if part and part.casefold() not in (p.casefold() for p in parts):
+            parts.append(part)
+    return ", ".join(parts)
+
+
+def headcount(organization: dict) -> str:
+    """The current employer's estimated number of employees ("" unless Apollo gave a whole number the form accepts)."""
+    value = organization.get("estimated_num_employees")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != int(value):
+        return ""
+    return str(int(value)) if 0 < value <= 10_000_000 else ""
 
 
 def current_employer(person: dict, current_job: dict) -> tuple[dict, bool]:
@@ -145,11 +174,14 @@ def lead_fields(person: dict) -> tuple[dict, dict]:
         "company_linkedin_url": company_page,
         "email": email,
         "phone": business_phone(person),
+        "location": location(person),
+        "employees": headcount(organization),
     }
     reasons = {"email": no_email, "phone": "no direct business number was returned (mobile numbers are not requested)",
                "company_website": no_website, "company_linkedin_url": no_company_page}
     if other_employer:
-        reasons |= {name: OTHER_EMPLOYER for name in ("company", "industry", "company_website", "company_linkedin_url")}
+        reasons |= {name: OTHER_EMPLOYER
+                    for name in ("company", "industry", "company_website", "company_linkedin_url", "employees")}
     fields, unavailable = {}, {}
     for name, value in values.items():
         if not value:
@@ -187,8 +219,12 @@ def outcome(data: dict, url: str) -> dict:
     fields, unavailable = lead_fields(person)
     if not fields:
         return no_match(url, "Apollo matched the profile but returned no details for this form.")
-    return {"status": "matched", "linkedin_url": url, "url_verified": True, "fields": fields,
-            "unavailable": unavailable, "message": None}
+    answer = {"status": "matched", "linkedin_url": url, "url_verified": True, "fields": fields,
+              "unavailable": unavailable, "message": None}
+    international = business_phone_international(person)
+    if international:  # for the contact forms only (routers/lead_enrichment.py); the lead form's answer leaves it out
+        answer["phone_international"] = international
+    return answer
 
 
 def no_match(url: str, message: str, status: str = "no_match") -> dict:

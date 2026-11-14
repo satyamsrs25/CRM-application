@@ -4,8 +4,9 @@
 // cards (Previous / Next per column, cards per page as on the List page). The filters, search and sort are shared.
 // Tick the checkboxes to transfer or delete several leads at once (the server checks each lead and skips the ones you can't change):
 // a selection bar takes the toolbar's place while leads are ticked.
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, apiRequest } from "./api";
+import { CellPreview, markCutCells, PreviewCell } from "./CellPreview";
 import { leadBoardColumns, leadConvertChoice } from "./domain";
 import LeadsKanban from "./LeadsKanban";
 import { NewCampaign, queuedMessage, watchCampaign } from "./CampaignsPage";
@@ -45,7 +46,8 @@ const COLUMNS = [
   ["Last Modified", "modified", 124],
 ];
 
-// a cell that keeps to one line (or wraps with "Wrap text") and shows the full text on hover
+// a cell that keeps to one line; the cells with names, companies and emails are PreviewCells (full value on hover,
+// focus or ⋯), the others show theirs in a tooltip
 const Cell = ({ children, title, className = "" }) => (
   <td className={`cell ${className}`} title={title ?? (typeof children === "string" ? children : undefined)}>
     {children}
@@ -238,7 +240,9 @@ export default function LeadsTable({
   const [campaignFor, setCampaignFor] = useState(null); // lead ids for "Email" (a campaign to the selected leads)
   // a short explanation with OK: "one lead at a time" when Convert is chosen with several ticked, or why an action is off
   const [notice, setNotice] = useState(null); // { title, message }
-  const [wrap, setWrap] = useState(false); // "Wrap text": long values on several lines instead of ending in "…"
+  // long values end in "…"; their full value opens in this preview (CellPreview.jsx), which replaces "Wrap text"
+  const preview = useRef(null);
+  const tableRef = useRef(null);
   const [scrolled, setScrolled] = useState(false); // the table is scrolled sideways (shadow beside the Name column)
   const [again, setAgain] = useState(0); // reloads the list after a bulk action, or on Try again
   const selectAll = useRef(null);
@@ -350,6 +354,17 @@ export default function LeadsTable({
 
   // Selection: ticks stay when you change pages, so you can pick leads from several pages
   const items = result?.items || [];
+  // which values are cut off ("…"), after each page renders and whenever the table's width changes
+  useLayoutEffect(() => markCutCells(tableRef.current), [items]);
+  useEffect(() => preview.current?.close(), [items, kanban]); // a new page, sort or view: no preview left behind
+  useEffect(() => {
+    const table = tableRef.current;
+    if (kanban || !table || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => markCutCells(table));
+    observer.observe(table);
+    document.fonts?.ready.then(() => markCutCells(table)).catch(() => {});
+    return () => observer.disconnect();
+  }, [kanban, !!result]); // eslint-disable-line react-hooks/exhaustive-deps
   // the rows seen so far, so a lead ticked on another page can still be opened in the Convert popup
   const seen = useRef(new Map());
   items.forEach((lead) => seen.current.set(lead.id, lead));
@@ -494,18 +509,6 @@ export default function LeadsTable({
               </div>
             )}
             <div className="toolbar-end">
-              {!kanban && (
-                <button
-                  type="button"
-                  className="sf-button tool-toggle"
-                  aria-pressed={wrap}
-                  onClick={() => setWrap((w) => !w)}
-                  title="Show long names, companies and emails in full"
-                >
-                  {wrap && <Icon name="check" size={14} />}
-                  Wrap text
-                </button>
-              )}
               {onMode && (
                 <div className="toggle-group view-toggle" role="group" aria-label="Display as">
                   <button type="button" className={kanban ? "" : "on"} onClick={() => onMode("table")} aria-pressed={!kanban}>
@@ -595,7 +598,7 @@ export default function LeadsTable({
                 if (sideways !== scrolled) setScrolled(sideways);
               }}
             >
-              <table className={`sf-table leads-table ${wrap ? "wrap" : ""}`} aria-busy={loading || undefined}>
+              <table ref={tableRef} className="sf-table leads-table" aria-busy={loading || undefined}>
                 <caption className="sr-only">
                   {viewName || "Leads"}. {result ? summary : "Loading"}. Select a column name to sort; the arrow beside it filters.
                 </caption>
@@ -647,20 +650,24 @@ export default function LeadsTable({
                         />
                       </td>
                       <td className="rownum sticky-col">{(page * size + i + 1).toLocaleString()}</td>
-                      <Cell title={l.name} className="col-name sticky-col">
-                        <a className="lead-link" href={`#/leads/${l.id}`}>
-                          {l.name}
-                        </a>
-                      </Cell>
-                      <Cell className="strong">{l.company || ""}</Cell>
-                      <Cell>{l.title || ""}</Cell>
-                      <Cell title={l.email_invalid_at ? `Invalid email: ${l.email_invalid_reason || ""}` : l.unsubscribed_at ? "Unsubscribed" : l.email || ""}>
-                        {l.email && (
-                          <a href={`mailto:${l.email}`} className={l.email_invalid_at ? "email-invalid" : l.unsubscribed_at ? "email-off" : ""}>
-                            {l.email}
-                          </a>
-                        )}
-                      </Cell>
+                      <PreviewCell
+                        preview={preview}
+                        value={l.name}
+                        label="name"
+                        href={`#/leads/${l.id}`}
+                        linkClass="lead-link"
+                        className="col-name sticky-col"
+                      />
+                      <PreviewCell preview={preview} value={l.company} label="company" className="strong" />
+                      <PreviewCell preview={preview} value={l.title} label="title" />
+                      <PreviewCell
+                        preview={preview}
+                        value={l.email}
+                        label="email"
+                        href={l.email ? `mailto:${l.email}` : undefined}
+                        linkClass={l.email_invalid_at ? "email-invalid" : l.unsubscribed_at ? "email-off" : ""}
+                        note={l.email_invalid_at ? `Invalid email${l.email_invalid_reason ? `: ${l.email_invalid_reason}` : ""}` : l.unsubscribed_at ? "Unsubscribed" : ""}
+                      />
                       <Cell className="phone">
                         <PhoneReveal value={l.phone} />
                       </Cell>
@@ -668,7 +675,9 @@ export default function LeadsTable({
                         <StageBadge stage={l.stage} />
                       </td>
                       <Cell title={l.uploaded_from ? `Uploaded from ${l.uploaded_from}` : l.source}>{l.source}</Cell>
-                      <Cell className="strong">{l.owner_name || ""}</Cell>
+                      {/* Owner (the full name on hover, focus or ⋯); there is no Created By column: the owner who
+                          added a lead is its Owner, and Transferred To shows a later owner */}
+                      <PreviewCell preview={preview} value={l.owner_name} label="owner" className="strong" />
                       <Cell
                         className="transferred"
                         title={l.last_transferred_to ? `Transferred to ${l.last_transferred_to} on ${dateTime(l.last_transferred_at)}` : "Not transferred"}
@@ -735,6 +744,7 @@ export default function LeadsTable({
           </>
         )}
       </section>
+      <CellPreview ref={preview} />
       {notice && <NoticeDialog title={notice.title} message={notice.message} onClose={() => setNotice(null)} />}
       {bulk && (
         <BulkDialog
