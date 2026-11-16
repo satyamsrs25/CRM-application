@@ -465,6 +465,16 @@ def as_local(value: datetime) -> datetime:
     return value.astimezone().replace(tzinfo=None) if value.tzinfo else value
 
 
+@router.get("/open-counts")
+def open_lead_counts(db: Session = Depends(get_db)):
+    """Manage Access > People: each user's Open Leads, counted the way their own My Open Leads view counts them: the
+    leads they own (owner, not everything they can see) at an open status (LEAD_OPEN_STAGES), uploads nobody has worked
+    on yet included. Only owners whose leads the caller may see are counted (the same rule as the lists: with team
+    access, everyone; otherwise only the caller's own)."""
+    query = visible(select(Lead.owner_id, func.count()), Lead).where(Lead.stage.in_(LEAD_OPEN_STAGES)).group_by(Lead.owner_id)
+    return {"counts": {str(owner_id): n for owner_id, n in db.execute(query).all()}}
+
+
 @router.get("/page")
 def leads_page(
     view: str = Query("all_open", description=", ".join(LIST_VIEWS)),

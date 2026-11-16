@@ -372,6 +372,8 @@ export const api = {
     apiRequest("/auth/password", { method: "PUT", body: { current_password, new_password } }),
   // Admin: users
   allUsers: () => apiRequest("/users?include_inactive=true"),
+  // Manage Access > People: each user's Open Leads (owned, open status), counted on the server
+  openLeadCounts: () => apiRequest("/leads/open-counts"),
   createUser: (v) =>
     apiRequest("/users", {
       method: "POST",
@@ -422,7 +424,7 @@ export const api = {
       `/campaigns/recipients?status=${encodeURIComponent(status)}&offset=${offset}&limit=${limit}${q ? `&q=${encodeURIComponent(q)}` : ""}`,
     ),
   // Draft with AI in New Campaign
-  draftCampaign: (body) => apiRequest("/campaigns/draft", { method: "POST", body }),
+  draftCampaign: (body, signal) => apiRequest("/campaigns/draft", { method: "POST", body, signal }),
   campaign: (id, params = {}) =>
     apiRequest(`/campaigns/${id}?${new URLSearchParams(Object.entries(params).filter(([, v]) => v !== "" && v != null))}`),
   campaignPreview: (audience) => apiRequest("/campaigns/preview", { method: "POST", body: audience }),

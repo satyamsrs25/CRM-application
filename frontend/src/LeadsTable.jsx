@@ -36,7 +36,7 @@ const COLUMNS = [
   ["Company", "company", 168],
   ["Title", "title", 136],
   ["Email", "email", 196],
-  ["Phone", "phone", 150],
+  ["Phone", "phone", 172], // wide enough for a shown international number beside the eye button
   ["Status", "stage", 124],
   ["Source", "source", 104],
   ["Owner", "owner", 144],

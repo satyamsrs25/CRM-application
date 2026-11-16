@@ -1,11 +1,15 @@
-// AI writing in New Email. A pen button opens a compact instruction bar inside the composer:
+// AI writing in New Email (leads, opportunities and contacts) and New Campaign: one design for both. A "Help me write"
+// button opens a compact instruction bar under the message:
 // - a request writes a new email (when the message is only the greeting and signature) or changes the current draft;
-// - Polish (Formalize, Friendly, Shorten) rewrites an existing draft.
+// - Polish (Formalize, Friendly, Shorten) rewrites an existing draft;
+// - Undo / Redo switch between the email before and after the last AI change.
 // Only the subject and message are filled, after the server has validated the draft. It never sends, and never changes
-// To, Cc, attachments or the record. An answer is applied only if nothing changed while it was being written.
+// the recipients, attachments or the record. An answer is applied only if nothing changed while it was being written.
+// What differs between New Email and New Campaign is the provider below (the request, when AI drafting is available,
+// what counts as a draft): EmailDraftAssistant and CampaignDraftAssistant.
 import React, { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { api } from "./api";
-import { draftContent, emailWritingAction, toRecordContact } from "./domain";
+import { campaignDraftAvailability, campaignHasDraft, campaignWritingAction, draftContent, emailWritingAction, toRecordContact } from "./domain";
 
 const REFINE = [["formalize", "Formalize"], ["friendly", "Friendly"], ["shorten", "Shorten"]];
 const DESCRIBE_FIRST = "Describe the email you need first. Formalize, Friendly, and Shorten refine an existing draft.";
@@ -16,7 +20,70 @@ const NOT_CRM = "Ask relevant to CRM";
 const keptMessage = (text) =>
   text === NOT_CRM || /unchanged|kept|helps with CRM|sales context|describe the email/i.test(text) ? text : `${text} Your email is unchanged.`;
 
+// New Email: the record's email draft (POST /api/emails/draft), with the server's drafting mode (OpenAI or Ollama).
 export default function EmailDraftAssistant({ target, settings, user, subject, message, sending, recipients, onApply, onBusyChange }) {
+  const sampleMode = settings?.draft_mode === "sample";
+  const record = `${target.field}:${target.id}`;
+  const provider = {
+    available: !!settings && settings.ai_drafting_enabled !== false && !sampleMode,
+    // said only when the user tries to generate while AI drafting isn't available
+    unavailableMessage: !settings
+      ? ""
+      : sampleMode
+        ? "AI drafting needs AI mode on the server. You can still write the email yourself."
+        : "AI drafting isn't available. You can still write the email yourself.",
+    unavailableError: settings?.settings_error || "", // a real error (the settings couldn't be loaded): always shown
+    hasDraft: (body) => !!draftContent(body, user.full_name, user.email),
+    primaryAction: (instructions, body, freshStart) => emailWritingAction(instructions, body, user.full_name, user.email, freshStart),
+    contextKey: record,
+    context: () => `${record}|${recipients()}`, // the record and To: a draft for other recipients isn't applied
+    contextChangedMessage: "The recipient changed while the draft was being written, so the draft wasn't applied.",
+    timeoutMs: settings?.draft_mode === "ollama" ? 130000 : 50000,
+    maxInstructions: 4000, // the server's DraftRequest.instructions
+    request: ({ action, refining, instructions, subject: currentSubject, message: currentBody, freshStart }, signal) =>
+      api.draftEmail(
+        {
+          record_field: target.field,
+          record_id: Number(target.id),
+          action,
+          instructions,
+          current_subject: currentSubject,
+          current_body: freshStart && !refining ? "" : currentBody,
+          recipient_is_record_contact: toRecordContact(recipients(), target.email),
+        },
+        signal,
+      ),
+  };
+  return <DraftAssistant provider={provider} subject={subject} message={message} sending={sending} onApply={onApply} onBusyChange={onBusyChange} />;
+}
+
+// New Campaign: the campaign draft (POST /api/campaigns/draft), which keeps the placeholders ({first_name}, {company},
+// {sender_name}) filled in for each recipient when it is sent. Campaign drafting uses OpenAI only: with another
+// drafting mode Generate / Polish stay disabled, a try says AI drafting is unavailable (campaignDraftAvailability),
+// nothing is requested, and the campaign is written by hand.
+export function CampaignDraftAssistant({ settings, subject, message, sending, onApply, onBusyChange = () => {} }) {
+  const availability = campaignDraftAvailability(settings);
+  const provider = {
+    available: availability.available,
+    unavailableMessage: availability.message,
+    unavailableError: availability.error,
+    hasDraft: campaignHasDraft,
+    primaryAction: campaignWritingAction,
+    contextKey: "campaign",
+    context: () => "campaign", // a campaign draft doesn't depend on the recipients (placeholders are filled when sent)
+    contextChangedMessage: "",
+    timeoutMs: 50000,
+    maxInstructions: 2000, // the server's CampaignDraftRequest.instructions
+    request: ({ action, refining, instructions, subject: currentSubject, message: currentBody, freshStart }, signal) =>
+      api.draftCampaign(
+        { action, instructions, current_subject: currentSubject, current_body: freshStart && !refining ? "" : currentBody },
+        signal,
+      ),
+  };
+  return <DraftAssistant provider={provider} subject={subject} message={message} sending={sending} onApply={onApply} onBusyChange={onBusyChange} />;
+}
+
+function DraftAssistant({ provider, subject, message, sending, onApply, onBusyChange }) {
   const [open, setOpen] = useState(false); // closed until the pen is clicked
   const [instructions, setInstructions] = useState("");
   const [freshStart, setFreshStart] = useState(false);
@@ -32,17 +99,22 @@ export default function EmailDraftAssistant({ target, settings, user, subject, m
   const refineBox = useRef(null);
   const menu = useRef(null);
   const root = useRef(null);
-  const request = useRef(null); // the request in progress: { id, controller }
+  const request = useRef(null); // the request in progress: { id, controller, before }
   const requests = useRef(0);
   const mounted = useRef(true);
   const now = useRef(null); // what the composer holds now, for an answer that arrives later
-  now.current = { subject, message, instructions, record: `${target.field}:${target.id}` };
-  const hasDraft = !!draftContent(message, user.full_name, user.email);
+  now.current = { subject, message, instructions };
+  const hasDraft = provider.hasDraft(message);
   const editing = !freshStart && (hasDraft || !!history);
-  const primaryAction = () => emailWritingAction(instructions, message, user.full_name, user.email, freshStart);
-  const sampleMode = settings?.draft_mode === "sample";
-  const unavailable = !settings || settings.ai_drafting_enabled === false;
-  const blocked = busy || sending || unavailable || sampleMode;
+  const primaryAction = () => provider.primaryAction(instructions, message, freshStart);
+  const unavailable = !provider.available;
+  // writing a draft or sending: the AI buttons are disabled. AI drafting unavailable: they are shown and announced as
+  // disabled (aria-disabled) but still answer a click or Enter, with the explanation instead of a request.
+  const blocked = busy || sending;
+  const explainUnavailable = () => {
+    setMenuOpen(false);
+    setNotice(provider.unavailableMessage);
+  };
   const canUndo = !!history && !history.undone && subject === history.applied.subject && message === history.applied.body;
   const canRedo = !!history && history.undone && subject === history.previous.subject && message === history.previous.body;
 
@@ -62,8 +134,8 @@ export default function EmailDraftAssistant({ target, settings, user, subject, m
     box.style.height = `${Math.min(box.scrollHeight, 96)}px`;
   }, [instructions, open]);
 
-  // The bar sits at the foot of the email dialog: keep its progress, result or error in view, so a click on the
-  // arrow never looks like nothing happened (the status line is below the bar).
+  // The bar sits at the foot of the dialog: keep its progress, result or error in view, so a click on the arrow never
+  // looks like nothing happened (the status line is below the bar).
   useEffect(() => {
     if (busy || notice || error) root.current?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
   }, [busy, notice, error]);
@@ -85,42 +157,35 @@ export default function EmailDraftAssistant({ target, settings, user, subject, m
     if (request.current || busy || sending) return;
     setMenuOpen(false);
     setError("");
-    if (unavailable || sampleMode) return;
+    if (unavailable) return explainUnavailable(); // a try while AI is unavailable: say so; nothing is requested
     const refining = REFINE.some(([name]) => name === action);
     const text = instructions.trim();
     if (action === "custom" && !text) return input.current?.focus();
-    if (refining && !draftContent(message, user.full_name, user.email)) return setNotice(DESCRIBE_FIRST);
-    const before = { subject, message, instructions, to: recipients(), record: now.current.record };
+    if (refining && !provider.hasDraft(message)) return setNotice(DESCRIBE_FIRST);
+    const before = { subject, message, instructions, context: provider.context(), contextKey: provider.contextKey,
+                     hadDraft: !freshStart && provider.hasDraft(message) };
     const mine = { id: ++requests.current, controller: new AbortController(), before };
     request.current = mine;
     setNotice("");
     setBusy(true);
     onBusyChange(true);
     try {
-      const draft = await api.draftEmail(
-        {
-          record_field: target.field,
-          record_id: Number(target.id),
-          action,
-          instructions: refining ? "" : text,
-          current_subject: subject,
-          current_body: freshStart && !refining ? "" : message,
-          recipient_is_record_contact: toRecordContact(before.to, target.email),
-        },
-        AbortSignal.any([mine.controller.signal, AbortSignal.timeout(settings?.draft_mode === "ollama" ? 130000 : 50000)]),
+      const draft = await provider.request(
+        { action, refining, instructions: refining ? "" : text, subject, message, freshStart },
+        AbortSignal.any([mine.controller.signal, AbortSignal.timeout(provider.timeoutMs)]),
       );
       if (!mounted.current || request.current !== mine) return; // cancelled, closed or replaced
       const latest = now.current;
       if (latest.subject !== before.subject || latest.message !== before.message || latest.instructions !== before.instructions)
         return setNotice("You changed the email while the draft was being written, so your version was kept.");
-      if (latest.record !== before.record || recipients() !== before.to)
-        return setNotice("The recipient changed while the draft was being written, so the draft wasn't applied.");
+      if (provider.context() !== before.context) return setNotice(provider.contextChangedMessage);
       const applied = { subject: draft.subject, body: draft.body };
       setHistory({ previous: { subject: before.subject, body: before.message }, applied, undone: false });
       onApply(applied);
       setInstructions("");
       setFreshStart(false);
-      setNotice(draft.draft_type === "revision" ? "Draft updated. Review before sending." : "Draft generated. Review before sending.");
+      const revised = draft.draft_type ? draft.draft_type === "revision" : refining || before.hadDraft;
+      setNotice(revised ? "Draft updated. Review before sending." : "Draft generated. Review before sending.");
     } catch (err) {
       if (mounted.current && request.current === mine) setError(keptMessage(err.name === "TimeoutError" ? "Drafting took too long. Please try again." : err.message));
     } finally {
@@ -136,8 +201,8 @@ export default function EmailDraftAssistant({ target, settings, user, subject, m
   };
   useEffect(() => {
     const pending = request.current;
-    if (pending && (pending.before.subject !== subject || pending.before.message !== message || pending.before.record !== `${target.field}:${target.id}`)) cancel();
-  }, [subject, message, target.field, target.id]);
+    if (pending && (pending.before.subject !== subject || pending.before.message !== message || pending.before.contextKey !== provider.contextKey)) cancel();
+  }, [subject, message, provider.contextKey]);
 
   const openBar = () => {
     setOpen(true);
@@ -180,7 +245,7 @@ export default function EmailDraftAssistant({ target, settings, user, subject, m
   const onBarKey = (event) => {
     if (event.key !== "Escape") return;
     event.preventDefault();
-    event.stopPropagation(); // Escape closes the menu or the bar here, not the whole composer
+    event.stopPropagation(); // Escape closes the menu or the bar here, not the whole dialog
     if (menuOpen) {
       setMenuOpen(false);
       refineButton.current?.focus();
@@ -206,11 +271,12 @@ export default function EmailDraftAssistant({ target, settings, user, subject, m
         </button>
       </>
     );
-  else if (notice) status = notice;
-  else if (open && sampleMode) status = "AI drafting needs AI mode on the server. You can still write the email yourself.";
-  else if (open && settings && unavailable)
-    status = settings.settings_error || "AI drafting isn't available. You can still write the email yourself.";
-  else if (open) status = "Enter to generate · Shift+Enter for a new line";
+  else if (notice) status = notice; // includes the unavailable explanation, after a try
+  // the keyboard hint: its own line under the open bar (not while a draft is being written or the form is being sent),
+  // the same in New Email and New Campaign; with AI unavailable it stays, and a try explains instead of generating
+  const showHint = open && !busy && !sending;
+  // a real error stays visible: the last request's, or the drafting settings that couldn't be loaded
+  const shownError = error || (open ? provider.unavailableError : "");
 
   return (
     <div className="email-ai" ref={root}>
@@ -222,11 +288,11 @@ export default function EmailDraftAssistant({ target, settings, user, subject, m
           className="email-ai-input"
           rows={1}
           value={instructions}
-          maxLength={4000}
+          maxLength={provider.maxInstructions}
           aria-label="Describe the email or change you need"
           placeholder={editing ? "Describe your change" : "Write an email"}
           disabled={sending}
-          aria-describedby={`${id}-status`}
+          aria-describedby={showHint ? `${id}-hint ${id}-status` : `${id}-status`}
           onChange={(event) => { cancel(); setInstructions(event.target.value); setError(""); }}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -237,7 +303,16 @@ export default function EmailDraftAssistant({ target, settings, user, subject, m
         />
         {editing ? (
         <div className="email-ai-refine" ref={refineBox}>
-          <button type="button" className="email-ai-polish" disabled={blocked} title="Apply your change, or polish the draft" onClick={() => run(primaryAction())}>Polish</button>
+          <button
+            type="button"
+            className="email-ai-polish"
+            disabled={blocked}
+            aria-disabled={unavailable || undefined}
+            title={unavailable ? "AI drafting is currently unavailable" : "Apply your change, or polish the draft"}
+            onClick={() => run(primaryAction())}
+          >
+            Polish
+          </button>
           <button
             ref={refineButton}
             type="button"
@@ -247,11 +322,13 @@ export default function EmailDraftAssistant({ target, settings, user, subject, m
             aria-expanded={menuOpen}
             aria-controls={menuOpen ? `${id}-menu` : undefined}
             disabled={blocked}
-            onClick={() => (menuOpen ? setMenuOpen(false) : openMenu(0))}
+            aria-disabled={unavailable || undefined}
+            onClick={() => (unavailable ? explainUnavailable() : menuOpen ? setMenuOpen(false) : openMenu(0))}
             onKeyDown={(event) => {
               if (event.key === "ArrowDown" || event.key === "ArrowUp") {
                 event.preventDefault();
-                openMenu(event.key === "ArrowDown" ? 0 : REFINE.length - 1);
+                if (unavailable) explainUnavailable();
+                else openMenu(event.key === "ArrowDown" ? 0 : REFINE.length - 1);
               }
             }}
           >
@@ -282,8 +359,9 @@ export default function EmailDraftAssistant({ target, settings, user, subject, m
             className="email-ai-submit"
             aria-label={busy ? "Writing the draft" : "Generate email draft"}
             aria-busy={busy}
-            title={unavailable || sampleMode ? "AI drafting isn't available on this server" : "Generate email draft (Enter)"}
+            title={unavailable ? "AI drafting is currently unavailable" : "Generate email draft (Enter)"}
             disabled={blocked}
+            aria-disabled={unavailable || undefined}
             onClick={() => run(primaryAction())}
           >
             {busy ? <span className="email-ai-spinner" aria-hidden="true" /> : <ArrowUp />}
@@ -304,6 +382,11 @@ export default function EmailDraftAssistant({ target, settings, user, subject, m
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6" /></svg>
         </button>
       </div>
+      {showHint && (
+        <small id={`${id}-hint`} className="email-ai-hint">
+          Enter to generate · Shift+Enter for a new line
+        </small>
+      )}
       <div className="email-ai-tools">
         {!open && (
         <button
@@ -325,9 +408,9 @@ export default function EmailDraftAssistant({ target, settings, user, subject, m
         </span>
 
       </div>
-      {error && (
+      {shownError && (
         <p className="form-error email-ai-error" role="alert">
-          {error}
+          {shownError}
         </p>
       )}
     </div>

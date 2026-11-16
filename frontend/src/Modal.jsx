@@ -25,6 +25,7 @@ import {
   websiteHost,
   isPersonalEmail,
   LEAD_EMAIL_INVALID,
+  companyNameProblem,
   leadFieldsRequired,
   leadFormProblems,
   leadServerProblems,
@@ -643,7 +644,9 @@ export default function Modal({ modal, close, data, run, notify, user }) {
       // a new contact (not an existing one): the same rules as New Contact, shown under each field
       const values = Object.fromEntries(new FormData(event.target));
       const newContact = (!values.primary_contact_id || values.primary_contact_id === "new") && "contact_last_name" in values;
-      const problems = newContact ? contactProblems(values, OPPORTUNITY_CONTACT_FORM) : {};
+      // a new company: at least one letter or digit (as the server checks), shown under Company Name
+      const company = values.account_id === "new" ? companyNameProblem(values.account_name, { required: "Enter the company name." }) : "";
+      const problems = { ...(company ? { account_name: company } : {}), ...(newContact ? contactProblems(values, OPPORTUNITY_CONTACT_FORM) : {}) };
       setFieldErrors(problems);
       if (Object.keys(problems).length) {
         setError(""); // nothing is sent: no account, contact or opportunity is created

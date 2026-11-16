@@ -203,7 +203,10 @@ export function NewOpportunityFields({ data, defaults, owner, onBlocked, errors 
             ))}
           </select>
         </label>
-        {newAccount ? input("Company Name", "account_name", accountName, setAccountName, { required: true, maxLength: 200 }) : <span />}
+        {newAccount
+          ? input("Company Name", "account_name", accountName, (value) => (errors.account_name && onFix("account_name"), setAccountName(value)),
+              { required: true, maxLength: 200, error: errors.account_name || "" })
+          : <span />}
         {existingAccount && contacts.length > 0 && (
           <label className="field">
             <span>

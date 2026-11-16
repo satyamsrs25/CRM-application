@@ -67,6 +67,9 @@ email, tasks and reminders, notifications, lead conversion, closing a deal, and 
   saved together with the win and labelled Proposal. **Add Files** in the opportunity's Activity tab opens the picker.
 - Lead research fields: LinkedIn profile, company website, company LinkedIn page (clickable), turnover, headcount and
   location. The company website and LinkedIn page are optional (checked as web addresses when given).
+- A company or account name needs at least one letter or digit in any language ("Société Générale", "3M" and "AT&T" are
+  fine; "  " and ".." are not): on New Lead, when a lead's company is changed, on New Account and on New Opportunity's
+  new company. An older record's unchanged name doesn't block other edits.
 - New Lead needs **First Name**, Last Name, Company, Email and a **Lead Source** (Website, LinkedIn, Referral, Phone,
   Email, Event, Social Media or Other). **LinkedIn** needs the LinkedIn Profile URL (otherwise it's optional); **Other**
   shows a required **Specify lead source** box (up to 100 characters), saved with the lead and shown beside its source.
@@ -96,6 +99,12 @@ email, tasks and reminders, notifications, lead conversion, closing a deal, and 
 - Paced under Outlook's limits (20 a minute and 1,800 a day by default), with automatic retries (after 5 minutes,
   30 minutes and 2 hours) and a progress page per campaign. If the mailbox settings are wrong, campaigns pause and
   the sender is notified.
+- After **Send**, a progress pop-up (Sent / Queued / Failed) follows the campaign while you work. When every email was
+  sent it says so and closes by itself after about 10 seconds (not while the pointer or keyboard focus is on it); a
+  campaign with failed, bounced, left-out or cancelled emails stays until you close it. Closing never stops sending.
+- **Help me write** in New Campaign is the same writing bar as New Email (Polish, Formalize / Friendly / Shorten,
+  Undo / Redo) and keeps the merge fields such as `{first_name}`. Campaign drafting uses OpenAI only: with
+  `EMAIL_DRAFT_MODE=ollama` (or sample) it says it isn't available, and the campaign is written by hand.
 - Campaign emails end with **Unsubscribe** and **Subscribe** links until the person clicks Subscribe; after that
   only with **Unsubscribe** (the lead's owner is told when a lead subscribes or unsubscribes). Outlook's one-click unsubscribe header is on every email. Each link
   opens a page that asks first, with **Cancel**, before anything changes.

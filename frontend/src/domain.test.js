@@ -85,7 +85,7 @@ import {
   sourceAfterLinkedInMatch,
 } from "./domain.js";
 import { BUSINESS_TIMEZONE, BUSINESS_TZ_LABEL, businessNow, formatBusiness, formatBusinessTime, fromBusinessInput, toBusinessInput } from "./businessTime.js";
-import { attachedSummary, fileSize } from "./format.js";
+import { attachedSummary, fileSize, formatPhone, maskPhone, sourceMaskedPhone } from "./format.js";
 import {
   BULK_LIMIT,
   chipText,
@@ -120,6 +120,15 @@ import {
   LEAD_EMAIL_REQUIRED,
   LEAD_LAST_NAME_REQUIRED,
   LEAD_PHONE_REQUIRED,
+  ACCOUNT_NAME_INVALID,
+  CAMPAIGN_AI_UNAVAILABLE,
+  CAMPAIGN_SUCCESS_CLOSE_MS,
+  COMPANY_NAME_INVALID,
+  campaignDraftAvailability,
+  campaignHasDraft,
+  campaignProgress,
+  campaignWritingAction,
+  companyNameProblem,
   LEAD_SOURCE_REQUIRED,
   leadServerProblems,
   senderClosing,
@@ -2002,7 +2011,8 @@ test("New Opportunity > New contact: shown only for a new contact; existing cont
     contact_linkedin_url: " linkedin.com/in/ana " });
   assert.deepEqual([fresh.contact_phone, fresh.contact_phone_country, fresh.contact_linkedin_url], ["98765 43210", "IN", "linkedin.com/in/ana"]);
   const modal = source("./Modal.jsx");
-  assert.match(modal, /const problems = newContact \? contactProblems\(values, OPPORTUNITY_CONTACT_FORM\) : \{\};/);
+  // a new contact's fields are checked only for a new contact (the new company's name is checked too: issue 44)
+  assert.match(modal, /\.\.\.\(newContact \? contactProblems\(values, OPPORTUNITY_CONTACT_FORM\) : \{\}\)/);
   assert.match(modal, /errors=\{fieldErrors\}\s*onFix=\{clearError\}/);
 });
 
@@ -2066,7 +2076,7 @@ test("Phone field wiring: blur, number and country changes, aria-invalid and the
   assert.match(source("./Modal.jsx"), /<PhoneField error=\{fieldError\("phone"\)\}/);
   assert.match(source("./NewOpportunity.jsx"), /<PhoneField name=\{F\.phone\} countryName=\{F\.phone_country\} error=\{errors\[F\.phone\] \|\| ""\}/);
   const modal = source("./Modal.jsx");
-  assert.match(modal, /const problems = newContact \? contactProblems\(values, OPPORTUNITY_CONTACT_FORM\) : \{\};[\s\S]*?event\.target\.elements\[Object\.keys\(problems\)\[0\]\]\?\.focus\(\);/);
+  assert.match(modal, /\.\.\.\(newContact \? contactProblems\(values, OPPORTUNITY_CONTACT_FORM\) : \{\}\) \};[\s\S]*?event\.target\.elements\[Object\.keys\(problems\)\[0\]\]\?\.focus\(\);/);
   assert.equal(contactProblems({ first_name: "A", last_name: "B", email: "a@b.example", phone: "uiadcna" }).phone,
     "Enter a valid phone number for India (+91).");
   // New Lead uses it too, required (Manimohan issue 35); editing a lead keeps the plain optional field
@@ -2299,8 +2309,8 @@ test("New Campaign: the button says Send and the number of recipients is shown b
   assert.doesNotMatch(campaigns, /`Send to \$\{/);
   assert.match(campaigns, /<span id="campaign-send-count" className="send-count" aria-live="polite">\s*\{plural\(preview\?\.eligible \|\| 0, "recipient"\)\}/);
   assert.match(campaigns, /aria-describedby="campaign-send-count"/);
-  // the same disabled, busy and duplicate-submit guards as before
-  assert.match(campaigns, /disabled=\{busy \|\| !preview\?\.eligible\}/);
+  // the same disabled, busy and duplicate-submit guards as before (and Send waits while a draft is being written)
+  assert.match(campaigns, /disabled=\{busy \|\| aiBusy \|\| !preview\?\.eligible\}/);
   assert.match(campaigns, /aria-busy=\{busy\}/);
   assert.match(campaigns, /if \(!preview\?\.eligible\) return setError\("None of these recipients can be emailed \(see Excluded\)\."\);/);
 });
@@ -2410,4 +2420,195 @@ test("Account page: a Leads card with the account's leads", () => {
   assert.match(pages, /<AccountLeads accountId=\{account\.id\} \/>/);
   assert.match(pages, /api\s*\.accountLeads\(accountId\)/);
   assert.match(source("./api.js"), /accountLeads: \(id\) => apiRequest\(`\/accounts\/\$\{id\}\/leads`\)/);
+});
+
+// ---------- Issue 38: a shown phone number is complete ----------
+
+test("Phone reveal: every stored digit is shown, nothing is cut off with '…', and nothing is made up", () => {
+  // the stored formats in use: all digits come back when shown; masked, only the start
+  for (const [stored, shown] of [
+    ["+1 212 5550142", "+1 (212) 555-0142"],
+    ["+44 20 7946 0958", "+44 20 7946 0958"],
+    ["+91 98765 43210", "+91 98765 43210"],
+    ["+65 6123 4567", "+65 6123 4567"],
+    ["2125550142", "(212) 555-0142"],
+  ]) {
+    assert.equal(formatPhone(stored), shown, stored);
+    assert.equal(formatPhone(stored).replace(/\D/g, ""), stored.replace(/\D/g, ""), stored); // the same digits
+    assert.match(maskPhone(stored), /•/, stored);
+  }
+  // a number already hidden by its source: shown as it is (never filled in), and marked
+  assert.equal(sourceMaskedPhone("+1 212-555-01**"), true);
+  assert.equal(sourceMaskedPhone("98200 XXXXX"), true);
+  assert.equal(sourceMaskedPhone("+1 212 555 0142 x204"), false); // an extension isn't hiding digits
+  assert.equal(sourceMaskedPhone("+91 98765 43210"), false);
+  assert.equal(formatPhone("+1 212-555-01**"), "+1 212 555 01**");
+  const ui = source("./ui.jsx");
+  const reveal = ui.slice(ui.indexOf("export function PhoneReveal"), ui.indexOf("export function DateCell"));
+  assert.match(reveal, /className=\{`phone-reveal\$\{shown \? " shown" : ""\}`\}/);
+  assert.match(reveal, /\{shown \? formatPhone\(value\) : maskPhone\(value\)\}/);
+  assert.doesNotMatch(reveal, /title=\{[^}]*value/); // the number is never put in a tooltip
+  assert.doesNotMatch(reveal, /api\.|fetch\(/); // no lookup: the stored number only (no paid reveal)
+  const css = source("./styles.css");
+  assert.match(css, /\.phone-reveal\.shown \.phone-text \{\s*overflow: visible;\s*text-overflow: clip;\s*white-space: normal;/);
+  const width = Number(/\["Phone", "phone", (\d+)\]/.exec(source("./LeadsTable.jsx"))[1]);
+  assert.ok(width >= 172, `Phone column ${width}px`); // "+1 (212) 555-0142" and the eye button fit
+});
+
+// ---------- Issue 41: the bulk-email progress pop-up ----------
+
+test("Campaign progress: finished only when the server says so; only a fully sent campaign closes itself", () => {
+  const c = (status, counts) => ({ status, counts: { total: 0, Queued: 0, Sent: 0, Failed: 0, Invalid: 0, Skipped: 0, Cancelled: 0, ...counts } });
+  // queued, sending, retrying (still Queued) or paused: not finished
+  assert.deepEqual(campaignProgress(c("Sending", { total: 5, Queued: 2, Sent: 3 })), { done: false, success: false, state: "Sending…", sent: 3, unsent: 0 });
+  assert.equal(campaignProgress(c("Sending", { total: 5, Sent: 5 })).done, false); // every row done, not yet Completed
+  assert.equal(campaignProgress(c("Paused", { total: 5, Queued: 5 })).state, "Paused");
+  assert.equal(campaignProgress(c("Scheduled", { total: 5, Queued: 5 })).done, false);
+  assert.equal(campaignProgress(null).state, "Loading…");
+  // all sent: success (closes itself after the confirmation)
+  assert.deepEqual(campaignProgress(c("Completed", { total: 3, Sent: 3 })), { done: true, success: true, state: "All 3 emails sent", sent: 3, unsent: 0 });
+  assert.equal(campaignProgress(c("Completed", { total: 1, Sent: 1 })).state, "All 1 email sent");
+  // failed, bounced, left out, or cancelled: finished, stays until closed
+  for (const counts of [{ total: 3, Sent: 2, Failed: 1 }, { total: 3, Sent: 2, Invalid: 1 }, { total: 3, Sent: 2, Skipped: 1 }, { total: 2, Invalid: 2 }]) {
+    const p = campaignProgress(c("Completed", counts));
+    assert.equal(p.done, true);
+    assert.equal(p.success, false, JSON.stringify(counts));
+  }
+  assert.equal(campaignProgress(c("Completed", { total: 3, Sent: 2, Failed: 1 })).state, "Finished: 2 emails sent, 1 email not sent");
+  assert.deepEqual(campaignProgress(c("Cancelled", { total: 4, Sent: 1, Cancelled: 3 })).state, "Cancelled");
+  assert.equal(campaignProgress(c("Cancelled", { total: 4, Sent: 1, Cancelled: 3 })).success, false);
+  assert.ok(CAMPAIGN_SUCCESS_CLOSE_MS >= 8000); // time to read it
+  // the card: a timer only on success, paused on hover / focus, cleared on close and unmount; closing never cancels
+  const page = source("./CampaignsPage.jsx");
+  const card = page.slice(page.indexOf("function CampaignProgressCard"), page.indexOf("// Rendered once by App"));
+  assert.match(card, /const \{ done, success, state \} = campaignProgress\(c\);/);
+  assert.match(card, /if \(!success \|\| hold\) return undefined;\s*const timer = setTimeout\(\(\) => closeRef\.current\(\), CAMPAIGN_SUCCESS_CLOSE_MS\);\s*return \(\) => clearTimeout\(timer\);/);
+  assert.match(card, /onMouseEnter=\{\(\) => setHold\(true\)\}/);
+  assert.match(card, /onFocus=\{\(\) => setHold\(true\)\}/);
+  assert.match(card, /if \(timer\) clearInterval\(timer\);/); // polling stops on unmount and when finished
+  assert.doesNotMatch(card, /cancelCampaign|\/cancel|act\("cancel"\)/); // closing the pop-up doesn't cancel sending
+  assert.match(card, /role="status"/);
+  assert.match(card, /Sending finished\. This closes in a few seconds\./);
+});
+
+// ---------- Issue 42: Manage Access > People counts open leads like My Open Leads ----------
+
+test("People: Open Leads come from the server, counted like each person's My Open Leads", () => {
+  const users = source("./UsersPage.jsx");
+  assert.match(users, /api\s*\.openLeadCounts\(\)/);
+  assert.match(users, /const owned = \(id\) => \(openCounts \? \(openCounts\[String\(id\)\] \?\? 0\)\.toLocaleString\(\) : "…"\);/);
+  assert.doesNotMatch(users, /data\.leads\.filter/); // the workspace list leaves uploads nobody worked on out
+  assert.match(source("./api.js"), /openLeadCounts: \(\) => apiRequest\("\/leads\/open-counts"\)/);
+  const backend = readFileSync(new URL("../../backend/app/routers/lead_files.py", import.meta.url), "utf8");
+  assert.match(backend, /visible\(select\(Lead\.owner_id, func\.count\(\)\), Lead\)\.where\(Lead\.stage\.in_\(LEAD_OPEN_STAGES\)\)/);
+  assert.match(backend, /"my_open": lambda q, me: q\.where\(Lead\.stage\.in_\(LEAD_OPEN_STAGES\), Lead\.owner_id == me\.id\)/);
+});
+
+// ---------- Issue 44: a company name needs a letter or digit ----------
+
+test("Company names: at least one letter or digit in any language; an older lead's unchanged name doesn't block an edit", () => {
+  for (const name of ["Acme", "3M", "AT&T", "Acme, Inc.", "Société Générale", "株式会社テスト", "Müller GmbH", "  Acme  ", "٣ Co"])
+    assert.equal(companyNameProblem(name), "", name);
+  for (const name of ["", "   ", "\t"]) assert.equal(companyNameProblem(name), LEAD_COMPANY_REQUIRED, JSON.stringify(name));
+  for (const name of ["..", " .. ", "-", "&&", "!!!", "—", "★"]) assert.equal(companyNameProblem(name), COMPANY_NAME_INVALID, name);
+  const ok = { first_name: "Ana", last_name: "Okafor", company: "Harbor", email: "ana@harbor.example", source: "Website", phone: "98765 43210", phone_country: "IN" };
+  assert.equal(leadFormProblems({ ...ok, company: ".." }).company, COMPANY_NAME_INVALID); // New Lead
+  assert.equal(leadFormProblems({ ...ok, company: "   " }).company, LEAD_COMPANY_REQUIRED);
+  const legacy = { id: 4, first_name: "Ana", last_name: "Okafor", company: "..", email: "ana@harbor.example", source: "Website" };
+  assert.deepEqual(leadFormProblems({ ...ok, company: "..", phone: "" }, legacy), {}); // unchanged: an unrelated edit saves
+  assert.equal(leadFormProblems({ ...ok, company: "--" }, legacy).company, COMPANY_NAME_INVALID); // changed: checked
+  assert.deepEqual(leadFormProblems({ ...ok, company: "Harbor Ltd" }, legacy), {});
+  // New Account: the same rule for the account name
+  assert.equal(newRecordProblems("account", { name: "..", industry: "Software" }).name, ACCOUNT_NAME_INVALID);
+  assert.deepEqual(newRecordProblems("account", { name: "Société Générale", industry: "Banking" }), {});
+  // the server's messages go under Company
+  assert.deepEqual(leadServerProblems({ message: COMPANY_NAME_INVALID }), { company: COMPANY_NAME_INVALID });
+  assert.deepEqual(
+    leadServerProblems({ details: [{ loc: ["body", "company"], type: "company_invalid", msg: COMPANY_NAME_INVALID }] }),
+    { company: COMPANY_NAME_INVALID },
+  );
+  // New Opportunity's new company: shown under Company Name
+  assert.match(source("./Modal.jsx"), /const company = values\.account_id === "new" \? companyNameProblem\(values\.account_name, \{ required: "Enter the company name\." \}\) : "";/);
+  assert.match(source("./NewOpportunity.jsx"), /error: errors\.account_name \|\| ""/);
+});
+
+// ---------- One AI drafting design for New Email and New Campaign ----------
+
+test("Help me write: New Campaign uses the same drafting bar as New Email, with its own provider", () => {
+  const assistant = source("./EmailDraftAssistant.jsx");
+  assert.match(assistant, /export default function EmailDraftAssistant\(/);
+  assert.match(assistant, /export function CampaignDraftAssistant\(/);
+  assert.equal((assistant.match(/function DraftAssistant\(/g) || []).length, 1); // one bar, two providers
+  assert.match(assistant, /api\.draftEmail\(/);
+  assert.match(assistant, /api\.draftCampaign\(/);
+  // the same controls for both: Help me write, Polish + Formalize / Friendly / Shorten, Undo / Redo, close, Cancel
+  for (const text of ['aria-label="Help me write"', '"Polish options"', '["formalize", "Formalize"]', '"Undo AI change"', '"Redo AI change"', '"Back to Help me write"', "Writing draft…"])
+    assert.ok(assistant.includes(text), text);
+  // late answers never overwrite newer edits (both providers)
+  assert.match(assistant, /You changed the email while the draft was being written, so your version was kept\./);
+  const campaigns = source("./CampaignsPage.jsx");
+  assert.doesNotMatch(campaigns, /function CampaignAiDraft|Draft with AI|CAMPAIGN_REFINE/); // the separate campaign UI is gone
+  assert.match(campaigns, /<CampaignDraftAssistant\s+settings=\{aiSettings\}\s+subject=\{subject\}\s+message=\{body\}/);
+  assert.match(campaigns, /<div className="email-editor">\s*<textarea\s+id="campaign-message"/); // laid out like New Email
+  assert.match(campaigns, /if \(aiBusy\) return; \/\/ a draft is being written/);
+  assert.match(source("./Email.jsx"), /<EmailDraftAssistant target=\{target\}/); // New Email (leads, opportunities, contacts)
+  assert.match(source("./Email.jsx"), /onSubmit=\{openInOutlook\}/); // individual emails still end with Open in Outlook
+  // campaigns: OpenAI only (no fallback); otherwise one short message, without provider or server details
+  assert.equal(CAMPAIGN_AI_UNAVAILABLE, "AI drafting is currently unavailable. You can still write your email.");
+  assert.deepEqual(campaignDraftAvailability(null), { available: false, message: "", error: "" });
+  assert.deepEqual(campaignDraftAvailability({ draft_mode: "openai", ai_drafting_enabled: true }), { available: true, message: "", error: "" });
+  for (const settings of [{ draft_mode: "ollama", ai_drafting_enabled: true }, { draft_mode: "sample" }, { draft_mode: "openai", ai_drafting_enabled: false }])
+    assert.deepEqual(campaignDraftAvailability(settings), { available: false, message: CAMPAIGN_AI_UNAVAILABLE, error: "" }, JSON.stringify(settings));
+  assert.doesNotMatch(source("./domain.js"), /AI drafting for campaigns uses OpenAI|isn't set up on this server|local model/);
+  // an actual error loading the settings isn't hidden: it is shown as an error, apart from the explanation
+  assert.deepEqual(campaignDraftAvailability({ ai_drafting_enabled: false, settings_error: "Your session expired." }),
+    { available: false, message: CAMPAIGN_AI_UNAVAILABLE, error: "Your session expired." });
+  const bar = source("./EmailDraftAssistant.jsx");
+  assert.match(bar, /const shownError = error \|\| \(open \? provider\.unavailableError : ""\);/);
+  assert.match(bar, /unavailableError: availability\.error,/);
+  // a campaign draft: words besides "Hi {first_name}," and the sign-off; the placeholders stay
+  assert.equal(campaignHasDraft("Hi {first_name},\n\nBest regards,\n{sender_name}"), false);
+  assert.equal(campaignHasDraft("Hi {first_name},\n\nWould {company} like a short demo?\n\nBest regards,\n{sender_name}"), true);
+  assert.equal(campaignWritingAction("Invite them to a demo", ""), "custom");
+  assert.equal(campaignWritingAction("", "Hi {first_name},\n\nWould {company} like a demo?\n\nBest regards,\n{sender_name}"), "formalize");
+  assert.equal(campaignWritingAction("", "Hi {first_name},\n\nWould {company} like a demo?", true), "custom"); // a fresh start
+  // the backend still drafts campaigns with OpenAI only (no silent fallback)
+  const backend = readFileSync(new URL("../../backend/app/ai_email.py", import.meta.url), "utf8");
+  assert.match(backend, /if mode\(\) != "openai":\s*raise HTTPException\(422, "AI drafting needs the AI to be set up \(EMAIL_DRAFT_MODE=openai\)\."\)/);
+});
+
+test("Help me write: the keyboard hint sits under the open bar, in New Email and New Campaign, also while AI is unavailable", () => {
+  const bar = source("./EmailDraftAssistant.jsx");
+  // one bar for leads, opportunities, contacts and campaigns, so the hint is the same everywhere
+  assert.equal((bar.match(/function DraftAssistant\(/g) || []).length, 1);
+  assert.match(bar, /const showHint = open && !busy && !sending;/);
+  assert.match(bar, /\{showHint && \(\s*<small id=\{`\$\{id\}-hint`\} className="email-ai-hint">\s*Enter to generate · Shift\+Enter for a new line\s*<\/small>/);
+  // its own line: notices ("Draft updated…") no longer replace it, and it isn't in the status line any more
+  assert.doesNotMatch(bar, /status = "Enter to generate/);
+  assert.equal((bar.match(/Enter to generate · Shift\+Enter for a new line/g) || []).length, 1);
+  // the instruction box is described by it while it shows
+  assert.match(bar, /aria-describedby=\{showHint \? `\$\{id\}-hint \$\{id\}-status` : `\$\{id\}-status`\}/);
+  assert.match(source("./styles.css"), /\.email-ai-hint \{ display: block;/);
+});
+
+test("Help me write with AI unavailable: no standing message; Generate / Polish disabled; a try explains and requests nothing", () => {
+  const bar = source("./EmailDraftAssistant.jsx");
+  // no static unavailable line any more: the status shows only progress and notices
+  assert.doesNotMatch(bar, /else if \(open && unavailable\) status/);
+  assert.match(bar, /else if \(notice\) status = notice;/);
+  // the buttons: disabled while writing or sending; marked disabled (aria-disabled) while AI is unavailable
+  assert.match(bar, /const blocked = busy \|\| sending;/);
+  assert.equal((bar.match(/aria-disabled=\{unavailable \|\| undefined\}/g) || []).length, 3); // Polish, its menu, Generate
+  for (const tip of bar.match(/title=\{unavailable \? "[^"]*"/g) || []) assert.doesNotMatch(tip, /server|OpenAI|Ollama|model/, tip);
+  // a try (Enter, Generate, Polish or its menu) shows the explanation and returns before any request
+  const run = bar.slice(bar.indexOf("const run = async"), bar.indexOf("const cancel = "));
+  assert.ok(run.indexOf("if (unavailable) return explainUnavailable();") < run.indexOf("provider.request("));
+  assert.match(bar, /const explainUnavailable = \(\) => \{\s*setMenuOpen\(false\);\s*setNotice\(provider\.unavailableMessage\);\s*\};/);
+  assert.match(bar, /onClick=\{\(\) => \(unavailable \? explainUnavailable\(\) : menuOpen \? setMenuOpen\(false\) : openMenu\(0\)\)\}/);
+  // looks disabled
+  const css = source("./styles.css");
+  assert.match(css, /\.email-ai-submit:disabled, \.email-ai-submit\[aria-disabled="true"\] \{ opacity: \.5;/);
+  assert.match(css, /\.email-ai-refine button:disabled, \.email-ai-refine button\[aria-disabled="true"\] \{ opacity: \.55;/);
+  // campaigns: the short explanation, no provider details, and still OpenAI only on the server
+  assert.equal(campaignDraftAvailability({ draft_mode: "ollama", ai_drafting_enabled: true }).message, CAMPAIGN_AI_UNAVAILABLE);
 });

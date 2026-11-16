@@ -215,6 +215,9 @@ def check_new_lead_rules(lead: Lead, changes: dict) -> None:
 
     if changed("first_name") and not changes["first_name"]:
         raise HTTPException(status_code=400, detail=schemas.FIRST_NAME_REQUIRED)
+    # a new company name needs a letter or digit; an older lead's unchanged name (even "..") doesn't block other edits
+    if changed("company") and (problem := schemas.company_name_problem(changes["company"])):
+        raise HTTPException(status_code=400, detail=problem)
     source = changes.get("source") or lead.source
     if source == "Other":
         detail = changes.get("source_detail", lead.source_detail)

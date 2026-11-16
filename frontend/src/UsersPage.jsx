@@ -4,7 +4,6 @@
 // Also the "Change password" and "My Profile" dialogs every user can open from their profile menu.
 import React, { useEffect, useRef, useState } from "react";
 import { api } from "./api";
-import { LEAD_OPEN_STAGES } from "./domain";
 import { UploadUsers } from "./LeadFiles";
 import { can } from "./permissions";
 import PermissionsTab from "./PermissionsPage";
@@ -497,20 +496,28 @@ function PeopleTab({ user, data, reload, notify, onSelfChanged }) {
   const [team, setTeam] = useState(manager ? "mine" : "all"); // Managers: My team / All Salespeople
   const [status, setStatus] = useState("any");
   const [query, setQuery] = useState("");
-  const load = () =>
+  const [openCounts, setOpenCounts] = useState(null); // { user id: open leads they own }, from the server
+  const load = () => {
+    // counted on the server like each person's My Open Leads (uploads not worked on yet included): the workspace's
+    // lead list leaves those uploads out, so counting it here showed too few
     api
+      .openLeadCounts()
+      .then((res) => setOpenCounts(res.counts || {}))
+      .catch(() => setOpenCounts(null));
+    return api
       .allUsers()
       .then((list) => {
         setUsers(list);
         setError("");
       })
       .catch((err) => setError(err.message));
+  };
   useEffect(() => {
     load();
   }, []);
 
-  // Open Leads: leads this user owns that are still open (not Converted or Lost)
-  const owned = (id) => data.leads.filter((r) => r.owner_id === id && LEAD_OPEN_STAGES.includes(r.stage)).length;
+  // Open Leads: the leads this user owns at an open status (New, Nurturing, Revisit, Demo), as the server counts them
+  const owned = (id) => (openCounts ? (openCounts[String(id)] ?? 0).toLocaleString() : "…");
 
   const run = async (work, message) => {
     try {

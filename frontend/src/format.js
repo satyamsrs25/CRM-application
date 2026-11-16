@@ -112,6 +112,10 @@ export function formatPhone(value) {
   return text.replace(/[\s\-.()]+/g, " ").replace(/\s+/g, " ");
 }
 
+// A number that came in already partly hidden by its source (an import or a data provider), e.g. "+1 212-555-01**" or
+// "98200 XXXXX": the app can't show those digits, and never makes them up. An extension ("x204") isn't hiding anything.
+export const sourceMaskedPhone = (value) => /[*•#]|[xX]{2,}/.test(String(value ?? ""));
+
 // Lists show only the start of a phone number; the full number is on the record page.
 // "+1 (416) 555-0114" -> "+1 (416) •••-••••", "+91 98200 00110" -> "+91 982•• •••••"
 export function maskPhone(value) {
