@@ -3192,14 +3192,15 @@ a.pill:hover {
 .email-ai-polish { display: inline-flex; align-items: center; gap: 10px; padding: 4px 8px; border: 0; background: transparent; color: #444746; font: inherit; font-size: 16px; font-weight: 600; cursor: pointer; }
 .email-ai-submit { display: grid; place-items: center; flex-shrink: 0; width: 44px; height: 44px; padding: 10px; border: 0; border-radius: 50%; background: #c2e7ff; color: #001d35; cursor: pointer; }
 .email-ai-submit svg { width: 24px; height: 24px; }
-.email-ai-submit:hover:not(:disabled) { background: #a8dcff; }
-.email-ai-submit:disabled { opacity: .5; cursor: default; }
+.email-ai-submit:hover:not(:disabled):not([aria-disabled="true"]) { background: #a8dcff; }
+/* AI drafting unavailable: aria-disabled looks the same as disabled (a try explains instead of generating) */
+.email-ai-submit:disabled, .email-ai-submit[aria-disabled="true"] { opacity: .5; cursor: default; }
 .email-ai-submit[aria-busy="true"] { opacity: 1; }
 .email-ai-spinner { width: 18px; height: 18px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
 .email-ai-refine-button { display: grid; place-items: center; width: 30px; height: 34px; padding: 6px; border: 0; border-radius: 50%; background: transparent; color: #444746; cursor: pointer; }
 .email-ai-refine-button svg { width: 18px; height: 18px; }
-.email-ai-refine-button:hover:not(:disabled), .email-ai-polish:hover:not(:disabled) { background: #e0eafa; }
-.email-ai-refine button:disabled { opacity: .55; cursor: default; }
+.email-ai-refine-button:hover:not(:disabled):not([aria-disabled="true"]), .email-ai-polish:hover:not(:disabled):not([aria-disabled="true"]) { background: #e0eafa; }
+.email-ai-refine button:disabled, .email-ai-refine button[aria-disabled="true"] { opacity: .55; cursor: default; }
 .email-ai-menu { position: absolute; right: -6px; bottom: calc(100% + 12px); z-index: 5; min-width: 224px; padding: 10px; border: 1px solid #dce3ef; border-radius: 12px; background: #fff; box-shadow: 0 3px 12px rgba(36, 52, 77, .24); }
 .email-ai-menu button { display: flex; align-items: center; gap: 18px; width: 100%; padding: 14px 12px; border: 0; border-radius: 6px; background: transparent; color: #444746; font: inherit; font-size: 17px; font-weight: 600; text-align: left; cursor: pointer; }
 .email-ai-menu svg { width: 24px; height: 24px; color: #444746; flex-shrink: 0; }
@@ -3214,6 +3215,8 @@ a.pill:hover {
 .email-ai-toggle:disabled { opacity: .55; cursor: default; }
 .email-ai-status { flex: 1; min-width: 0; color: #454545; font-size: 13px; line-height: 1.4; overflow-wrap: anywhere; }
 .email-ai-status:not(:empty) { padding: 9px 4px 0; }
+/* "Enter to generate · Shift+Enter for a new line": under the bar whenever Enter would generate (New Email and New Campaign) */
+.email-ai-hint { display: block; padding: 6px 4px 0 20px; color: #454545; font-size: 13px; line-height: 1.4; }
 .email-ai-history { display: flex; flex-shrink: 0; gap: 8px; padding: 8px; border-radius: 28px; background: #f0f4f9; }
 .email-ai-history button { display: grid; place-items: center; width: 40px; height: 40px; padding: 5px; border: 0; border-radius: 50%; background: transparent; color: #3d5068; cursor: pointer; }
 .email-ai-history button:hover:not(:disabled) { background: #e4ecf7; }
@@ -4293,6 +4296,19 @@ body:has(.ai-page) .popups {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* shown: the whole number, never ended with "…" (which looked like digits were still hidden); a very long one wraps */
+.phone-reveal.shown .phone-text {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.phone-source-masked {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  color: var(--text-weak);
 }
 .eye-button {
   display: inline-grid;
@@ -5796,35 +5812,6 @@ a.email-off {
   gap: 12px;
   padding: 12px 16px;
 }
-.ai-draft-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  align-self: flex-start;
-  margin-bottom: 8px;
-}
-.ai-draft-box {
-  display: grid;
-  gap: 8px;
-  margin-bottom: 12px;
-  padding: 12px;
-  border: 1px solid #b0c7e4;
-  border-radius: 8px;
-  background: #f3f8ff;
-}
-.ai-draft-box .field {
-  margin: 0;
-}
-.ai-draft-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-}
-.ai-draft-close {
-  margin-left: auto;
-}
 .sending-note {
   display: flex;
   gap: 6px;
@@ -6137,6 +6124,7 @@ a.email-off {
 .email-ai-history svg { width: 16px; height: 16px; }
 .email-ai-status { font-size: 12px; }
 .email-ai-status:not(:empty) { padding: 6px 4px 0; }
+.email-ai-hint { padding: 4px 4px 0 14px; font-size: 12px; }
 
 /* Campaign page (after sending): same spacing as the lead and opportunity pages */
 .campaign-page .highlights {
@@ -7275,6 +7263,15 @@ p.list-state {
 .campaign-pop.done header {
   background: #e5f6ea;
   color: #1b5e2b;
+}
+/* finished, but not every email was sent (failed, bounced, left out or cancelled): stays until closed */
+.campaign-pop.attention header {
+  background: #fef4e6;
+  color: #8c4b02;
+}
+.campaign-pop-success {
+  color: #1b5e2b;
+  font-weight: 600;
 }
 .campaign-pop header > div {
   display: grid;

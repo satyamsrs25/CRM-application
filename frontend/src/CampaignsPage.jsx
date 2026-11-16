@@ -6,9 +6,10 @@
 // Unsubscribed and bounced addresses are never emailed again, and every email ends with an unsubscribe link.
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
-import { LEAD_OPEN_STAGES, LEAD_STAGES, parseRecipients } from "./domain";
+import { CAMPAIGN_SUCCESS_CLOSE_MS, campaignProgress, LEAD_OPEN_STAGES, LEAD_STAGES, parseRecipients } from "./domain";
 import { can } from "./permissions";
 import { Th } from "./Filters";
+import { CampaignDraftAssistant } from "./EmailDraftAssistant";
 import { Icon, ObjectIcon } from "./ui";
 
 const n = (x) => Number(x || 0).toLocaleString();
@@ -127,84 +128,6 @@ function RecipientInput({ value, onChange, id, placeholder }) {
 const STAGE_PICKER = false;
 const plural = (count, word) => `${n(count)} ${word}${count === 1 ? "" : "s"}`;
 
-// Draft with AI (the same AI as lead emails): describe the email, or refine the current one. The draft keeps the
-// fields ({first_name}, {company}, {sender_name}) that are filled in for each recipient. Undo puts the old text back.
-const CAMPAIGN_REFINE = [
-  ["formalize", "Professional"],
-  ["friendly", "Conversational"],
-  ["shorten", "Concise"],
-];
-
-function CampaignAiDraft({ subject, body, onApply }) {
-  const [open, setOpen] = useState(false);
-  const [instructions, setInstructions] = useState("");
-  const [busy, setBusy] = useState("");
-  const [error, setError] = useState("");
-  const [undo, setUndo] = useState(null);
-  const run = async (action) => {
-    if (busy) return;
-    if (action === "custom" && !instructions.trim()) return setError("Describe the email you want first.");
-    setBusy(action);
-    setError("");
-    try {
-      const draft = await api.draftCampaign({ action, instructions: instructions.trim(), current_subject: subject, current_body: body });
-      setUndo({ subject, body });
-      onApply(draft);
-    } catch (err) {
-      setError(`${err.message} Your email is unchanged.`);
-    } finally {
-      setBusy("");
-    }
-  };
-  if (!open)
-    return (
-      <button type="button" className="sf-button small ai-draft-toggle" onClick={() => setOpen(true)}>
-        <Icon name="edit" size={14} /> Draft with AI
-      </button>
-    );
-  return (
-    <div className="ai-draft-box" aria-busy={!!busy}>
-      <label className="field">
-        <span>Describe the email</span>
-        <textarea
-          rows={2}
-          value={instructions}
-          maxLength={2000}
-          onChange={(e) => setInstructions(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && (e.ctrlKey || e.metaKey) && run("custom")}
-          placeholder="e.g. Invite them to a 20-minute demo of our reporting dashboards next week"
-          disabled={!!busy}
-        />
-      </label>
-      <div className="ai-draft-actions">
-        <button type="button" className="sf-button small brand" onClick={() => run("custom")} disabled={!!busy}>
-          {busy === "custom" ? "Writing…" : "Write email"}
-        </button>
-        <span className="muted">Refine:</span>
-        {CAMPAIGN_REFINE.map(([action, label]) => (
-          <button key={action} type="button" className="sf-button small" onClick={() => run(action)} disabled={!!busy}>
-            {busy === action ? "Working…" : label}
-          </button>
-        ))}
-        {undo && (
-          <button type="button" className="link" onClick={() => (onApply(undo), setUndo(null))} disabled={!!busy}>
-            Undo
-          </button>
-        )}
-        <button type="button" className="link ai-draft-close" onClick={() => setOpen(false)}>
-          Close
-        </button>
-      </div>
-      {error && (
-        <p className="field-error-text" role="alert">
-          {error}
-        </p>
-      )}
-      <small className="field-hint">Review the draft before sending. Fields like {"{first_name}"} are filled in for each recipient.</small>
-    </div>
-  );
-}
-
 export function NewCampaign({ user, users = [], leadIds = null, onClose, onCreated }) {
   const team = user.role === "Admin" || can(user, "view_team_records");
   const [stages, setStages] = useState(LEAD_OPEN_STAGES);
@@ -220,6 +143,19 @@ export function NewCampaign({ user, users = [], leadIds = null, onClose, onCreat
   const [showLeftOut, setShowLeftOut] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // "Help me write" (the same bar as New Email): the server's drafting settings, and a draft being written
+  const [aiSettings, setAiSettings] = useState(null);
+  const [aiBusy, setAiBusy] = useState(false);
+  useEffect(() => {
+    let live = true;
+    api
+      .emailSettings()
+      .then((value) => live && setAiSettings(value))
+      .catch((err) => live && setAiSettings({ ai_drafting_enabled: false, settings_error: err.message }));
+    return () => {
+      live = false;
+    };
+  }, []);
   const bodyRef = useRef(null);
   const subjectRef = useRef(null);
   // where the Insert buttons put a field: the box (subject or message) and cursor the user was last in
@@ -269,6 +205,7 @@ export function NewCampaign({ user, users = [], leadIds = null, onClose, onCreat
 
   const submit = async (e) => {
     e.preventDefault();
+    if (aiBusy) return; // a draft is being written: wait for it, or cancel it
     if (name.trim().length < 2) return setError("Give the campaign a name.");
     if (subject.trim().length < 2) return setError("Write a subject.");
     if (body.trim().length < 10) return setError("Write the email.");
@@ -317,7 +254,7 @@ export function NewCampaign({ user, users = [], leadIds = null, onClose, onCreat
             type="submit"
             form="campaign-form"
             className="sf-button brand"
-            disabled={busy || !preview?.eligible}
+            disabled={busy || aiBusy || !preview?.eligible}
             aria-busy={busy}
             aria-describedby="campaign-send-count"
           >
@@ -451,7 +388,6 @@ export function NewCampaign({ user, users = [], leadIds = null, onClose, onCreat
 
         <fieldset className="campaign-section">
           <legend>Email</legend>
-          <CampaignAiDraft subject={subject} body={body} onApply={(d) => (setSubject(d.subject), setBody(d.body))} />
           <label className="field">
             <span>
               Subject <i>*</i>
@@ -472,19 +408,32 @@ export function NewCampaign({ user, users = [], leadIds = null, onClose, onCreat
               </button>
             ))}
           </div>
-          <label className="field">
-            <span>
+          {/* the message with "Help me write" under it, as in New Email; the draft keeps the fields ({first_name},
+              {company}, {sender_name}) that are filled in for each recipient */}
+          <div className="field">
+            <label htmlFor="campaign-message">
               Message <i>*</i>
-            </span>
-            <textarea
-              ref={bodyRef}
-              rows={9}
-              value={body}
-              onChange={(e) => setBody(e.target.value)}
-              onSelect={remember("body")}
-              maxLength={20000}
-            />
-          </label>
+            </label>
+            <div className="email-editor">
+              <textarea
+                id="campaign-message"
+                ref={bodyRef}
+                rows={9}
+                value={body}
+                onChange={(e) => setBody(e.target.value)}
+                onSelect={remember("body")}
+                maxLength={20000}
+              />
+              <CampaignDraftAssistant
+                settings={aiSettings}
+                subject={subject}
+                message={body}
+                sending={busy}
+                onBusyChange={setAiBusy}
+                onApply={(d) => (setSubject(d.subject), setBody(d.body))}
+              />
+            </div>
+          </div>
           {/* no rendered preview: the subject and message stay templates; the backend fills the fields for each recipient */}
           <p className="field-hint">
             Fields such as {"{first_name}"} are filled in for each recipient when the email is sent. An Unsubscribe link is added automatically.
@@ -890,8 +839,12 @@ function CampaignProgressCard({ id, first, onClose }) {
   const [c, setC] = useState(first || null);
   const [min, setMin] = useState(false);
   const [error, setError] = useState("");
+  const [hold, setHold] = useState(false); // the pointer or keyboard focus is on the pop-up: don't close it now
   const counts = c?.counts || {};
-  const done = c && (["Completed", "Cancelled"].includes(c.status) || (c.status !== "Scheduled" && !counts.Queued && counts.total > 0));
+  // finished only when the server says so (Completed / Cancelled): never while emails are queued or waiting to retry
+  const { done, success, state } = campaignProgress(c);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
   useEffect(() => {
     let live = true;
     const load = () =>
@@ -906,6 +859,14 @@ function CampaignProgressCard({ id, first, onClose }) {
       if (timer) clearInterval(timer);
     };
   }, [id, done]);
+  // every email sent: the confirmation stays long enough to read, then the pop-up closes (closing never cancels
+  // sending). Failed, bounced, partly sent or cancelled results stay until closed. The timer stops on hover / focus and
+  // when the pop-up is closed or unmounted.
+  useEffect(() => {
+    if (!success || hold) return undefined;
+    const timer = setTimeout(() => closeRef.current(), CAMPAIGN_SUCCESS_CLOSE_MS);
+    return () => clearTimeout(timer);
+  }, [success, hold]);
   const total = (counts.total || 0) - (counts.Skipped || 0) - (counts.Cancelled || 0);
   const finished = (counts.Sent || 0) + (counts.Invalid || 0) + (counts.Failed || 0);
   const pct = total ? Math.round((finished / total) * 100) : 0;
@@ -916,9 +877,17 @@ function CampaignProgressCard({ id, first, onClose }) {
     ...(counts.Invalid ? [["Bounced", counts.Invalid, "bad"]] : []),
     ...(counts.Skipped ? [["Not sent", counts.Skipped, "warn"]] : []),
   ];
-  const state = !c ? "Loading…" : done ? (c.status === "Cancelled" ? "Cancelled" : "Sending finished") : c.status === "Paused" ? "Paused" : "Sending…";
   return (
-    <section className={`campaign-pop${min ? " min" : ""}${done ? " done" : ""}`} role="status" aria-live="polite" aria-label={`Bulk email ${c?.name || ""}`}>
+    <section
+      className={`campaign-pop${min ? " min" : ""}${done ? " done" : ""}${done && !success ? " attention" : ""}`}
+      role="status"
+      aria-live="polite"
+      aria-label={`Bulk email ${c?.name || ""}`}
+      onMouseEnter={() => setHold(true)}
+      onMouseLeave={() => setHold(false)}
+      onFocus={() => setHold(true)}
+      onBlur={(event) => !event.currentTarget.contains(event.relatedTarget) && setHold(false)}
+    >
       <header>
         <Icon name="mail" size={16} />
         <div>
@@ -954,7 +923,10 @@ function CampaignProgressCard({ id, first, onClose }) {
           {!done && c?.eta?.finish_by && counts.Queued > 0 && (
             <small className="muted">Should finish by {new Date(c.eta.finish_by).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}. You can keep working.</small>
           )}
-          {done && counts.Failed > 0 && <small className="muted">Some emails failed: open the campaign to see why.</small>}
+          {success && <small className="campaign-pop-success">Sending finished. This closes in a few seconds.</small>}
+          {done && !success && c?.status !== "Cancelled" && (
+            <small className="muted">Some emails weren&apos;t sent: open the campaign to see why.</small>
+          )}
           <a className="sf-button small" href={`#/campaigns/${id}`}>
             View Campaign
           </a>

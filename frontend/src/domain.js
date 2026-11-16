@@ -81,6 +81,17 @@ export const UPLOAD_SOURCE = "Upload";
 export const LEAD_FIRST_NAME_REQUIRED = "Enter the lead's first name.";
 export const LEAD_LAST_NAME_REQUIRED = "Enter the lead's last name.";
 export const LEAD_COMPANY_REQUIRED = "Enter the lead's company.";
+// A company or account name needs at least one letter or digit in any language ("Société Générale", "3M", "AT&T" are
+// fine; "  " and ".." are not), as the server checks (schemas.company_name_problem). An older record's unchanged name
+// doesn't block an unrelated edit.
+export const COMPANY_NAME_INVALID = "Enter a company name with at least one letter or number.";
+export const ACCOUNT_NAME_INVALID = "Enter an account name with at least one letter or number.";
+export const hasLetterOrDigit = (value) => /[\p{L}\p{N}]/u.test(String(value ?? ""));
+export function companyNameProblem(value, { required = LEAD_COMPANY_REQUIRED, invalid = COMPANY_NAME_INVALID } = {}) {
+  const text = String(value ?? "").trim();
+  if (!text) return required;
+  return hasLetterOrDigit(text) ? "" : invalid;
+}
 export const LEAD_EMAIL_REQUIRED = "Enter the lead's email address.";
 export const LEAD_EMAIL_INVALID = "Enter a valid email address, like name@company.com.";
 export const LEAD_SOURCE_REQUIRED = "Choose the lead source.";
@@ -128,7 +139,10 @@ export function leadFormProblems(values, record = null) {
   const need = leadFieldsRequired(values.source, record);
   if (need.first_name && !filled(values.first_name)) problems.first_name = LEAD_FIRST_NAME_REQUIRED;
   if (!filled(values.last_name)) problems.last_name = LEAD_LAST_NAME_REQUIRED;
-  if (!filled(values.company)) problems.company = LEAD_COMPANY_REQUIRED;
+  const company = String(values.company ?? "").trim();
+  if (!company) problems.company = LEAD_COMPANY_REQUIRED;
+  else if (!hasLetterOrDigit(company) && (!record || company !== String(record.company ?? "").trim()))
+    problems.company = COMPANY_NAME_INVALID; // new, or changed: an older lead's unchanged name is left alone
   const email = String(values.email ?? "").trim();
   if (!email) {
     if (need.email) problems.email = LEAD_EMAIL_REQUIRED;
@@ -170,6 +184,8 @@ function leadMessageField(message) {
   const empty = /^(last_name|company|source) can't be empty/.exec(text);
   if (empty) return [empty[1], LEAD_REQUIRED[empty[1]]];
   if (/^(Personal emails|Please check the email|This email is already in the CRM)/.test(text)) return ["email", text];
+  if (text.startsWith(COMPANY_NAME_INVALID)) return ["company", COMPANY_NAME_INVALID];
+  if (text.startsWith(LEAD_COMPANY_REQUIRED)) return ["company", LEAD_COMPANY_REQUIRED];
   if (/^(Enter the lead's phone number|Enter a valid phone number|Choose the phone number's country)/.test(text)) return ["phone", text];
   return null;
 }
@@ -604,6 +620,7 @@ export function newRecordProblems(type, values) {
   for (const [name, message] of NEW_RECORD_REQUIRED[type] || []) if (!String(values[name] ?? "").trim()) problems[name] = message;
   if (type === "contact") Object.assign(problems, contactProblems(values));
   if (type === "account") {
+    if (!problems.name && !hasLetterOrDigit(values.name)) problems.name = ACCOUNT_NAME_INVALID;
     const website = webAddressProblem(values.website);
     const page = webAddressProblem(values.linkedin_url, { linkedin: true });
     if (website) problems.website = website;
@@ -663,3 +680,44 @@ export function emailWritingAction(instructions, body, senderName = "", senderEm
 export const ASSISTANT_FILE_TYPES = ".pdf,.docx,.xlsx,.pptx,.csv,.tsv,.txt,.md,.json,.html,.htm,.eml,.xml,.log,.png,.jpg,.jpeg,.webp,.gif";
 export const ASSISTANT_ATTACH_HELP =
   "PDF, Word, Excel, PowerPoint, CSV, text, HTML, email (.eml) or images (PNG, JPG, WEBP, GIF) · up to 5 files, 10 MB each (images 5 MB)";
+
+// Bulk-email progress pop-up (CampaignsPage.jsx CampaignProgressCard): what the campaign's state means. Finished only
+// when the server says so (Completed or Cancelled): a campaign still sending, paused, or waiting to retry some emails
+// (they stay Queued) is never called finished. success: every email was sent (nothing failed, bounced, was left out or
+// cancelled); only then does the pop-up close by itself, after a short confirmation. Anything else stays until closed.
+export function campaignProgress(campaign) {
+  const counts = campaign?.counts || {};
+  const status = campaign?.status || "";
+  const done = status === "Completed" || status === "Cancelled";
+  const sent = counts.Sent || 0;
+  const unsent = (counts.Failed || 0) + (counts.Invalid || 0) + (counts.Skipped || 0) + (counts.Cancelled || 0);
+  const success = status === "Completed" && (counts.total || 0) > 0 && sent === counts.total && unsent === 0;
+  const plural = (n) => `${n.toLocaleString()} email${n === 1 ? "" : "s"}`;
+  let state;
+  if (!campaign) state = "Loading…";
+  else if (success) state = `All ${plural(sent)} sent`;
+  else if (status === "Cancelled") state = "Cancelled";
+  else if (done) state = `Finished: ${plural(sent)} sent, ${plural(unsent)} not sent`;
+  else if (status === "Paused") state = "Paused";
+  else if (status === "Scheduled") state = "Scheduled";
+  else state = "Sending…";
+  return { done, success, state, sent, unsent };
+}
+export const CAMPAIGN_SUCCESS_CLOSE_MS = 10000; // long enough to read "All N emails sent" before the pop-up closes
+
+// New Campaign's "Help me write" (EmailDraftAssistant.jsx CampaignDraftAssistant). Campaign drafting uses OpenAI only
+// (backend/app/ai_email.py generate_campaign_draft): with any other drafting mode it isn't available and never falls
+// back to another provider. message: what a try to generate then says (nothing is requested); error: an actual error
+// loading the settings, shown as it is. settings: GET /api/emails/settings (null while loading).
+export const CAMPAIGN_AI_UNAVAILABLE = "AI drafting is currently unavailable. You can still write your email.";
+export function campaignDraftAvailability(settings) {
+  if (!settings) return { available: false, message: "", error: "" };
+  if (settings.draft_mode === "openai" && settings.ai_drafting_enabled !== false) return { available: true, message: "", error: "" };
+  return { available: false, message: CAMPAIGN_AI_UNAVAILABLE, error: settings.settings_error || "" };
+}
+// A campaign message is a draft to refine once it has words besides "Hi {first_name}," and the sign-off with
+// {sender_name} (the placeholders stay as they are: they are filled in for each recipient when it is sent).
+export const campaignHasDraft = (body) => !!draftContent(body, "{sender_name}");
+// Enter / the arrow: a typed request writes or changes the campaign; with none, Polish refines an existing draft.
+export const campaignWritingAction = (instructions, body, freshStart = false) =>
+  String(instructions ?? "").trim() ? "custom" : !freshStart && campaignHasDraft(body) ? "formalize" : "custom";

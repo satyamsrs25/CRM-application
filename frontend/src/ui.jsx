@@ -1,5 +1,5 @@
 // Small building blocks used by every screen: icons, object icons, ring charts, path bar, empty states.
-import { CURRENCIES, DEFAULT_CURRENCY, formatPhone, maskPhone, shortDate, time } from "./format";
+import { CURRENCIES, DEFAULT_CURRENCY, formatPhone, maskPhone, shortDate, sourceMaskedPhone, time } from "./format";
 import { pageSummary } from "./listHelpers";
 import React, { useEffect, useState } from "react";
 
@@ -437,13 +437,22 @@ export function ActionMenu({ items, label = "Actions", badge }) {
 }
 
 // Date on the first line, time underneath (lists: Created, Last Modified)
-// A phone number shown masked (first digits only) with an eye button to show or hide the full number
+// A phone number shown masked (first digits only) with an eye button to show or hide the full number. Shown, the whole
+// stored number is displayed (never cut off with "…"). A number already partly hidden by its source says so: those
+// digits aren't in the CRM. The number itself is never put in a tooltip.
 export function PhoneReveal({ value }) {
   const [shown, setShown] = useState(false);
   if (!value) return null;
+  const masked = shown && sourceMaskedPhone(value);
   return (
-    <span className="phone-reveal">
+    <span className={`phone-reveal${shown ? " shown" : ""}`}>
       <span className="phone-text">{shown ? formatPhone(value) : maskPhone(value)}</span>
+      {masked && (
+        <span className="phone-source-masked" title="Partly hidden by its source: the CRM doesn't have these digits">
+          <Icon name="help" size={12} />
+          <span className="sr-only">Partly hidden by its source: the CRM doesn't have these digits</span>
+        </span>
+      )}
       <button
         type="button"
         className="eye-button"

@@ -290,6 +290,39 @@ def trimmed(value):
     return (value.strip() or None) if isinstance(value, str) else value
 
 
+# A company (or account) name needs at least one letter or digit, in any language: "Société Générale", "3M", "株式会社",
+# "AT&T" and "Acme, Inc." are fine; "", "   " and ".." are not. Checked on New Lead, when a lead's company is changed,
+# on New Account and on New Opportunity's new company. Older records keep their names (no data is rewritten).
+LEAD_COMPANY_REQUIRED = "Enter the lead's company."
+COMPANY_NAME_INVALID = "Enter a company name with at least one letter or number."
+ACCOUNT_NAME_INVALID = "Enter an account name with at least one letter or number."
+
+
+def has_letter_or_digit(text: str | None) -> bool:
+    return any(ch.isalnum() for ch in (text or ""))  # str.isalnum: Unicode letters and digits
+
+
+def company_name_problem(value, *, required: str = LEAD_COMPANY_REQUIRED, invalid: str = COMPANY_NAME_INVALID) -> str:
+    """"" when the name is fine; otherwise the message (empty or only spaces: `required`; no letter or digit: `invalid`)."""
+    text = value.strip() if isinstance(value, str) else ""
+    if not text:
+        return required
+    return "" if has_letter_or_digit(text) else invalid
+
+
+def company_name(value) -> str:
+    """New Lead's Company: trimmed, and with at least one letter or digit."""
+    if value is not None and not isinstance(value, str):
+        raise PydanticCustomError("company_type", "Enter the company name as text.")
+    problem = company_name_problem(value)
+    if problem:
+        raise PydanticCustomError("company_invalid", problem)
+    return value.strip()
+
+
+CompanyName = Annotated[str, BeforeValidator(company_name)]
+
+
 class LeadCreate(LeadLinks):
     """Like the Salesforce "New Lead" form: First Name, Last Name and Company are required. Lead Source LinkedIn needs
     the LinkedIn Profile URL; Other needs source_detail (what the source is)."""
@@ -297,7 +330,7 @@ class LeadCreate(LeadLinks):
     salutation: Salutation | None = None
     first_name: Annotated[str | None, BeforeValidator(trimmed)] = Field(None, max_length=50)  # required: checked below
     last_name: str = Field(..., min_length=1, max_length=50)
-    company: str = Field(..., min_length=1, max_length=200)
+    company: CompanyName = Field(..., max_length=200)  # at least one letter or digit
     title: str | None = Field(None, max_length=100)
     industry: str | None = Field(None, max_length=100)
     email: str | None = Field(None, max_length=255)
@@ -746,7 +779,15 @@ def contact_email(value) -> str:
     return value
 
 
-AccountName = Annotated[str, BeforeValidator(lambda v: required_text(v, ACCOUNT_NAME_REQUIRED))]
+def account_name(value) -> str:
+    """New Account's name: required, and with at least one letter or digit (like a lead's company)."""
+    value = required_text(value, ACCOUNT_NAME_REQUIRED)
+    if not has_letter_or_digit(value):
+        raise PydanticCustomError("account_name_invalid", ACCOUNT_NAME_INVALID)
+    return value
+
+
+AccountName = Annotated[str, BeforeValidator(account_name)]
 AccountIndustry = Annotated[str, BeforeValidator(lambda v: required_text(v, ACCOUNT_INDUSTRY_REQUIRED))]
 ContactFirstName = Annotated[str, BeforeValidator(lambda v: required_text(v, CONTACT_FIRST_NAME_REQUIRED))]
 ContactLastName = Annotated[str, BeforeValidator(lambda v: required_text(v, CONTACT_LAST_NAME_REQUIRED))]
@@ -920,6 +961,8 @@ class OpportunityCreate(NeedsTask):
     def _account_and_contact(self):
         if self.account_id is None and not (self.account_name or "").strip():
             raise ValueError("Choose an account or enter the company name")
+        if self.account_id is None and not has_letter_or_digit(self.account_name):
+            raise ValueError(COMPANY_NAME_INVALID)  # a new company: at least one letter or digit
         if self.primary_contact_id is not None:
             return self  # an existing contact is reused as it is: no new contact fields are needed or checked
         self.contact_first_name = required_text(self.contact_first_name, CONTACT_FIRST_NAME_REQUIRED)
