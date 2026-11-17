@@ -90,7 +90,55 @@ export const hasLetterOrDigit = (value) => /[\p{L}\p{N}]/u.test(String(value ?? 
 export function companyNameProblem(value, { required = LEAD_COMPANY_REQUIRED, invalid = COMPANY_NAME_INVALID } = {}) {
   const text = String(value ?? "").trim();
   if (!text) return required;
-  return hasLetterOrDigit(text) ? "" : invalid;
+  if (!hasLetterOrDigit(text)) return invalid;
+  return companyCharactersProblem(text, invalid === ACCOUNT_NAME_INVALID ? "account name" : "company name");
+}
+// Which characters each text field accepts, as the server checks them (backend/app/text_rules.py; the messages are
+// the same). Person names: letters in any language with spaces, - ' and dots. Company / account names: letters and
+// digits with the punctuation company names use, starting with a letter or digit. Other text (Title, Industry,
+// Location, Address, "Specify lead source"): no markup or code characters. "" when fine or empty.
+const JOINERS = "\u200c\u200d"; // zero-width (non-)joiner, used in some Indic and Persian words
+const NAME_PUNCTUATION = " .'’-" + JOINERS;
+const COMPANY_PUNCTUATION = " &.,'’-()/+@!#:*_";
+const TEXT_FORBIDDEN = "<>{}[]\\|^~`";
+export function personNameProblem(value, label) {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+  if (/\p{L}/u.test(text) && [...text].every((ch) => /[\p{L}\p{M}]/u.test(ch) || NAME_PUNCTUATION.includes(ch))) return "";
+  return `Enter a valid ${label}: letters only (spaces, hyphens, apostrophes and dots are fine).`;
+}
+export function companyCharactersProblem(value, what = "company name") {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+  const bad = [...new Set([...text].filter((ch) => !/[\p{L}\p{N}\p{M}]/u.test(ch) && !COMPANY_PUNCTUATION.includes(ch)))];
+  if (bad.length) return `The ${what} can't contain ${bad.join(" ")}. Use letters, numbers, spaces and & . , ' - ( ) / + @ ! # : * _ only.`;
+  if (!/^[\p{L}\p{N}(@'#]/u.test(text)) return `Start the ${what} with a letter or number.`;
+  return "";
+}
+export function textProblem(value, label, { letter = true, multiline = false } = {}) {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+  const allowed = JOINERS + (multiline ? "\n\r\t" : "");
+  if ([...text].some((ch) => TEXT_FORBIDDEN.includes(ch) || (/\p{C}/u.test(ch) && !allowed.includes(ch))))
+    return `The ${label} can't contain < > { } [ ] \\ | ^ ~ \` or special characters.`;
+  if (letter && !/\p{L}/u.test(text)) return `Enter a ${label} with at least one letter.`;
+  if (!letter && !/[\p{L}\p{N}]/u.test(text)) return `Enter a ${label} with at least one letter or number.`;
+  return "";
+}
+// the lead form's fields and their character checks (an edit checks only the fields it changes)
+const LEAD_TEXT_CHECKS = [
+  ["first_name", (v) => personNameProblem(v, "first name")],
+  ["last_name", (v) => personNameProblem(v, "last name")],
+  ["title", (v) => textProblem(v, "title")],
+  ["industry", (v) => textProblem(v, "industry")],
+  ["location", (v) => textProblem(v, "location", { letter: false })],
+  ["source_detail", (v) => textProblem(v, "lead source", { letter: false })],
+];
+// A phone number's last 10 digits, as the server compares numbers (app/phone_matches.py phone_key): "+91 98765 43210",
+// "098765 43210" and "9876543210" are the same number; "" for fewer than 7 digits
+export function phoneKey(value) {
+  const digits = String(value ?? "").replace(/\D/g, "");
+  return digits.length >= 7 ? digits.slice(-10) : "";
 }
 export const LEAD_EMAIL_REQUIRED = "Enter the lead's email address.";
 export const LEAD_EMAIL_INVALID = "Enter a valid email address, like name@company.com.";
@@ -141,8 +189,15 @@ export function leadFormProblems(values, record = null) {
   if (!filled(values.last_name)) problems.last_name = LEAD_LAST_NAME_REQUIRED;
   const company = String(values.company ?? "").trim();
   if (!company) problems.company = LEAD_COMPANY_REQUIRED;
-  else if (!hasLetterOrDigit(company) && (!record || company !== String(record.company ?? "").trim()))
-    problems.company = COMPANY_NAME_INVALID; // new, or changed: an older lead's unchanged name is left alone
+  else if (!record || company !== String(record.company ?? "").trim()) {
+    const problem = companyNameProblem(company); // new, or changed: an older lead's unchanged name is left alone
+    if (problem) problems.company = problem;
+  }
+  const changed = (name) => !record || String(values[name] ?? "").trim() !== String(record[name] ?? "").trim();
+  for (const [name, check] of LEAD_TEXT_CHECKS) {
+    const problem = !problems[name] && changed(name) && check(values[name]);
+    if (problem) problems[name] = problem;
+  }
   const email = String(values.email ?? "").trim();
   if (!email) {
     if (need.email) problems.email = LEAD_EMAIL_REQUIRED;
@@ -185,6 +240,10 @@ function leadMessageField(message) {
   if (empty) return [empty[1], LEAD_REQUIRED[empty[1]]];
   if (/^(Personal emails|Please check the email|This email is already in the CRM)/.test(text)) return ["email", text];
   if (text.startsWith(COMPANY_NAME_INVALID)) return ["company", COMPANY_NAME_INVALID];
+  if (/^(The company name can't contain|Start the company name)/.test(text)) return ["company", text];
+  const named = /^(?:Enter a valid (first name|last name)|The (title|industry|location|lead source) can't contain|Enter an? (title|industry|location|lead source) with)/.exec(text);
+  if (named) return [{ "first name": "first_name", "last name": "last_name", "lead source": "source_detail" }[named[1] || named[2] || named[3]] || named[2] || named[3], text];
+  if (/^(This phone number is also on|This person is already)/.test(text)) return ["phone", text];
   if (text.startsWith(LEAD_COMPANY_REQUIRED)) return ["company", LEAD_COMPANY_REQUIRED];
   if (/^(Enter the lead's phone number|Enter a valid phone number|Choose the phone number's country)/.test(text)) return ["phone", text];
   return null;
@@ -603,7 +662,10 @@ export function contactProblems(values, form = CONTACT_FORM) {
   const problems = {};
   const text = (field) => String(values[form[field]] ?? "").trim();
   if (!text("first_name")) problems[form.first_name] = CONTACT_FIRST_NAME_REQUIRED;
+  else if (personNameProblem(text("first_name"), "first name")) problems[form.first_name] = personNameProblem(text("first_name"), "first name");
   if (!text("last_name")) problems[form.last_name] = CONTACT_LAST_NAME_REQUIRED;
+  else if (personNameProblem(text("last_name"), "last name")) problems[form.last_name] = personNameProblem(text("last_name"), "last name");
+  if (textProblem(text("job_title"), "title")) problems[form.job_title] = textProblem(text("job_title"), "title");
   if (!text("email")) problems[form.email] = CONTACT_EMAIL_REQUIRED;
   else if (!EMAIL_FORMAT.test(text("email"))) problems[form.email] = CONTACT_EMAIL_INVALID;
   const phone = phoneProblem(values[form.phone], values[form.phone_country] || DEFAULT_PHONE_COUNTRY);
@@ -620,7 +682,12 @@ export function newRecordProblems(type, values) {
   for (const [name, message] of NEW_RECORD_REQUIRED[type] || []) if (!String(values[name] ?? "").trim()) problems[name] = message;
   if (type === "contact") Object.assign(problems, contactProblems(values));
   if (type === "account") {
-    if (!problems.name && !hasLetterOrDigit(values.name)) problems.name = ACCOUNT_NAME_INVALID;
+    if (!problems.name) {
+      const name = companyNameProblem(values.name, { invalid: ACCOUNT_NAME_INVALID });
+      if (name) problems.name = name;
+    }
+    for (const [field, problem] of [["industry", textProblem(values.industry, "industry")], ["address", textProblem(values.address, "address", { letter: false, multiline: true })]])
+      if (!problems[field] && problem) problems[field] = problem;
     const website = webAddressProblem(values.website);
     const page = webAddressProblem(values.linkedin_url, { linkedin: true });
     if (website) problems.website = website;
@@ -703,7 +770,7 @@ export function campaignProgress(campaign) {
   else state = "Sending…";
   return { done, success, state, sent, unsent };
 }
-export const CAMPAIGN_SUCCESS_CLOSE_MS = 10000; // long enough to read "All N emails sent" before the pop-up closes
+export const CAMPAIGN_SUCCESS_CLOSE_MS = 2500; // every email sent: "All N emails sent" shows briefly, then the pop-up closes
 
 // New Campaign's "Help me write" (EmailDraftAssistant.jsx CampaignDraftAssistant). Campaign drafting uses OpenAI only
 // (backend/app/ai_email.py generate_campaign_draft): with any other drafting mode it isn't available and never falls

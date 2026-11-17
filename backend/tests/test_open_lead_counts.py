@@ -4,7 +4,7 @@ Users: 1 Priya (Manager), 2 Ravi (Salesperson, default), 3 Asha (Admin). All dat
 import csv
 import io
 
-from conftest import login_as
+from conftest import alpha, login_as
 
 PRIYA, RAVI, ASHA = 1, 2, 3
 TASK = {"title": "Synthetic follow-up task", "due_date": "2030-01-15T10:00:00"}
@@ -26,7 +26,7 @@ def my_open_total(client, user_id):
 def new_lead(client, owner=RAVI, n=[0]):
     n[0] += 1
     res = login_as(client, owner).post("/api/leads", json={
-        "first_name": "Ana", "last_name": f"Count{n[0]}", "company": "Count Synthetic Co", "source": "Website",
+        "first_name": "Ana", "last_name": f"Count{alpha(n[0])}", "company": "Count Synthetic Co", "source": "Website",
         "email": f"count{n[0]}@count-synthetic.example"})
     assert res.status_code == 201, res.text
     return res.json()

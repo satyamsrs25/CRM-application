@@ -23,6 +23,7 @@ from app.database import get_db
 from app.models import Account, ActivityLog, Contact, Lead, LeadTransfer, StageHistory, User
 from app.security import acting_user, can_view, require, team_ids, visible
 from app.serializers import lead_out
+from app.text_rules import has_letter, text_problem
 from app.services import (activity_condition, email_matches_website, is_personal_email, log_activity, notify,
                           notify_data_owners, now, uploaded_leads_team_notice, website_host)
 
@@ -181,8 +182,20 @@ def parse(header: list[str], rows: list[list]):
         if not raw.get("company"):
             errors.append({"row": number_in_file, "reason": "Company is missing"})
             continue
+        # a row with an unusable company or last name ("...", "@@") is skipped (app/text_rules.py); other characters
+        # are kept as the file has them, so a bulk upload of real-world data isn't thrown away
+        problem = schemas.company_name_problem(raw["company"])
+        if not problem and not has_letter(raw["last_name"]):
+            problem = "Enter a last name with at least one letter."
+        if problem:
+            errors.append({"row": number_in_file, "reason": problem})
+            continue
         lead = {f: raw[f][:limit] or None for f, limit in LIMITS.items() if raw.get(f)}
         blank = []  # values left out of this row because they aren't valid
+        for field, label in (("title", "title"), ("industry", "industry")):
+            if lead.get(field) and text_problem(lead[field], label):
+                blank.append(f"{label} '{lead[field][:60]}' has characters that aren't allowed")
+                lead[field] = None
         email = (raw.get("email") or "").lower()
         if email and not EMAIL_RE.match(email):
             blank.append(f"email '{email}' is not valid")
@@ -200,6 +213,9 @@ def parse(header: list[str], rows: list[list]):
         lead["source_detail"] = (detail[:LEAD_SOURCE_DETAIL_MAX] or None) if lead["source"] == "Other" else None
         location = raw.get("location") or ", ".join(x for x in (raw.get("city"), raw.get("state"), raw.get("country")) if x)
         lead["location"] = location[:200] or None
+        if lead["location"] and text_problem(lead["location"], "location", letter=False):
+            blank.append(f"location '{lead['location'][:60]}' has characters that aren't allowed")
+            lead["location"] = None
         for field, label, linkedin, limit in (("linkedin_url", "LinkedIn URL", True, 300),
                                               ("company_website", "company website", False, 255),
                                               ("company_linkedin_url", "company LinkedIn URL", True, 300)):
@@ -588,7 +604,32 @@ def company_matches(
             "owner": account.owner.full_name if account.owner else None, "owner_id": account.owner_id,
             "mine": account.owner_id == acting_user().id, "can_open": visible_to_me,
         })
-    matches.sort(key=lambda m: (m["type"] != "Account", not m["open"], not m["mine"]))
+    # possibly the same company under another name (TCS / Tata Consultancy Services): shown, marked "similar"
+    from app.opportunity_matches import acronym_of, initials_of, similar_names
+    short = acronym_of(company) or initials_of(company)
+    if short:
+        starts = or_(Lead.company.ilike(f"{short[0]}%"), Lead.company.ilike(f"the {short[0]}%"))
+        for lead in db.scalars(select(Lead).options(selectinload(Lead.owner)).where(starts)
+                               .order_by(Lead.updated_at.desc()).limit(5000)).all():
+            if lead.id == exclude_id or company_key(lead.company) == wanted or not similar_names(company, lead.company):
+                continue
+            visible_to_me = can_view(lead.owner_id)
+            matches.append({
+                "type": "Lead", "id": lead.id if visible_to_me else None, "name": lead.name if visible_to_me else None,
+                "company": lead.company, "stage": lead.stage, "open": lead.stage in LEAD_OPEN_STAGES,
+                "owner": lead.owner.full_name if lead.owner else None, "owner_id": lead.owner_id,
+                "mine": lead.owner_id == acting_user().id, "can_open": visible_to_me, "similar": True,
+            })
+        from app.opportunity_matches import similar_accounts
+        for account in similar_accounts(db, company):
+            visible_to_me = can_view(account.owner_id)
+            matches.append({
+                "type": "Account", "id": account.id if visible_to_me else None, "name": account.name,
+                "company": account.name, "stage": "Customer account", "open": True,
+                "owner": account.owner.full_name if account.owner else None, "owner_id": account.owner_id,
+                "mine": account.owner_id == acting_user().id, "can_open": visible_to_me, "similar": True,
+            })
+    matches.sort(key=lambda m: (m.get("similar", False), m["type"] != "Account", not m["open"], not m["mine"]))
     owners: dict[str, int] = {}
     for m in matches:
         name = "You" if m["mine"] else (m["owner"] or "Unknown")

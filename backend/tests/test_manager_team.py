@@ -1,7 +1,7 @@
 """A Manager's team (Reports To): Managers add and deactivate their own Salespeople, see only their team's activity,
 and are told when someone else downloads their team's data. The Admin sees everything. All data is made up."""
 import pytest
-from conftest import login_as
+from conftest import alpha, login_as
 
 from app import mailer
 
@@ -101,7 +101,7 @@ def test_activity_history_by_role(client, outbox):
 def test_activity_pages(client, outbox):
     login_as(client, ASHA)
     for i in range(30):
-        client.put(f"/api/users/{RAVI}", json={"full_name": f"Ravi Kumar {i}"})
+        client.put(f"/api/users/{RAVI}", json={"full_name": f"Ravi Kumar {alpha(i)}"})
     first = activity(client, page_size=25)
     assert (first["total"], first["pages"], len(first["rows"])) == (30, 2, 25)
     assert len(activity(client, page_size=25, page=2)["rows"]) == 5

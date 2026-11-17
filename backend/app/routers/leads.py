@@ -19,6 +19,8 @@ from app.security import (acting_user, acting_user_id, owner_for_new, require_ed
                           require_transfer, require_view, visible)
 from app.models import (Account, Contact, Email, EmailAttachment, Lead, LeadTransfer, Note, Notification, Opportunity,
                         StageHistory, Task, User)
+from app.phone_matches import check_lead_phone, find_phone_matches, phone_key, phone_message
+from app.text_rules import person_name_problem, text_problem
 from app.serializers import account_out, contact_out, history_out, lead_detail, lead_out, opportunity_out, task_out
 from app.opportunity_matches import (default_name, ensure_email_free_for_contact, ensure_no_duplicate, find_account,
                                      find_contact)
@@ -126,6 +128,18 @@ def check_duplicates(email: str = Query(..., min_length=3), exclude_lead_id: int
     return {"email": email.strip().lower(), "matches": matches, "has_open_lead": any(m["open"] for m in matches)}
 
 
+@router.get("/phone-matches")
+def check_phone(phone: str = Query(..., min_length=3, max_length=40), first_name: str | None = Query(None, max_length=50),
+                last_name: str | None = Query(None, max_length=50), company: str | None = Query(None, max_length=200),
+                exclude_lead_id: int | None = Query(None), db: Session = Depends(get_db)):
+    """Before saving a lead: is this phone number on other leads or contacts? blocked: the same person already has it
+    (a duplicate lead); otherwise the form asks once whether it is a shared business number."""
+    matches = find_phone_matches(db, phone, first_name=first_name, last_name=last_name, company=company,
+                                 exclude_lead_id=exclude_lead_id)
+    blocked, message = phone_message(matches) if matches else (False, "")
+    return {"phone": phone, "matches": matches[:10], "total": len(matches), "blocked": blocked, "message": message}
+
+
 def check_email_free(db: Session, email: str | None, *, exclude_lead_id: int | None = None) -> None:
     """Email is unique: no other lead (any stage) or contact may have it. Records the user can't open are named
     only by their owner."""
@@ -169,6 +183,9 @@ def create_lead(data: schemas.LeadCreate, db: Session = Depends(get_db)):
     """Create a lead at stage New (the New Lead form). The system adds a 'Make first contact' task for the owner.
     Admins can create leads too, and choose who owns them. A valid Phone is required here (manual_lead_phone)."""
     data.phone = manual_lead_phone(data)
+    # the same number on other records: refused for the same person, asked about once otherwise (phone_matches.py)
+    check_lead_phone(db, data.phone, first_name=data.first_name, last_name=data.last_name, company=data.company,
+                     confirmed=data.confirm_shared_phone)
     return add_lead(db, data)
 
 
@@ -183,7 +200,8 @@ def add_lead(db: Session, data: schemas.LeadCreate):
             raise HTTPException(status_code=400, detail="Leads can only be assigned to active Managers and Salespeople")
     actor_id = acting_user_id()
     check_lead_email(db, data.email, data.company_website, confirmed=data.confirm_email_domain)
-    lead = Lead(**data.model_dump(exclude={"owner_id", "created_by_id", "confirm_email_domain", "phone_country"}),
+    lead = Lead(**data.model_dump(exclude={"owner_id", "created_by_id", "confirm_email_domain", "phone_country",
+                                        "confirm_shared_phone"}),
                 owner_id=owner_id, created_by_id=acting_user_id(), stage=LEAD_START)
     db.add(lead)
     db.flush()
@@ -218,6 +236,15 @@ def check_new_lead_rules(lead: Lead, changes: dict) -> None:
     # a new company name needs a letter or digit; an older lead's unchanged name (even "..") doesn't block other edits
     if changed("company") and (problem := schemas.company_name_problem(changes["company"])):
         raise HTTPException(status_code=400, detail=problem)
+    # the characters each field accepts (app/text_rules.py), for the fields this edit changes
+    for field, check in (("first_name", lambda v: person_name_problem(v, "first name")),
+                         ("last_name", lambda v: person_name_problem(v, "last name")),
+                         ("title", lambda v: text_problem(v, "title")),
+                         ("industry", lambda v: text_problem(v, "industry")),
+                         ("location", lambda v: text_problem(v, "location", letter=False)),
+                         ("source_detail", lambda v: text_problem(v, "lead source", letter=False))):
+        if changed(field) and (problem := check(changes[field])):
+            raise HTTPException(status_code=400, detail=problem)
     source = changes.get("source") or lead.source
     if source == "Other":
         detail = changes.get("source_detail", lead.source_detail)
@@ -240,6 +267,7 @@ def update_lead(lead_id: int, data: schemas.LeadUpdate, db: Session = Depends(ge
     if changes.get("currency") is None:
         changes.pop("currency", None)  # left as it is
     domain_confirmed = changes.pop("confirm_email_domain", False)
+    phone_confirmed = changes.pop("confirm_shared_phone", False)
     if changes.get("demo_date") is not None:  # IST unless an offset is given; a new demo date must be in the future
         when = demo_input(changes["demo_date"])
         unchanged = lead.demo_date is not None and when.replace(second=0) == lead.demo_date.replace(second=0)
@@ -259,6 +287,10 @@ def update_lead(lead_id: int, data: schemas.LeadUpdate, db: Session = Depends(ge
         if field in changes and not changes[field]:
             raise HTTPException(status_code=400, detail=f"{field} can't be empty")
     check_new_lead_rules(lead, changes)
+    if changes.get("phone") and phone_key(changes["phone"]) != phone_key(lead.phone):  # a new number: phone_matches.py
+        check_lead_phone(db, changes["phone"], first_name=changes.get("first_name", lead.first_name),
+                         last_name=changes.get("last_name", lead.last_name), company=changes.get("company", lead.company),
+                         exclude_lead_id=lead.id, confirmed=phone_confirmed)
     for field, value in changes.items():
         setattr(lead, field, value)
     if new_owner is not None and new_owner != lead.owner_id:

@@ -321,7 +321,12 @@ export default function ListView({ collection, data, user, openNew, setModal, qu
 
   const fixedStage = stageFilter && viewName === `${stageFilter} ${LABEL[collection]}` ? stageFilter : null;
   const defs = filterDefs(collection, data, user, viewName, fixedStage);
-  const [filterValues, setFilterValues] = useFilters(collection);
+  const [filterValues, setFilterValues] = useFilters(collection, user?.id);
+  // Manage Access > People > Open Leads opens #/leads?list=All Open Leads&owner=<user id>: that person's open leads
+  const ownerParam = collection === "leads" ? params.get("owner") : null;
+  useEffect(() => {
+    if (ownerParam && /^\d+$/.test(ownerParam)) setFilterValues({ owner: ownerParam });
+  }, [ownerParam]); // eslint-disable-line react-hooks/exhaustive-deps
   const active = validFilters(defs, filterValues);
 
   const filter = stageFilter && viewName === `${stageFilter} ${LABEL[collection]}`

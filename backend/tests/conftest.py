@@ -2,6 +2,7 @@
   1 Priya (Manager), 2 Ravi (Salesperson, the client logs in as Ravi by default), 3 Asha (Admin).
 Use login_as(client, user_id) to act as someone else.
 (Full PostgreSQL behaviour is checked by running the API against database/schema.sql.)"""
+import itertools
 import os
 import sys
 
@@ -25,14 +26,26 @@ from app.security import make_token  # noqa: E402
 # The New Lead form (POST /api/leads) needs a valid Phone (Manimohan issue 35). Tests about other things don't send one,
 # so a request that doesn't mention "phone" at all gets this valid number. Tests of the phone rule send "phone"
 # themselves (None or "" for a missing one), or use client.request("POST", ...) to send no phone key at all.
-TEST_LEAD_PHONE = "+91 98765 43210"
+# Each such lead gets its own number (TEST_LEAD_PHONE, then +91 97000 00001...): the same number on two leads is asked
+# about (app/phone_matches.py), which tests of the phone-duplicate rule check themselves.
+TEST_LEAD_PHONE = "+91 97000 00000"
+_test_phones = itertools.count()
+
+
+def test_lead_phone() -> str:
+    return f"+91 97{next(_test_phones) % 10 ** 8:08d}"
+
+
+def alpha(n) -> str:
+    """A number as letters, for made-up names (a person's name can't contain digits): 1 -> 'B', 27 -> 'CH'."""
+    return "".join(chr(65 + int(d)) for d in str(n))
 
 
 class CrmTestClient(TestClient):
     def post(self, url, *args, **kwargs):
         body = kwargs.get("json")
         if str(url).split("?")[0].rstrip("/") == "/api/leads" and isinstance(body, dict) and "phone" not in body:
-            kwargs["json"] = {**body, "phone": TEST_LEAD_PHONE}
+            kwargs["json"] = {**body, "phone": test_lead_phone()}
         return super().post(url, *args, **kwargs)
 
 

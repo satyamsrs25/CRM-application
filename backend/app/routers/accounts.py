@@ -93,13 +93,16 @@ def account_duplicates(name: str | None = Query(None, max_length=200), website: 
     by_site = matches.find_account_by_website(db, website)
     if by_site is not None and by_site is not by_name:
         found.append(_match(by_site, "website", name=by_site.name, website=by_site.website))
+    if not found:  # possibly the same company under another name (TCS / Tata Consultancy Services): a warning only
+        found = [_match(a, "similar", name=a.name, website=a.website) for a in matches.similar_accounts(db, name, website)[:3]]
     return {"matches": found}
 
 
 @router.post("/accounts", response_model=schemas.AccountOut, status_code=status.HTTP_201_CREATED)
 def create_account(data: schemas.AccountCreate, db: Session = Depends(get_db)):
-    matches.ensure_new_account(db, data.name, data.website)  # one account per company (name or website)
-    account = Account(**data.model_dump(exclude={"owner_id"}), owner_id=resolve_user_id(db, owner_for_new(data.owner_id)))
+    # one account per company (name or website); a similar name is asked about once
+    matches.ensure_new_account(db, data.name, data.website, confirmed=data.confirm_new_company)
+    account = Account(**data.model_dump(exclude={"owner_id", "confirm_new_company"}), owner_id=resolve_user_id(db, owner_for_new(data.owner_id)))
     db.add(account)
     db.commit()
     db.refresh(account)

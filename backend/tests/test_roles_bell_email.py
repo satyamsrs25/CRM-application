@@ -10,7 +10,7 @@ from app.database import get_db
 from app.main import app
 from app.models import User
 from app.security import ensure_default_admin, make_token
-from conftest import finish_stage_tasks, login_as
+from conftest import alpha, finish_stage_tasks, login_as
 
 TASK = {"title": "Synthetic follow-up task", "due_date": "2030-01-15T10:00:00"}  # every stage change needs one
 
@@ -512,7 +512,7 @@ def test_activity_log_records_admin_changes(client, outbox):
 # ---------- bulk transfer and bulk delete (several selected leads) ----------
 
 def test_bulk_transfer(client, outbox):
-    mine = [lead(client, name=f"Bulk {i}") for i in range(3)]
+    mine = [lead(client, name=f"Bulk {alpha(i)}") for i in range(3)]
     priyas = lead(login_as(client, 1), name="Priya Lead")
     login_as(client, 2)
     outbox.clear()

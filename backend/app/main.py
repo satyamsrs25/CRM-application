@@ -156,6 +156,7 @@ def upgrade_database() -> None:
         # typed-in recipients (people not in the CRM) and the unsubscribe / invalid state of any address
         conn.execute(text("ALTER TABLE campaign_recipients ADD COLUMN IF NOT EXISTS company VARCHAR(200)"))
         conn.execute(text("ALTER TABLE campaign_recipients ADD COLUMN IF NOT EXISTS manual BOOLEAN NOT NULL DEFAULT FALSE"))
+        conn.execute(text("ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS cc VARCHAR(1000)"))  # Cc on every email
         conn.execute(text("""CREATE TABLE IF NOT EXISTS email_addresses (
             email VARCHAR(255) PRIMARY KEY, unsubscribed_at TIMESTAMP, invalid_at TIMESTAMP,
             invalid_reason VARCHAR(300))"""))

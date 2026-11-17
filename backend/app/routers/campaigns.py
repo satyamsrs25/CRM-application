@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app import ai_email, campaigns as engine
 from app.constants import LEAD_OPEN_STAGES, LEAD_STAGES
-from app.database import get_db
+from app.database import SessionLocal, get_db
 from app.models import Campaign, CampaignRecipient, EmailAddress, Lead
 from app.security import acting_user, require, require_edit, visible
 from app.services import log_activity, notify, now
@@ -34,6 +34,7 @@ leads_router = APIRouter(prefix="/api/leads", tags=["Email campaigns"])
 public = APIRouter(prefix="/api/public", tags=["Email campaigns"])
 
 MAX_RECIPIENTS = 20_000
+MAX_CC = 10  # Cc addresses on a campaign (each email of the campaign is copied to them)
 
 
 class TypedEmail(BaseModel):
@@ -65,6 +66,23 @@ class CampaignIn(Audience):
     subject: str = Field(min_length=2, max_length=200)
     body: str = Field(min_length=10, max_length=20_000)
     send_at: datetime | None = None  # empty = now
+    cc: list[str] = Field(default_factory=list, max_length=MAX_CC)  # copied on every email
+
+    @field_validator("cc")
+    @classmethod
+    def _cc(cls, value):
+        out = []
+        for address in value:
+            address = address.strip()
+            if not address:
+                continue
+            if not engine.EMAIL_RE.match(address):
+                raise ValueError(f"Check the Cc address: {address}")
+            if address.lower() not in {a.lower() for a in out}:
+                out.append(address)
+        if len(", ".join(out)) > 1000:
+            raise ValueError("Too many Cc addresses")
+        return out
 
     @field_validator("name", "subject", "body")
     @classmethod
@@ -204,7 +222,7 @@ def counts_of(db: Session, ids: list[int]) -> dict[int, dict]:
 
 
 def campaign_out(c: Campaign, counts: dict) -> dict:
-    return {"id": c.id, "name": c.name, "subject": c.subject, "body": c.body, "status": c.status,
+    return {"id": c.id, "name": c.name, "subject": c.subject, "body": c.body, "cc": engine.cc_list(c.cc), "status": c.status,
             "status_note": c.status_note, "send_at": c.send_at, "created_at": c.created_at,
             "started_at": c.started_at, "finished_at": c.finished_at,
             "created_by_id": c.created_by_id, "created_by": c.created_by.full_name if c.created_by else None,
@@ -264,8 +282,12 @@ def create_campaign(data: CampaignIn, db: Session = Depends(get_db)):
     if not ok:
         raise HTTPException(status_code=400, detail="None of these people can get the email "
                                                     "(no email, unsubscribed or invalid email)")
-    campaign = Campaign(name=data.name, subject=data.subject, body=data.body, created_by_id=me.id, send_at=send_at,
-                        status="Scheduled")
+    due = send_at <= now()
+    # due now: it is sending from this moment (not "Scheduled" until the next minute's round), and a round starts at
+    # once below, so one email goes out in seconds
+    campaign = Campaign(name=data.name, subject=data.subject, body=data.body, cc=", ".join(data.cc) or None,
+                        created_by_id=me.id, send_at=send_at, status="Sending" if due else "Scheduled",
+                        started_at=now() if due else None)
     db.add(campaign)
     db.flush()
     def row(t: Target, **extra) -> CampaignRecipient:
@@ -274,11 +296,13 @@ def create_campaign(data: CampaignIn, db: Session = Depends(get_db)):
                                  manual=t.lead is None, **extra)
     db.add_all([row(t) for t in ok])
     db.add_all([row(t, status="Skipped", error=reason[:300]) for t, reason in left_out])
-    when = "now" if send_at <= now() else f"at {send_at:%d %b %Y %I:%M %p}"
+    when = "now" if due else f"at {send_at:%d %b %Y %I:%M %p}"
     log_activity(db, me.id, "Campaign created", campaign.name,
                  f"{len(ok):,} people, sending {when} • {len(left_out):,} left out (unsubscribed, invalid or no email)")
     db.commit()
-    return campaign_out(campaign, counts_of(db, [campaign.id])[campaign.id]) | {"eta": eta(len(ok), send_at)}
+    if due:
+        engine.start_soon(SessionLocal)
+    return campaign_out(campaign, counts_of(db, [campaign.id])[campaign.id]) | {"eta": eta(len(ok), max(send_at, now()))}
 
 
 def my_campaign_ids():

@@ -13,7 +13,7 @@ from app import assistant, mailer
 from app.database import get_db
 from app.main import app
 from app.models import Notification, OpportunityAttachment, StageHistory, Task
-from conftest import login_as
+from conftest import alpha, login_as
 
 PRIYA, RAVI, ASHA = 1, 2, 3  # Manager, Salesperson, Admin (conftest.py)
 TASK = {"title": "Synthetic next step", "due_date": "2030-01-15T10:00:00"}
@@ -38,7 +38,7 @@ def new_opportunity(client, owner=RAVI, stage_task="Synthetic kickoff call") -> 
     work) and the system's close-date reminder (a date reminder)."""
     login_as(client, owner)
     n = next(NAMES)
-    lead = client.post("/api/leads", json={"source": "Website", "first_name": "Test", "last_name": f"Buyer{n}", "company": f"Synthetic Co {n}",
+    lead = client.post("/api/leads", json={"source": "Website", "first_name": "Test", "last_name": f"Buyer{alpha(n)}", "company": f"Synthetic Co {n}",
                                            "email": f"buyer{n}@example.test", "welcome_email": False}).json()
     res = client.post(f"/api/leads/{lead['id']}/convert", json={
         "task": {**TASK, "title": stage_task}, "completed_stages": ["New", "Nurturing", "Demo"], "expected_value": 1000,

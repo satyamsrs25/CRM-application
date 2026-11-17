@@ -44,8 +44,10 @@ export function applyFilters(rows, defs, values) {
 }
 
 // Values kept per list ("leads", "tasks"...) so a filter stays when you come back
-export function useFilters(name) {
-  const storeKey = `salestrack.filters.${name}`;
+// Remembered per user (userId): filters chosen by someone who used this browser before (an Owner, a status) never hide
+// another user's records.
+export function useFilters(name, userId = null) {
+  const storeKey = `salestrack.filters.${userId ? `${userId}.` : ""}${name}`;
   const read = () => {
     try {
       return JSON.parse(localStorage.getItem(storeKey)) || {};
@@ -69,12 +71,13 @@ export function useFilters(name) {
 export const activeCount = (defs, values) => defs.filter((f) => values[f.key]).length;
 
 // Owner choices for Admins/Managers (people who can see the team's records)
+// Deactivated people come last, marked: their leads can still be listed (Manage Access > People > Open Leads)
 export const ownerOptions = (users, me) => [
   [String(me.id), "Me"],
   ...users
-    .filter((u) => u.is_active !== false && u.id !== me.id && u.role !== "Admin")
-    .sort((a, b) => a.full_name.localeCompare(b.full_name))
-    .map((u) => [String(u.id), u.full_name]),
+    .filter((u) => u.id !== me.id && u.role !== "Admin")
+    .sort((a, b) => (a.is_active === false) - (b.is_active === false) || a.full_name.localeCompare(b.full_name))
+    .map((u) => [String(u.id), u.is_active === false ? `${u.full_name} (inactive)` : u.full_name]),
 ];
 
 export const opts = (list) => list.map((x) => [x, x]);

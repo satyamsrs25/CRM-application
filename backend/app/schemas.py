@@ -13,6 +13,7 @@ from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_serial
 from pydantic_core import PydanticCustomError
 
 from app.constants import LEAD_SOURCE_DETAIL_MAX
+from app.text_rules import checked, company_characters_problem, person_name_problem, text_problem
 
 LeadSource = Literal["Website", "LinkedIn", "Referral", "Phone", "Email", "Event", "Social Media", "Other", "Upload"]
 LostReason = Literal["Price", "Competitor", "No response", "No budget", "Not interested", "Other"]
@@ -62,9 +63,12 @@ class LoginRequest(BaseModel):
     password: str
 
 
+UserFullName = Annotated[str | None, BeforeValidator(checked(person_name_problem, "full name", keep_empty=True))]
+
+
 class UserCreate(BaseModel):
     """Admin adds a user (there is no public sign up)."""
-    full_name: str = Field(..., min_length=2, max_length=100)
+    full_name: UserFullName = Field(..., min_length=2, max_length=100)
     email: str = Field(..., max_length=255)
     password: str = Field(..., min_length=8, max_length=128)
     role: UserRole = "Salesperson"
@@ -72,7 +76,7 @@ class UserCreate(BaseModel):
 
 
 class UserUpdate(BaseModel):
-    full_name: str | None = Field(None, min_length=2, max_length=100)
+    full_name: UserFullName = Field(None, min_length=2, max_length=100)
     email: str | None = Field(None, max_length=255)  # the login username
     role: UserRole | None = None
     is_active: bool | None = None
@@ -82,7 +86,7 @@ class UserUpdate(BaseModel):
 class ProfileUpdate(BaseModel):
     """What a user can change on their own profile (email and role are changed by the Admin).
     Send only what changes."""
-    full_name: str | None = Field(None, min_length=2, max_length=100)
+    full_name: UserFullName = Field(None, min_length=2, max_length=100)
     email_stage_updates: bool | None = None  # email me when my leads / deals move to the next stage
     email_assignments: bool | None = None    # email me when something is assigned to me
     email_reminders: bool | None = None      # email me reminders (tasks, demos, close dates, overdue)
@@ -307,7 +311,9 @@ def company_name_problem(value, *, required: str = LEAD_COMPANY_REQUIRED, invali
     text = value.strip() if isinstance(value, str) else ""
     if not text:
         return required
-    return "" if has_letter_or_digit(text) else invalid
+    if not has_letter_or_digit(text):
+        return invalid
+    return company_characters_problem(text, "account name" if invalid == ACCOUNT_NAME_INVALID else "company name")
 
 
 def company_name(value) -> str:
@@ -321,6 +327,12 @@ def company_name(value) -> str:
 
 
 CompanyName = Annotated[str, BeforeValidator(company_name)]
+# the characters each text field accepts (app/text_rules.py)
+LeadFirstName = Annotated[str | None, BeforeValidator(checked(person_name_problem, "first name"))]
+LeadLastName = Annotated[str, BeforeValidator(checked(person_name_problem, "last name", keep_empty=True))]
+Title = Annotated[str | None, BeforeValidator(checked(text_problem, "title"))]
+Industry = Annotated[str | None, BeforeValidator(checked(text_problem, "industry"))]
+SourceDetail = Annotated[str | None, BeforeValidator(checked(text_problem, "lead source", letter=False))]
 
 
 class LeadCreate(LeadLinks):
@@ -328,20 +340,29 @@ class LeadCreate(LeadLinks):
     the LinkedIn Profile URL; Other needs source_detail (what the source is)."""
 
     salutation: Salutation | None = None
-    first_name: Annotated[str | None, BeforeValidator(trimmed)] = Field(None, max_length=50)  # required: checked below
-    last_name: str = Field(..., min_length=1, max_length=50)
+    first_name: LeadFirstName = Field(None, max_length=50)  # required: checked below
+    last_name: LeadLastName = Field(..., min_length=1, max_length=50)
     company: CompanyName = Field(..., max_length=200)  # at least one letter or digit
-    title: str | None = Field(None, max_length=100)
-    industry: str | None = Field(None, max_length=100)
+    title: Title = Field(None, max_length=100)
+    industry: Industry = Field(None, max_length=100)
     email: str | None = Field(None, max_length=255)
     phone: str | None = Field(None, max_length=30)  # required (and checked) on the New Lead form: routers/leads.py
     phone_country: str | None = Field(None, max_length=2)  # not saved: the phone's country on the form (default India)
     source: LeadSource = "Other"
-    source_detail: Annotated[str | None, BeforeValidator(trimmed)] = Field(None, max_length=SOURCE_DETAIL_MAX)
+    source_detail: SourceDetail = Field(None, max_length=SOURCE_DETAIL_MAX)
     currency: Currency = "USD"  # of the turnover
     owner_id: int | None = None  # default: the logged-in user
     created_by_id: int | None = None  # ignored: the logged-in user creates it
     confirm_email_domain: bool = False  # the user checked the email is right though its domain differs from the website
+    confirm_shared_phone: bool = False  # the phone is also on other leads/contacts: the user said it's shared (not saved)
+
+    @field_validator("location")
+    @classmethod
+    def _location_characters(cls, v):
+        problem = text_problem(v, "location", letter=False)
+        if problem:
+            raise PydanticCustomError("text_invalid", problem)
+        return v
 
     @field_validator("linkedin_url")
     @classmethod
@@ -383,6 +404,7 @@ class LeadUpdate(LeadLinks):
     owner_id: int | None = None
     changed_by_id: int | None = None  # logged-in user (not saved; used for the assignment notification)
     confirm_email_domain: bool = False  # not saved: the user checked the email is right (see LeadCreate)
+    confirm_shared_phone: bool = False  # not saved: the phone is shared with other records (see LeadCreate)
 
 
 class LeadOut(Out):
@@ -784,13 +806,28 @@ def account_name(value) -> str:
     value = required_text(value, ACCOUNT_NAME_REQUIRED)
     if not has_letter_or_digit(value):
         raise PydanticCustomError("account_name_invalid", ACCOUNT_NAME_INVALID)
+    problem = company_characters_problem(value, "account name")
+    if problem:
+        raise PydanticCustomError("account_name_invalid", problem)
+    return value
+
+
+def required_person_name(value, message: str, label: str) -> str:
+    value = required_text(value, message)
+    problem = person_name_problem(value, label)
+    if problem:
+        raise PydanticCustomError("name_invalid", problem)
     return value
 
 
 AccountName = Annotated[str, BeforeValidator(account_name)]
-AccountIndustry = Annotated[str, BeforeValidator(lambda v: required_text(v, ACCOUNT_INDUSTRY_REQUIRED))]
-ContactFirstName = Annotated[str, BeforeValidator(lambda v: required_text(v, CONTACT_FIRST_NAME_REQUIRED))]
-ContactLastName = Annotated[str, BeforeValidator(lambda v: required_text(v, CONTACT_LAST_NAME_REQUIRED))]
+AccountIndustry = Annotated[str, BeforeValidator(
+    lambda v: checked(text_problem, "industry")(required_text(v, ACCOUNT_INDUSTRY_REQUIRED)))]
+ContactFirstName = Annotated[str, BeforeValidator(
+    lambda v: required_person_name(v, CONTACT_FIRST_NAME_REQUIRED, "first name"))]
+ContactLastName = Annotated[str, BeforeValidator(
+    lambda v: required_person_name(v, CONTACT_LAST_NAME_REQUIRED, "last name"))]
+Address = Annotated[str | None, BeforeValidator(checked(text_problem, "address", letter=False, multiline=True))]
 ContactEmail = Annotated[str, BeforeValidator(contact_email)]
 ContactLinkedIn = Annotated[str | None, BeforeValidator(contact_linkedin)]
 Website = Annotated[str | None, BeforeValidator(web_address)]
@@ -806,8 +843,10 @@ class AccountCreate(BaseModel):
     phone: Annotated[str | None, BeforeValidator(trimmed)] = Field(None, max_length=30)
     website: Website = Field(None, max_length=255)
     linkedin_url: CompanyLinkedIn = Field(None, max_length=300)  # the company's LinkedIn page
-    address: str | None = Field(None, max_length=500)
+    address: Address = Field(None, max_length=500)
     owner_id: int | None = None
+    confirm_new_company: bool = False  # not saved: a similar account exists (TCS / Tata Consultancy Services) and the
+    # user confirmed this is a different company
 
     @model_validator(mode="before")
     @classmethod
@@ -841,7 +880,7 @@ class ContactCreate(BaseModel):
     salutation: Salutation | None = None
     first_name: ContactFirstName = Field(..., max_length=50)
     last_name: ContactLastName = Field(..., max_length=50)
-    job_title: str | None = Field(None, max_length=100)
+    job_title: Title = Field(None, max_length=100)
     email: ContactEmail = Field(..., max_length=255)
     phone_country: str = Field(DEFAULT_PHONE_COUNTRY, min_length=2, max_length=2)  # not saved: the number says it
     phone: str | None = Field(None, max_length=30)
@@ -963,10 +1002,14 @@ class OpportunityCreate(NeedsTask):
             raise ValueError("Choose an account or enter the company name")
         if self.account_id is None and not has_letter_or_digit(self.account_name):
             raise ValueError(COMPANY_NAME_INVALID)  # a new company: at least one letter or digit
+        if self.account_id is None and (problem := company_characters_problem(self.account_name)):
+            raise ValueError(problem)
         if self.primary_contact_id is not None:
             return self  # an existing contact is reused as it is: no new contact fields are needed or checked
-        self.contact_first_name = required_text(self.contact_first_name, CONTACT_FIRST_NAME_REQUIRED)
-        self.contact_last_name = required_text(self.contact_last_name, CONTACT_LAST_NAME_REQUIRED)
+        self.contact_first_name = required_person_name(self.contact_first_name, CONTACT_FIRST_NAME_REQUIRED, "first name")
+        self.contact_last_name = required_person_name(self.contact_last_name, CONTACT_LAST_NAME_REQUIRED, "last name")
+        if problem := text_problem(self.contact_title, "title"):
+            raise ValueError(problem)
         self.contact_email = contact_email(self.contact_email)
         self.contact_phone = international_phone(self.contact_phone, self.contact_phone_country)
         self.contact_linkedin_url = contact_linkedin(self.contact_linkedin_url)

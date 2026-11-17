@@ -11,7 +11,7 @@ from openpyxl import Workbook
 
 from app import assistant
 from app.assistant_reports import period_range
-from conftest import finish_stage_tasks, login_as
+from conftest import alpha, finish_stage_tasks, login_as
 from test_assistant import ai, call  # noqa: F401 (ai: a scripted stand-in for the AI model)
 
 
@@ -324,7 +324,7 @@ def test_more_crm_tools(client, ai):
 def test_reports_are_counted_in_the_database(client, ai):
     script, seen = ai
     # Ravi: 3 leads (1 converted, 1 lost), 2 deals (1 won 30,000; 1 open 10,000). Priya: 1 lead, 1 open deal 50,000
-    leads = [client.post("/api/leads", json={"first_name": "Test", "last_name": f"L{i}", "company": f"C{i}", "source": "Referral"}).json()
+    leads = [client.post("/api/leads", json={"first_name": "Test", "last_name": f"L{alpha(i)}", "company": f"C{i}", "source": "Referral"}).json()
              for i in range(3)]
     won = client.post(f"/api/leads/{leads[0]['id']}/convert", json={
         "task": TASK, "note": NOTE, "expected_value": 30000, "completed_stages": ["Nurturing", "Demo"]}).json()["opportunity"]
@@ -424,7 +424,7 @@ def test_an_uploaded_list_creates_every_lead_and_stays_readable_later(client, ai
     script, seen = ai
     rows = "\n".join(f"Person{i},Lastname{i},Company {i},person{i}@company{i}.test" for i in range(1, 121))
     file = upload(client, "expo-leads.csv", ("first,last,company,email\n" + rows).encode()).json()
-    script += [[call("create_lead", first_name=f"Person{i}", last_name=f"Lastname{i}", company=f"Company {i}",
+    script += [[call("create_lead", first_name=f"Person{alpha(i)}", last_name=f"Lastname{alpha(i)}", company=f"Company {i}",
                      email=f"person{i}@company{i}.test", company_website=f"company{i}.test", source="Event",
                      company_linkedin_url=f"https://www.linkedin.com/company/company{i}") for i in range(1, 4)], "Created the first 3 leads."]
     first = chat(client, "Create leads for the first three rows", file_ids=[file["id"]])

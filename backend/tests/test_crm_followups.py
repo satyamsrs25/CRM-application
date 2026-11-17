@@ -16,7 +16,7 @@ from sqlalchemy import select
 from app import assistant, constants, main, models, schemas
 from app.models import Account, Contact, Lead, Opportunity, Task
 from app.security import Acting
-from conftest import login_as
+from conftest import alpha, login_as
 from test_assistant import ai, call  # noqa: F401 (ai: a scripted stand-in for the AI model)
 from test_mandatory_stage_notes import sent, snapshot  # noqa: F401 (sent: autouse, records email instead of sending)
 from test_opportunity_attachments import ASHA, PRIYA, RAVI, add_salesperson, db_session
@@ -29,7 +29,7 @@ SOURCES = [s for s in constants.LEAD_SOURCES if s != "Upload"]  # the New Lead f
 
 def lead_body(**extra):
     n = next(N)
-    return {"first_name": "Nia", "last_name": f"Synthetic{n}", "company": f"Followup Co {n}",
+    return {"first_name": "Nia", "last_name": f"Synthetic{alpha(n)}", "company": f"Followup Co {n}",
             "email": f"followup{n}@example.test", "source": "Website", "welcome_email": False} | extra
 
 

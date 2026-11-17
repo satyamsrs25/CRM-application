@@ -55,7 +55,8 @@ def bell(user_id):
 
 def new_lead(client, **extra):
     body = {"first_name": "Ana", "last_name": "Okafor", "company": "Harbor Synthetic", "source": "Website",
-            "email": "ana.okafor@harbor-synthetic.example", "phone": "98765 43210", "phone_country": "IN", **extra}
+            "email": "ana.okafor@harbor-synthetic.example", "phone": "98765 43210", "phone_country": "IN",
+            "confirm_shared_phone": True, **extra}  # the same number on each lead: a shared business number
     return client.post("/api/leads", json=body)
 
 
