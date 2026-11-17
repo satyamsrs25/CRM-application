@@ -3,6 +3,10 @@
 
 - A company has one account: the same company name (case, punctuation and "Inc", "LLC"... ignored) or the same
   company website (https, www and the page ignored: acme.com) reuses it, or stops a second one being created.
+- A short name and its initials ("TCS" and "Tata Consultancy Services", "IBM" and "International Business Machines")
+  may be the same company, or not ("TCS" is also "Tech Consulting Solutions"). They are never combined on their own:
+  New Account asks the user to confirm it is a different company, and Convert / New Opportunity / the lead form show
+  the possible account so the user can choose it. Two companies with different websites are never "similar".
 - A person has one contact: an email belongs to one contact only (on any account). On an account, the same email or
   the same name (first + last) reuses the contact.
 - One person at one company can't have the same open opportunity twice, so two salespeople never work the same deal.
@@ -11,7 +15,7 @@
 import re
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.constants import OPPORTUNITY_OPEN_STAGES
@@ -35,6 +39,58 @@ def find_account(db: Session, company: str | None, website: str | None = None) -
             if company_key(account.name) == wanted:
                 return account
     return find_account_by_website(db, website)
+
+
+CONNECTORS = {"and", "of", "&", "for", "de", "la", "le", "et", "und"}  # left out of a name's initials
+
+
+def _words(name: str | None) -> list[str]:
+    return company_key(name).split()
+
+
+def acronym_of(name: str | None) -> str:
+    """'TCS', 'T.C.S. Ltd' -> 'tcs': a short name (2 to 6 letters) that may be initials; '' otherwise."""
+    words = _words(name)
+    if len(words) > 1 and all(len(w) == 1 and w.isalpha() for w in words):
+        return "".join(words)
+    if len(words) == 1 and words[0].isalpha() and 2 <= len(words[0]) <= 6:
+        return words[0]
+    return ""
+
+
+def initials_of(name: str | None) -> str:
+    """'Tata Consultancy Services Ltd' -> 'tcs' (two words or more; "and", "of"... and suffixes left out)."""
+    words = [w for w in _words(name) if w not in CONNECTORS]
+    if len(words) < 2 or all(len(w) == 1 for w in words):
+        return ""
+    return "".join(w[0] for w in words)
+
+
+def similar_names(a: str | None, b: str | None) -> bool:
+    """One name is the other's initials (either way round). The same name isn't "similar": it is the same."""
+    short_a, short_b = acronym_of(a), acronym_of(b)
+    return bool((short_a and short_a == initials_of(b)) or (short_b and short_b == initials_of(a)))
+
+
+def similar_accounts(db: Session, name: str | None, website: str | None = None) -> list[Account]:
+    """Accounts whose name may be another form of this one (TCS / Tata Consultancy Services), oldest first. An
+    account with another website than the one given is a different company, and is left out."""
+    wanted = acronym_of(name) or initials_of(name)
+    if not wanted:
+        return []
+    host, key = website_host(website), company_key(name)
+    first = wanted[0]
+    found = []
+    for account in db.scalars(select(Account).where(or_(Account.name.ilike(f"{first}%"), Account.name.ilike(f"the {first}%"),
+                                                        Account.name.ilike(f"{first}.%")))
+                              .order_by(Account.id).limit(5000)).all():
+        if company_key(account.name) == key or not similar_names(name, account.name):
+            continue
+        other = website_host(account.website)
+        if "." in host and "." in other and host != other:
+            continue
+        found.append(account)
+    return found
 
 
 def find_account_by_website(db: Session, website: str | None) -> Account | None:
@@ -63,11 +119,18 @@ def whose(record) -> str:
     return f"owned by {record.owner.full_name}" if record.owner else "owned by another user"
 
 
-def ensure_new_account(db: Session, name: str | None, website: str | None) -> None:
-    """Refuses a second account for the same company (the same name, or the same website)."""
+def ensure_new_account(db: Session, name: str | None, website: str | None, *, confirmed: bool = False) -> None:
+    """Refuses a second account for the same company (the same name, or the same website). A similar name (TCS /
+    Tata Consultancy Services) is asked about: saved once the user confirms it is a different company."""
     same_name = find_account(db, name)
     account = same_name or find_account_by_website(db, website)
     if account is None:
+        similar = [] if confirmed else similar_accounts(db, name, website)
+        if similar:
+            other = similar[0]
+            raise HTTPException(status_code=409, detail=(
+                f'"{name.strip()}" may be the same company as the account "{other.name}" ({whose(other)}). '
+                "Use that account if it is, or confirm this is a different company to create it."))
         return
     why = "name" if same_name is not None else f"website ({website_host(account.website)})"
     raise HTTPException(status_code=409, detail=(
@@ -163,7 +226,10 @@ def check(db: Session, *, company: str | None = None, account_id: int | None = N
         contact = None
     if contact is None and account is not None:
         contact = find_contact(db, account.id, email=email, first_name=first_name, last_name=last_name)
-    out = {"account": None, "contact": None, "duplicate": None, "related": []}
+    out = {"account": None, "contact": None, "duplicate": None, "related": [], "similar": []}
+    if account is None and company:  # possibly the same company under another name: the user can choose it
+        out["similar"] = [_record(a.owner, a.owner_id, id=a.id if can_view(a.owner_id) else None, name=a.name)
+                          for a in similar_accounts(db, company)[:3]]
     if account is not None:
         out["account"] = _record(account.owner, account.owner_id, id=account.id if can_view(account.owner_id) else None,
                                  name=account.name)

@@ -386,6 +386,7 @@ class Campaign(Base):
     name: Mapped[str] = mapped_column(String(150))
     subject: Mapped[str] = mapped_column(String(200))
     body: Mapped[str] = mapped_column(Text)
+    cc: Mapped[str | None] = mapped_column(String(1000))                  # copied on every email ("a@x.com, b@y.com")
     status: Mapped[str] = mapped_column(String(15), default="Scheduled")  # Scheduled, Sending, Paused, Completed, Cancelled
     status_note: Mapped[str | None] = mapped_column(String(300))           # why it was paused, etc.
     send_at: Mapped[datetime]                                              # when sending starts

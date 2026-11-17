@@ -126,6 +126,7 @@ function RecipientInput({ value, onChange, id, placeholder }) {
 // instead, so people who aren't in the CRM can be emailed too (requirement, Nov 2026). The stage picker below is kept
 // and still works in the API (Audience.stages): set STAGE_PICKER to true to bring the checkboxes back.
 const STAGE_PICKER = false;
+const CC_MAX = 10; // the API's MAX_CC
 const plural = (count, word) => `${n(count)} ${word}${count === 1 ? "" : "s"}`;
 
 export function NewCampaign({ user, users = [], leadIds = null, onClose, onCreated }) {
@@ -134,6 +135,9 @@ export function NewCampaign({ user, users = [], leadIds = null, onClose, onCreat
   const [recipients, setRecipients] = useState([]); // the "To" chips: { email, name?, company?, valid }
   const valid = useMemo(() => recipients.filter((r) => r.valid), [recipients]);
   const wrong = recipients.length - valid.length;
+  // Cc: copied on every email of the campaign (shown in Outlook's Cc line); at most CC_MAX addresses
+  const [ccChips, setCcChips] = useState([]);
+  const ccWrong = ccChips.filter((r) => !r.valid).length;
   const [owner, setOwner] = useState(team ? "" : String(user.id));
   const [name, setName] = useState("");
   const [subject, setSubject] = useState("Quick question for {company}");
@@ -211,6 +215,8 @@ export function NewCampaign({ user, users = [], leadIds = null, onClose, onCreat
     if (body.trim().length < 10) return setError("Write the email.");
     if (nobody) return setError(wrong ? "Fix or remove the addresses marked in red." : "Add at least one recipient.");
     if (!preview?.eligible) return setError("None of these recipients can be emailed (see Excluded).");
+    if (ccWrong) return setError("Fix or remove the Cc addresses marked in red.");
+    if (ccChips.length > CC_MAX) return setError(`Add at most ${CC_MAX} Cc addresses.`);
     setBusy(true);
     setError("");
     try {
@@ -220,6 +226,7 @@ export function NewCampaign({ user, users = [], leadIds = null, onClose, onCreat
         subject: subject.trim(),
         body: body.trim(),
         send_at: null, // sent straight away, paced automatically within the Outlook limits
+        cc: ccChips.map((r) => r.email),
       });
       onCreated(created);
     } catch (err) {
@@ -332,6 +339,22 @@ export function NewCampaign({ user, users = [], leadIds = null, onClose, onCreat
               )}
             </div>
           )}
+          <div className="field">
+            <label htmlFor="campaign-cc">
+              <span>Cc</span>
+            </label>
+            <RecipientInput id="campaign-cc" value={ccChips} onChange={setCcChips} placeholder="Optional: who gets a copy of each email" />
+            <small className="field-hint">
+              {preview?.eligible > 1
+                ? `Each of the ${n(preview.eligible)} emails is copied to these addresses (up to ${CC_MAX}).`
+                : `The email is copied to these addresses (up to ${CC_MAX}).`}
+            </small>
+            {ccWrong > 0 && (
+              <small className="field-error-text" role="status">
+                {ccWrong === 1 ? "The Cc address in red isn't valid." : "The Cc addresses in red aren't valid."}
+              </small>
+            )}
+          </div>
           {preview?.too_many > 0 && (
             <p className="form-error" role="status">
               {n(preview.too_many)} recipients. A campaign can go to up to {n(preview.max)}: choose fewer.
@@ -442,17 +465,24 @@ export function NewCampaign({ user, users = [], leadIds = null, onClose, onCreat
 
         <fieldset className="campaign-section">
           <legend>Sending</legend>
-          <p className="field-hint sending-note">
-            <Icon name="mail" size={14} /> Click Send and SalesTrack does the rest: the emails are queued and sent automatically
-            {limits ? ` within Outlook's limits (${limits.per_minute} per minute, ${n(limits.per_day)} per day across all campaigns)` : ""}
-            , whether it's 10 or 1,000 emails.
-            {preview?.eligible > 0 && preview.eta && (
-              <>
-                {" "}
-                This campaign takes {duration(preview.eta.minutes, preview.eta.days)}.
-              </>
-            )}
-          </p>
+          {preview?.eligible === 1 ? (
+            // one recipient: no pacing and no timeline, it goes out as soon as Send is clicked
+            <p className="field-hint sending-note">
+              <Icon name="mail" size={14} /> Click Send and the email goes out right away.
+            </p>
+          ) : (
+            <p className="field-hint sending-note">
+              <Icon name="mail" size={14} /> Click Send and SalesTrack does the rest: the emails are queued and sent automatically
+              {limits ? ` within Outlook's limits (${limits.per_minute} per minute, ${n(limits.per_day)} per day across all campaigns)` : ""}
+              , whether it's 10 or 1,000 emails.
+              {preview?.eligible > 1 && preview.eta && (
+                <>
+                  {" "}
+                  This campaign takes {duration(preview.eta.minutes, preview.eta.days)}.
+                </>
+              )}
+            </p>
+          )}
           {settings && settings.links_reachable === false && (
             <p className="field-hint field-error-text" role="status">
               The Unsubscribe links point to {settings.unsubscribe_base.replace(/\/api\/public\/unsubscribe$/, "")}, which recipients
@@ -599,8 +629,22 @@ function CampaignDetail({ id, user, notify }) {
           </div>
           <div>
             <dt>{c.finished_at ? "Finished" : "Expected to finish"}</dt>
-            <dd>{c.finished_at ? when(c.finished_at) : c.counts.Queued ? when(c.eta.finish_by) : "—"}</dd>
+            <dd>
+              {c.finished_at
+                ? when(c.finished_at)
+                : !c.counts.Queued
+                  ? "—"
+                  : c.counts.total === 1 && c.status === "Sending"
+                    ? "In a few seconds"
+                    : when(c.eta.finish_by)}
+            </dd>
           </div>
+          {c.cc?.length > 0 && (
+            <div>
+              <dt>Cc</dt>
+              <dd>{c.cc.join(", ")}</dd>
+            </div>
+          )}
           <div>
             <dt>Progress</dt>
             <dd>
@@ -839,7 +883,6 @@ function CampaignProgressCard({ id, first, onClose }) {
   const [c, setC] = useState(first || null);
   const [min, setMin] = useState(false);
   const [error, setError] = useState("");
-  const [hold, setHold] = useState(false); // the pointer or keyboard focus is on the pop-up: don't close it now
   const counts = c?.counts || {};
   // finished only when the server says so (Completed / Cancelled): never while emails are queued or waiting to retry
   const { done, success, state } = campaignProgress(c);
@@ -859,14 +902,13 @@ function CampaignProgressCard({ id, first, onClose }) {
       if (timer) clearInterval(timer);
     };
   }, [id, done]);
-  // every email sent: the confirmation stays long enough to read, then the pop-up closes (closing never cancels
-  // sending). Failed, bounced, partly sent or cancelled results stay until closed. The timer stops on hover / focus and
-  // when the pop-up is closed or unmounted.
+  // every email sent: the pop-up closes by itself a moment later (even with the pointer on it). Failed, bounced, partly
+  // sent or cancelled results stay until closed. The timer is cleared when the pop-up is closed or unmounted.
   useEffect(() => {
-    if (!success || hold) return undefined;
+    if (!success) return undefined;
     const timer = setTimeout(() => closeRef.current(), CAMPAIGN_SUCCESS_CLOSE_MS);
     return () => clearTimeout(timer);
-  }, [success, hold]);
+  }, [success]);
   const total = (counts.total || 0) - (counts.Skipped || 0) - (counts.Cancelled || 0);
   const finished = (counts.Sent || 0) + (counts.Invalid || 0) + (counts.Failed || 0);
   const pct = total ? Math.round((finished / total) * 100) : 0;
@@ -883,10 +925,6 @@ function CampaignProgressCard({ id, first, onClose }) {
       role="status"
       aria-live="polite"
       aria-label={`Bulk email ${c?.name || ""}`}
-      onMouseEnter={() => setHold(true)}
-      onMouseLeave={() => setHold(false)}
-      onFocus={() => setHold(true)}
-      onBlur={(event) => !event.currentTarget.contains(event.relatedTarget) && setHold(false)}
     >
       <header>
         <Icon name="mail" size={16} />
@@ -920,10 +958,10 @@ function CampaignProgressCard({ id, first, onClose }) {
             ))}
           </ul>
           {error && <p className="form-error">{error}</p>}
-          {!done && c?.eta?.finish_by && counts.Queued > 0 && (
+          {!done && c?.eta?.finish_by && counts.Queued > 1 && (
             <small className="muted">Should finish by {new Date(c.eta.finish_by).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}. You can keep working.</small>
           )}
-          {success && <small className="campaign-pop-success">Sending finished. This closes in a few seconds.</small>}
+          {success && <small className="campaign-pop-success">Sending finished.</small>}
           {done && !success && c?.status !== "Cancelled" && (
             <small className="muted">Some emails weren&apos;t sent: open the campaign to see why.</small>
           )}
@@ -970,6 +1008,8 @@ export function CampaignProgressPopups() {
 
 export function queuedMessage(c) {
   const count = c.counts?.Queued ?? 0;
+  // one email that is due now: it is being sent (no queue, no finishing time)
+  if (count === 1 && (c.status === "Sending" || new Date(c.send_at) <= new Date())) return `Campaign "${c.name}": sending the email now.`;
   const finish = c.eta?.finish_by ? new Date(c.eta.finish_by) : null;
   const sameDay = finish && finish.toDateString() === new Date().toDateString();
   const by = finish

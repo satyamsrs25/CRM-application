@@ -335,17 +335,20 @@ def classify_smtp(exc: Exception) -> Result:
 
 
 def send_one(to: str, subject: str, body: str, *, sender_name: str, reply_to: str, unsubscribe: str,
-             html: str | None = None) -> Result:
+             html: str | None = None, cc: list[str] | None = None) -> Result:
     """Sends one campaign email and says what happened (used for every recipient; tests replace it).
-    html: the version with the Subscribe / Unsubscribe button; body (plain text) is the fallback."""
+    html: the version with the Subscribe / Unsubscribe button; body (plain text) is the fallback.
+    cc: the campaign's Cc addresses, copied on this email (in the Cc header, so Outlook shows them)."""
     if mailer.provider() == "graph":
-        return _send_graph(to, subject, body, sender_name=sender_name, reply_to=reply_to, html=html)
+        return _send_graph(to, subject, body, sender_name=sender_name, reply_to=reply_to, html=html, cc=cc)
     cfg = mailer.settings()
     if not cfg["host"]:
         return Result("setup", "Email isn't set up (SMTP_HOST is empty)")
     msg = EmailMessage(policy=policy.SMTP)
     msg["From"] = formataddr((sender_name, cfg["sender"]))
     msg["To"] = to
+    if cc:
+        msg["Cc"] = ", ".join(cc)
     msg["Reply-To"] = reply_to
     msg["Subject"] = subject
     # one-click unsubscribe button in Outlook and Gmail (RFC 8058)
@@ -370,7 +373,8 @@ def send_one(to: str, subject: str, body: str, *, sender_name: str, reply_to: st
         return classify_smtp(exc)
 
 
-def _send_graph(to: str, subject: str, body: str, *, sender_name: str, reply_to: str, html: str | None = None) -> Result:
+def _send_graph(to: str, subject: str, body: str, *, sender_name: str, reply_to: str, html: str | None = None,
+                cc: list[str] | None = None) -> Result:
     if not all(os.getenv(k) for k in ("MS_TENANT_ID", "MS_CLIENT_ID", "MS_CLIENT_SECRET")):
         return Result("setup", "Outlook isn't set up: MS_TENANT_ID, MS_CLIENT_ID and MS_CLIENT_SECRET are needed")
     sender = mailer.settings()["sender"]
@@ -379,6 +383,7 @@ def _send_graph(to: str, subject: str, body: str, *, sender_name: str, reply_to:
         "body": {"contentType": "HTML", "content": html} if html else {"contentType": "Text", "content": body},
         "from": {"emailAddress": {"address": sender, "name": sender_name}},
         "toRecipients": [{"emailAddress": {"address": to}}],
+        "ccRecipients": [{"emailAddress": {"address": a}} for a in cc or []],
         "replyTo": [{"emailAddress": {"address": reply_to}}],
     }
     try:
@@ -440,6 +445,26 @@ def domain_accepts_mail(domain: str) -> bool:
 # ---------- the sender (runs every minute in the background) ----------
 
 _lock = threading.Lock()
+
+
+def cc_list(value: str | None) -> list[str]:
+    """The campaign's stored Cc ("a@x.com, b@y.com") as a list."""
+    return [a.strip() for a in (value or "").split(",") if a.strip()]
+
+
+def start_soon(session_factory) -> None:
+    """A campaign that is due now starts sending at once (one round in the background) instead of waiting for the
+    next minute's round: a one-person "campaign" goes out in seconds. MAIL_ASYNC=false (tests) leaves it to run()."""
+    if os.getenv("MAIL_ASYNC", "true").lower() != "true":
+        return
+
+    def work():
+        try:
+            with session_factory() as db:
+                run(db)
+        except Exception:  # the minute's round tries again
+            log.exception("Campaign round failed")
+    threading.Thread(target=work, daemon=True, name="crm-campaign-now").start()
 
 
 def sent_last_24h(db: Session) -> int:
@@ -531,7 +556,8 @@ def _run(db: Session, budget: int | None, pause_seconds: float | None) -> dict:
                           text + footer(row.lead_id, token=token, subscribe=subscribe),
                           sender_name=sender.full_name, reply_to=sender.email,
                           unsubscribe=unsubscribe_link(row.lead_id, token=token),
-                          html=email_html(text, row.lead_id, token=token, subscribe=subscribe))
+                          html=email_html(text, row.lead_id, token=token, subscribe=subscribe),
+                          cc=cc_list(campaign.cc))
         row.attempts += 1
         if result.outcome == "sent":
             row.status, row.sent_at, row.error = "Sent", now(), None

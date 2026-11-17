@@ -38,8 +38,8 @@ const link = (path, r, text) => (r.id ? <a href={`#/${path}/${r.id}`} target="_b
 
 export function DuplicateNotice({ result }) {
   if (!result) return null;
-  const { account, contact, duplicate, related = [] } = result;
-  if (!account && !contact && !duplicate) return null;
+  const { account, contact, duplicate, related = [], similar = [] } = result;
+  if (!account && !contact && !duplicate && !similar.length) return null;
   return (
     <div className={`dup-notice${duplicate ? " blocked" : ""}`} role="status" aria-live="polite">
       {duplicate && (
@@ -57,6 +57,23 @@ export function DuplicateNotice({ result }) {
           <span>
             Uses the existing account <b>{link("accounts", account, account.name)}</b>
             {account.mine ? "" : ` (owner: ${account.owner})`}, so no duplicate account is created.
+          </span>
+        </p>
+      )}
+      {similar.length > 0 && (
+        // possibly the same company under another name (TCS / Tata Consultancy Services): never combined on its own
+        <p className="dup-line dup-info">
+          <Icon name="warn" size={15} />
+          <span>
+            <b>Possibly the same company:</b>{" "}
+            {similar.map((r, i) => (
+              <React.Fragment key={i}>
+                {i > 0 && ", "}
+                {link("accounts", r, r.name)}
+                {r.mine ? "" : ` (owner: ${r.owner})`}
+              </React.Fragment>
+            ))}
+            . If it is, choose it under Account; otherwise a new account is created.
           </span>
         </p>
       )}

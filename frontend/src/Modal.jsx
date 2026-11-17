@@ -26,6 +26,7 @@ import {
   isPersonalEmail,
   LEAD_EMAIL_INVALID,
   companyNameProblem,
+  phoneKey,
   leadFieldsRequired,
   leadFormProblems,
   leadServerProblems,
@@ -86,7 +87,8 @@ export default function Modal({ modal, close, data, run, notify, user }) {
     companyMatches && (
       <div className="company-box" role="status">
         <b>
-          <Icon name="warn" size={14} /> {companyMatches.total} existing record{companyMatches.total === 1 ? "" : "s"} for this company
+          <Icon name="warn" size={14} /> {companyMatches.total} existing record{companyMatches.total === 1 ? "" : "s"}{" "}
+          {companyMatches.matches.every((m) => m.similar) ? "with a similar company name (it may be the same company)" : "for this company"}
         </b>
         {companyMatches.owners?.length > 0 && (
           <div className="company-owners">
@@ -102,6 +104,7 @@ export default function Modal({ modal, close, data, run, notify, user }) {
               <small>
                 {" "}
                 {m.type} • {m.stage} • Owner: {m.mine ? "You" : m.owner}
+                {m.similar ? " • Similar name" : ""}
               </small>
             </li>
           ))}
@@ -151,12 +154,20 @@ export default function Modal({ modal, close, data, run, notify, user }) {
       .then((res) => mine === dupeCheck.current && setDupes(res.matches || []))
       .catch(() => mine === dupeCheck.current && setDupes([]));
   };
-  const WHY = { name: "the same name", website: "the same website", email: "this email", lead: "this email (an open lead: convert it instead)" };
+  const WHY = {
+    name: "the same name",
+    website: "the same website",
+    email: "this email",
+    lead: "this email (an open lead: convert it instead)",
+    similar: "a similar name (it may be the same company)",
+  };
+  // a similar name only (not the same name or website) may be another company: it is shown, and saving is allowed
+  const onlySimilar = dupes.length > 0 && dupes.every((m) => m.why === "similar");
   const dupeBox = () =>
     dupes.length > 0 && (
       <div className="company-box" role="alert">
         <b>
-          <Icon name="warn" size={14} /> Already in the CRM
+          <Icon name="warn" size={14} /> {onlySimilar ? "Possibly already in the CRM" : "Already in the CRM"}
         </b>
         <ul>
           {dupes.map((m, i) => (
@@ -177,8 +188,11 @@ export default function Modal({ modal, close, data, run, notify, user }) {
           ))}
         </ul>
         <small className="field-hint">
-          Use the existing {type === "account" ? "account" : "record"} instead of creating a duplicate, or ask its owner or a Manager.
+          {onlySimilar
+            ? "If it is the same company, use that account. If it is a different company, Save anyway creates this account."
+            : `Use the existing ${type === "account" ? "account" : "record"} instead of creating a duplicate, or ask its owner or a Manager.`}
         </small>
+        {onlySimilar && <input type="hidden" name="confirm_new_company" value="1" />}
       </div>
     );
   // Cancel Demo: "reschedule" (pick a new date, stay at Demo) or "nurturing" (cancel, back to Revisit)
@@ -272,6 +286,9 @@ export default function Modal({ modal, close, data, run, notify, user }) {
   // an email on another domain than the website is asked about once; saving again with the same pair saves it
   // (some companies use one domain for email and another for the website)
   const [domainWarned, setDomainWarned] = useState("");
+  // the same phone number on other leads or contacts (the server's phone_matches.py): refused for the same person;
+  // otherwise asked about once (a shared business number), and saving again with that number keeps it
+  const [phoneWarned, setPhoneWarned] = useState(null); // { key, message }
   // ...and all of them but Lost a New Task (task_* fields, checked with the note before anything is sent)
   const taskNeeded = stageTaskNeeded(type, demoChoice);
   const [taskErrors, setTaskErrors] = useState({});
@@ -700,6 +717,29 @@ export default function Modal({ modal, close, data, run, notify, user }) {
           return emailProblem(domainProblem);
         }
         if (domainProblem) v.confirm_email_domain = "1";
+        const phone = String(v.phone || "").trim();
+        if (phone && phoneKey(phone) && phoneKey(phone) !== phoneKey(record?.phone)) {
+          const check = await api.leadPhoneMatches({
+            phone,
+            first_name: (v.first_name || "").trim(),
+            last_name: (v.last_name || "").trim(),
+            company: (v.company || "").trim(),
+            exclude_lead_id: record?.id,
+          });
+          const phoneProblem = (message) => {
+            setFieldErrors((errors) => ({ ...errors, phone: message }));
+            ref.current.querySelector("input[name=phone]")?.focus();
+          };
+          if (check.blocked) {
+            setPhoneWarned(null);
+            return phoneProblem(check.message);
+          }
+          if (check.total && phoneWarned?.key !== phoneKey(phone)) {
+            setPhoneWarned({ key: phoneKey(phone), message: check.message });
+            return phoneProblem(check.message);
+          }
+          if (check.total) v.confirm_shared_phone = "1";
+        }
         if (email && email !== (record?.email || "").trim().toLowerCase()) {
           const check = await api.leadDuplicates(email);
           const others = check.matches.filter((m) => !(m.type === "Lead" && String(m.id) === String(record?.id)));
@@ -1373,13 +1413,13 @@ export default function Modal({ modal, close, data, run, notify, user }) {
               type="submit"
               className={`sf-button ${type === "delete" ? "danger" : "brand"}`}
               disabled={
-                submitting || (blocked && (type === "newOpportunity" || type === "convert")) || (dupes.length > 0 && newRecord)
+                submitting || (blocked && (type === "newOpportunity" || type === "convert")) || (dupes.length > 0 && !onlySimilar && newRecord)
               }
               aria-busy={submitting}
             >
               {submitting
                 ? "Saving…"
-                : type === "lead" && domainWarned && emailError
+                : (type === "account" && onlySimilar) || (type === "lead" && ((domainWarned && emailError) || (phoneWarned && fieldErrors.phone === phoneWarned.message)))
                   ? "Save anyway"
                   : type === "convert"
                   ? "Convert lead"

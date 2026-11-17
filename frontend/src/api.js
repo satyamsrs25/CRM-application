@@ -81,6 +81,7 @@ export function leadPayload(values, editing = false) {
   // New Lead: the phone's country from the selector beside it (the server checks the number for it; not saved)
   else if (values.phone_country) payload.phone_country = values.phone_country;
   if (values.confirm_email_domain === "1") payload.confirm_email_domain = true; // checked: email domain differs from website
+  if (values.confirm_shared_phone === "1") payload.confirm_shared_phone = true; // the phone is shared with other records
   return payload;
 }
 export function taskPayload(values, editing = false) {
@@ -310,6 +311,8 @@ export const api = {
         linkedin_url: optional(v.linkedin_url?.trim()), // the company's LinkedIn page, optional
         address: optional(v.address),
         owner_id: numeric(v.owner_id),
+        // a similar account exists (TCS / Tata Consultancy Services) and the user said this is a different company
+        ...(v.confirm_new_company === "1" ? { confirm_new_company: true } : {}),
       },
     }),
   saveContact: (v) =>
@@ -407,6 +410,9 @@ export const api = {
     apiRequest(`/users/${userId}/team-access`, { method: "PUT", body: { team_access } }),
   // duplicate email check before creating a lead
   leadDuplicates: (email) => apiRequest(`/leads/duplicates?email=${encodeURIComponent(email)}`),
+  // the same phone number on other leads or contacts (blocked: the same person; otherwise asked about once)
+  leadPhoneMatches: (params) =>
+    apiRequest(`/leads/phone-matches?${new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== ""))}`),
   sendEmail: (formData) => upload("/emails", formData),
   deleteLead: (id) => apiRequest(`/leads/${id}`, { method: "DELETE" }),
   // Bulk actions on the leads selected in the Leads list

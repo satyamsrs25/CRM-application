@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 
 from app import mailer
 from app.models import Account, Contact, Lead, Notification, Opportunity, OpportunityAttachment, StageHistory, Task, User
-from conftest import finish_stage_tasks, login_as
+from conftest import alpha, finish_stage_tasks, login_as
 from test_assistant import ai, call  # noqa: F401 (ai is a fixture: a scripted stand-in for the AI model)
 from test_opportunity_attachments import PDF, PRIYA, RAVI, add_salesperson, db_session, new_opportunity, pdf_file
 
@@ -41,7 +41,7 @@ def sent(monkeypatch, client):
 
 def new_lead(client, **extra):
     n = next(EMAILS)
-    res = client.post("/api/leads", json={"source": "Website", "first_name": "Test", "last_name": f"Buyer{n}", "company": "Synthetic Co",
+    res = client.post("/api/leads", json={"source": "Website", "first_name": "Test", "last_name": f"Buyer{alpha(n)}", "company": "Synthetic Co",
                                           "email": f"stage.note{n}@example.test", "welcome_email": False, **extra})
     assert res.status_code == 201, res.text
     return res.json()

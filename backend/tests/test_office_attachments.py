@@ -14,7 +14,7 @@ from app.database import get_db
 from app.main import app
 from app.models import OpportunityAttachment
 from app.routers.attachments import MAX_FILE_BYTES
-from conftest import login_as
+from conftest import alpha, login_as
 
 PRIYA, RAVI, ASHA = 1, 2, 3  # Manager, Salesperson, Admin (conftest.py)
 TASK = {"title": "Synthetic next step", "due_date": "2030-01-15T10:00:00"}
@@ -69,7 +69,7 @@ def file_rows() -> int:
 def new_opportunity(client, owner=RAVI) -> dict:
     login_as(client, owner)
     n = next(NAMES)
-    lead = client.post("/api/leads", json={"source": "Website", "first_name": "Test", "last_name": f"Buyer{n}", "company": f"Office Co {n}",
+    lead = client.post("/api/leads", json={"source": "Website", "first_name": "Test", "last_name": f"Buyer{alpha(n)}", "company": f"Office Co {n}",
                                            "email": f"office{n}@example.test", "welcome_email": False}).json()
     res = client.post(f"/api/leads/{lead['id']}/convert", json={"task": TASK, "completed_stages": ["New", "Nurturing", "Demo"],
                                                                  "expected_value": 1000, "note": "Synthetic conversion"})

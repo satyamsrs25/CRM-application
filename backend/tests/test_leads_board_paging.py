@@ -10,7 +10,7 @@ from sqlalchemy import insert
 from app.database import get_db
 from app.main import app
 from app.models import Lead
-from conftest import login_as
+from conftest import alpha, login_as
 
 PRIYA, RAVI, ASHA = 1, 2, 3  # Manager, Salesperson, Admin (conftest.py)
 # 549 leads: Nurturing and Demo have more than 100 cards each (the old board stopped at 100)
@@ -27,7 +27,7 @@ def board(client):
     for stage, count in PLAN.items():
         for i in range(count):
             n += 1
-            rows.append({"first_name": "Synthetic", "last_name": f"Board {n:03d}", "company": f"Kanban Paging Co {n:03d}",
+            rows.append({"first_name": "Synthetic", "last_name": f"Board {alpha(f'{n:03d}')}", "company": f"Kanban Paging Co {n:03d}",
                          "email": f"board{n:03d}@kanban-paging.example", "stage": stage,
                          "source": "Upload" if n % 5 == 0 else "Website", "owner_id": PRIYA if n % 3 == 0 else RAVI,
                          "created_at": START + timedelta(minutes=n), "updated_at": START + timedelta(minutes=n)})

@@ -15,7 +15,7 @@ from app.main import app
 from app.models import ActivityLog, OpportunityAttachment
 from app.routers.attachments import MAX_FILE_BYTES, MAX_REQUEST_BYTES
 from app.security import make_token
-from conftest import finish_stage_tasks, login_as
+from conftest import alpha, finish_stage_tasks, login_as
 
 TASK = {"title": "Synthetic follow-up task", "due_date": "2030-01-15T10:00:00"}  # every stage change needs one
 
@@ -93,7 +93,7 @@ DOCX_SAMPLE = docx_file()  # zip files carry a timestamp: build once so download
 
 def new_opportunity(client, owner=RAVI) -> dict:
     login_as(client, owner)
-    res = client.post("/api/leads", json={"source": "Website", "first_name": "Test", "last_name": f"Buyer{next(LEADS)}",
+    res = client.post("/api/leads", json={"source": "Website", "first_name": "Test", "last_name": f"Buyer{alpha(next(LEADS))}",
                                           "company": "Synthetic Co", "email": f"buyer{next(LEADS)}@example.test",
                                           "welcome_email": False})
     assert res.status_code == 201, res.text

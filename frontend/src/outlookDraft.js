@@ -8,6 +8,10 @@
 // "/owa/?path=/mail/action/compose&to=…" form, which used to open there, is now redirected by Microsoft to this same
 // "/mail/deeplink/compose" page before sign-in (checked 2026-11 without signing in), so it gives the same layout. What
 // remains is Microsoft Graph (an API that creates a draft in the mailbox), which this workflow deliberately doesn't use.
+//
+// Cc: Outlook on the web ignores a "cc" parameter on this page (To, Subject and Message were filled, Cc stayed empty).
+// The page's "mailtouri" parameter takes a whole mailto: link instead (RFC 6068), the way Outlook handles mailto links
+// itself, and that fills Cc as well. So the link carries one mailtouri value: mailto:<to>?cc=…&subject=…&body=…
 // When the user isn't signed in yet, Microsoft's sign-in request carries this whole link unchanged (every encoded
 // character intact) to return to after sign-in; nothing here asks for a sign-in, so an existing Outlook session is used.
 
@@ -39,20 +43,37 @@ export function addressProblem(value, label, required = false) {
 const lines = (text) => String(text ?? "").replace(/\r\n?/g, "\n");
 const wellFormed = (text) => (typeof text.toWellFormed === "function" ? text.toWellFormed() : text);
 
-// The compose link. Each value is percent-encoded on its own (UTF-8), so &, +, #, %, line breaks and any language are
-// carried exactly; several addresses are joined with commas. Empty fields are left out.
-export function outlookComposeUrl({ to, cc, subject, body }) {
+// The draft as a mailto: link (RFC 6068). Each value is percent-encoded on its own (UTF-8), so &, +, #, %, line breaks
+// (sent as CRLF) and any language are carried exactly; several addresses are joined with commas (an @ stays readable).
+// Empty fields are left out.
+const address = (list) => list.map((a) => encodeURIComponent(wellFormed(a)).replace(/%40/g, "@")).join(",");
+export function mailtoUri({ to, cc, subject, body }) {
   const params = [
-    ["to", splitAddresses(to).join(",")],
-    ["cc", splitAddresses(cc).join(",")],
-    ["subject", String(subject ?? "").trim()],
-    ["body", lines(body)],
-  ];
-  const query = params
-    .filter(([, value]) => value)
-    .map(([key, value]) => `${key}=${encodeURIComponent(wellFormed(value))}`)
-    .join("&");
-  return query ? `${OUTLOOK_COMPOSE_URL}?${query}` : OUTLOOK_COMPOSE_URL;
+    ["cc", splitAddresses(cc).length ? address(splitAddresses(cc)) : ""],
+    ["subject", String(subject ?? "").trim() && encodeURIComponent(wellFormed(String(subject).trim()))],
+    ["body", lines(body) && encodeURIComponent(wellFormed(lines(body).replace(/\n/g, "\r\n")))],
+  ].filter(([, value]) => value);
+  const query = params.map(([key, value]) => `${key}=${value}`).join("&");
+  return `mailto:${address(splitAddresses(to))}${query ? `?${query}` : ""}`;
+}
+
+// The compose link: the mailto: link above, encoded once more as the page's mailtouri value. Nothing to fill: the
+// plain compose page.
+export function outlookComposeUrl(draft) {
+  const mailto = mailtoUri(draft);
+  return mailto === "mailto:" ? OUTLOOK_COMPOSE_URL : `${OUTLOOK_COMPOSE_URL}?mailtouri=${encodeURIComponent(mailto)}`;
+}
+
+// What the link fills in, read back (the tests use it): { to, cc, subject, body } as Outlook gets them
+export function readComposeUrl(url) {
+  const mailto = new URL(url).searchParams.get("mailtouri") || "mailto:";
+  const [path, query = ""] = mailto.slice("mailto:".length).split("?");
+  const out = { to: decodeURIComponent(path), cc: "", subject: "", body: "" };
+  for (const part of query.split("&").filter(Boolean)) {
+    const [key, value = ""] = part.split("=");
+    out[key] = decodeURIComponent(value).replace(/\r\n/g, "\n");
+  }
+  return out;
 }
 
 // What Open in Outlook can do with this draft: open it whole (fits), or, when the link would be too long, open Outlook

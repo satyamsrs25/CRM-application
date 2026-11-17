@@ -518,6 +518,17 @@ function PeopleTab({ user, data, reload, notify, onSelfChanged }) {
 
   // Open Leads: the leads this user owns at an open status (New, Nurturing, Revisit, Demo), as the server counts them
   const owned = (id) => (openCounts ? (openCounts[String(id)] ?? 0).toLocaleString() : "…");
+  // the count opens that person's open leads (the Leads list filtered by Owner), for those who can see others' leads
+  const seesTeam = admin || can(user, "view_team_records");
+  const openLeadsCell = (u) => {
+    const count = openCounts?.[String(u.id)] ?? 0;
+    if (!count || (!seesTeam && u.id !== user.id)) return owned(u.id);
+    return (
+      <a href={`#/leads?list=${encodeURIComponent("All Open Leads")}&owner=${u.id}`} title={`Open ${u.full_name}'s open leads`}>
+        {owned(u.id)}
+      </a>
+    );
+  };
 
   const run = async (work, message) => {
     try {
@@ -681,7 +692,7 @@ function PeopleTab({ user, data, reload, notify, onSelfChanged }) {
                   <td>
                     <span className={`pill ${u.is_active ? "pill-ok" : "pill-off"}`}>{u.is_active ? "Active" : "Inactive"}</span>
                   </td>
-                  <td className="num">{owned(u.id)}</td>
+                  <td className="num">{openLeadsCell(u)}</td>
                   <td className="actions-col">{items.length ? <RowMenu label={`Actions for ${u.full_name}`} items={items} /> : null}</td>
                 </tr>
               );

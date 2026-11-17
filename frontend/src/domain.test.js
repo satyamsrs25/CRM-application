@@ -112,7 +112,7 @@ import {
   defaultSortDirection,
 } from "./listHelpers.js";
 import { demoEvent, foldIcsLine, googleCalendarUrl, icsContent, icsText, outlookCalendarUrl } from "./calendarLinks.js";
-import { addressProblem, draftForCopy, OUTLOOK_COMPOSE_URL, OUTLOOK_URL_LIMIT, outlookComposeUrl, outlookHandoff, splitAddresses } from "./outlookDraft.js";
+import { addressProblem, draftForCopy, mailtoUri, OUTLOOK_COMPOSE_URL, OUTLOOK_URL_LIMIT, outlookComposeUrl, outlookHandoff, readComposeUrl, splitAddresses } from "./outlookDraft.js";
 import { DEFAULT_PHONE_COUNTRY, PHONE_COUNTRIES, PHONE_RECHECK_EVENT, PHONE_WITH_CODE_INVALID, phoneCountryLabel, phoneCountryOf, phoneFieldError, phoneProblem } from "./phone.js";
 import {
   LEAD_COMPANY_REQUIRED,
@@ -1174,24 +1174,29 @@ test("Open in Outlook link: encoding, several recipients, line breaks, Unicode a
     body: "Hi Ana,\r\n\r\nPrices: A&B + C = 100% #1.\nनमस्ते — café ✓ 🎉\rThanks,\nRavi",
   };
   const url = outlookComposeUrl(draft);
-  // the one compose link Outlook on the web supports (the older /owa/?path=/mail/action/compose is redirected to it)
+  // the compose page with one mailtouri value (a whole mailto: link): Outlook ignores a plain "cc" parameter there,
+  // but fills Cc from the mailto link
   assert.equal(OUTLOOK_COMPOSE_URL, "https://outlook.office.com/mail/deeplink/compose");
-  assert.ok(url.startsWith(`${OUTLOOK_COMPOSE_URL}?to=`));
+  assert.ok(url.startsWith(`${OUTLOOK_COMPOSE_URL}?mailtouri=mailto%3A`));
+  assert.deepEqual([...new URL(url).searchParams.keys()], ["mailtouri"]);
   const query = url.slice(url.indexOf("?") + 1);
-  assert.doesNotMatch(query, /[ #+\n\r]|%(?![0-9A-F]{2})/); // nothing that could end or change the link
-  assert.match(query, /%26/); // &
-  assert.match(query, /%2B/); // + (never read as a space)
-  assert.match(query, /%23/); // #
-  assert.match(query, /%25/); // %
-  assert.match(query, /%0A/); // line break
-  const params = new URL(url).searchParams;
-  assert.equal(params.get("to"), "ana@acme.example");
-  assert.equal(params.get("cc"), "raj@acme.example,mei@acme.example,ops+crm@acme.example");
-  assert.equal(params.get("subject"), "Q4 pricing & next steps #2 (100% + 5%)");
-  assert.equal(params.get("body"), "Hi Ana,\n\nPrices: A&B + C = 100% #1.\nनमस्ते — café ✓ 🎉\nThanks,\nRavi");
-  assert.deepEqual([...params.keys()], ["to", "cc", "subject", "body"]);
+  assert.doesNotMatch(query, /[ #+\n\r&]|%(?![0-9A-F]{2})/); // nothing that could end or change the link
+  const mailto = new URL(url).searchParams.get("mailtouri");
+  assert.equal(mailto, mailtoUri(draft));
+  assert.ok(mailto.startsWith("mailto:ana@acme.example?cc=raj@acme.example,mei@acme.example,ops%2Bcrm@acme.example&subject="));
+  assert.match(mailto, /%26/); // & inside a value
+  assert.match(mailto, /%2B/); // + (never read as a space)
+  assert.match(mailto, /%23/); // #
+  assert.match(mailto, /%25/); // %
+  assert.match(mailto, /%0D%0A/); // line breaks as CRLF (RFC 6068)
+  assert.deepEqual(readComposeUrl(url), {
+    to: "ana@acme.example",
+    cc: "raj@acme.example,mei@acme.example,ops+crm@acme.example",
+    subject: "Q4 pricing & next steps #2 (100% + 5%)",
+    body: "Hi Ana,\n\nPrices: A&B + C = 100% #1.\nनमस्ते — café ✓ 🎉\nThanks,\nRavi",
+  });
   // empty fields are left out; a broken emoji half doesn't break the link
-  assert.deepEqual([...new URL(outlookComposeUrl({ to: "a@b.co", cc: " ", subject: "Hi", body: "x" })).searchParams.keys()], ["to", "subject", "body"]);
+  assert.equal(mailtoUri({ to: "a@b.co", cc: " ", subject: "Hi", body: "x" }), "mailto:a@b.co?subject=Hi&body=x");
   assert.doesNotThrow(() => outlookComposeUrl({ to: "a@b.co", subject: "Hi", body: "half \ud83d emoji" }));
   // short drafts open whole
   const ok = outlookHandoff(draft);
@@ -1205,12 +1210,12 @@ test("Open in Outlook link: encoding, several recipients, line breaks, Unicode a
   assert.equal(plan.url, null);
   assert.ok(plan.length > OUTLOOK_URL_LIMIT);
   assert.equal(plan.partialHasFields, true);
-  assert.deepEqual([...new URL(plan.partialUrl).searchParams.keys()], ["to", "cc", "subject"]);
-  assert.equal(new URL(outlookComposeUrl(long)).searchParams.get("body"), long.body); // the full link still carries all of it
+  assert.deepEqual(readComposeUrl(plan.partialUrl), { ...readComposeUrl(url), body: "" }); // To, Cc and Subject
+  assert.equal(readComposeUrl(outlookComposeUrl(long)).body, long.body); // the full link still carries all of it
   // Unicode counts as it is encoded: 600 Hindi letters are too long for one link
   assert.equal(outlookHandoff({ to: "a@b.co", subject: "Hi", body: "न".repeat(600) }).fits, false);
   // the limit is exact
-  const base = outlookComposeUrl({ to: "a@b.co", subject: "Hi", body: "" }).length + "&body=".length;
+  const base = outlookComposeUrl({ to: "a@b.co", subject: "Hi", body: "" }).length + "%26body%3D".length;
   assert.equal(outlookHandoff({ to: "a@b.co", subject: "Hi", body: "x".repeat(OUTLOOK_URL_LIMIT - base) }).fits, true);
   assert.equal(outlookHandoff({ to: "a@b.co", subject: "Hi", body: "x".repeat(OUTLOOK_URL_LIMIT - base + 1) }).fits, false);
   // even To and Subject too long: Outlook opens empty and the whole draft is copied instead
@@ -1745,7 +1750,7 @@ test("Lead transfer requests, the lead list's Created By / Transferred To, and d
   assert.match(record, /user\.role !== "Admin" && item\.owner_id !== user\.id/);
   const modal = source("./Modal.jsx");
   assert.match(modal, /Request Transfer from \{askFor\.owner_name\}/); // from the "email already in the CRM" message
-  assert.match(modal, /\(dupes\.length > 0 && newRecord\)/); // New Account / Contact: no save over a duplicate
+  assert.match(modal, /\(dupes\.length > 0 && !onlySimilar && newRecord\)/); // New Account / Contact: no save over a duplicate
   const page = source("./TransferRequests.jsx");
   for (const tab of ["To Approve", "My Requests", "All"]) assert.ok(page.includes(`"${tab}"`), tab);
   assert.match(source("./App.jsx"), /section === "transfer-requests"/);
@@ -2477,18 +2482,17 @@ test("Campaign progress: finished only when the server says so; only a fully sen
   assert.equal(campaignProgress(c("Completed", { total: 3, Sent: 2, Failed: 1 })).state, "Finished: 2 emails sent, 1 email not sent");
   assert.deepEqual(campaignProgress(c("Cancelled", { total: 4, Sent: 1, Cancelled: 3 })).state, "Cancelled");
   assert.equal(campaignProgress(c("Cancelled", { total: 4, Sent: 1, Cancelled: 3 })).success, false);
-  assert.ok(CAMPAIGN_SUCCESS_CLOSE_MS >= 8000); // time to read it
-  // the card: a timer only on success, paused on hover / focus, cleared on close and unmount; closing never cancels
+  assert.ok(CAMPAIGN_SUCCESS_CLOSE_MS > 0 && CAMPAIGN_SUCCESS_CLOSE_MS <= 3000); // closes right after sending
+  // the card: a timer only on success (not held open by hover), cleared on close and unmount; closing never cancels
   const page = source("./CampaignsPage.jsx");
   const card = page.slice(page.indexOf("function CampaignProgressCard"), page.indexOf("// Rendered once by App"));
   assert.match(card, /const \{ done, success, state \} = campaignProgress\(c\);/);
-  assert.match(card, /if \(!success \|\| hold\) return undefined;\s*const timer = setTimeout\(\(\) => closeRef\.current\(\), CAMPAIGN_SUCCESS_CLOSE_MS\);\s*return \(\) => clearTimeout\(timer\);/);
-  assert.match(card, /onMouseEnter=\{\(\) => setHold\(true\)\}/);
-  assert.match(card, /onFocus=\{\(\) => setHold\(true\)\}/);
+  assert.match(card, /if \(!success\) return undefined;\s*const timer = setTimeout\(\(\) => closeRef\.current\(\), CAMPAIGN_SUCCESS_CLOSE_MS\);\s*return \(\) => clearTimeout\(timer\);/);
+  assert.doesNotMatch(card, /setHold/);
   assert.match(card, /if \(timer\) clearInterval\(timer\);/); // polling stops on unmount and when finished
   assert.doesNotMatch(card, /cancelCampaign|\/cancel|act\("cancel"\)/); // closing the pop-up doesn't cancel sending
   assert.match(card, /role="status"/);
-  assert.match(card, /Sending finished\. This closes in a few seconds\./);
+  assert.match(card, /Sending finished\./);
 });
 
 // ---------- Issue 42: Manage Access > People counts open leads like My Open Leads ----------

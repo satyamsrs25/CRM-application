@@ -394,6 +394,7 @@ CREATE TABLE campaigns (
   name          VARCHAR(150) NOT NULL,
   subject       VARCHAR(200) NOT NULL,
   body          TEXT NOT NULL,
+  cc            VARCHAR(1000),  -- copied on every email of the campaign
   status        VARCHAR(15) NOT NULL DEFAULT 'Scheduled'
                 CHECK (status IN ('Scheduled','Sending','Paused','Completed','Cancelled')),
   status_note   VARCHAR(300),
