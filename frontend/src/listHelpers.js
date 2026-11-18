@@ -170,11 +170,16 @@ export const BULK_LIMIT = 500;
 // The actions for the ticked leads, in the order shown. convertChoice comes from leadConvertChoice (domain.js):
 // one open lead the user may convert opens the Convert popup; several ticked only explain; otherwise it is off with
 // the reason. Email Campaign and Transfer are offered only to users with those rights; the server checks every lead.
-export function leadSelectionActions({ count, convertChoice, canCampaign, canTransfer }) {
+// canRequest (a Salesperson with leads from the Unassigned Pool ticked): Request Assignment for the ticked leads only.
+// poolOnly (a Salesperson on Unassigned Leads): that is the only action, as they can't change pooled leads.
+export function leadSelectionActions({ count, convertChoice, canCampaign, canTransfer, canRequest = false, poolOnly = false }) {
   if (!count) return [];
   const one = count === 1;
   const limit = count > BULK_LIMIT ? `Up to ${BULK_LIMIT} leads at a time` : undefined;
+  const request = (canRequest || poolOnly) && { key: "request", label: "Request Assignment", disabled: !!limit, reason: limit };
+  if (poolOnly) return [request];
   return [
+    request,
     {
       key: "convert",
       label: "Convert to Opportunity",

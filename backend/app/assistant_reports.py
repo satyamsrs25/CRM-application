@@ -104,7 +104,7 @@ def crm_report(db: Session, *, period: str | None = None, date_from: str | None 
             query = query.where(condition)
         if when is not None:
             query = _between(query, when, start, end)
-        return {(names.get(k, f"User {k}") if column.key == "owner_id" else k): n
+        return {(("Unassigned Pool" if k is None else names.get(k, f"User {k}")) if column.key == "owner_id" else k): n
                 for k, n in db.execute(query.group_by(column)).all()}
 
     lead_count = lambda *where, when=None: count(  # noqa: E731

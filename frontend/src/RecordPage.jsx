@@ -4,13 +4,13 @@ import { demoEvent } from "./calendarLinks";
 import { formatBusiness } from "./businessTime";
 import OpportunityAttachments, { PICK_ATTACHMENTS } from "./Attachments";
 import { EmailList, useEmails } from "./Email";
-import { canCreateSales, canEditRecord, canTransferLead } from "./permissions";
+import { canAssignPool, canCreateSales, canEditRecord, canRequestPool, canTransferLead } from "./permissions";
 import { amount, dateTime, shortDate } from "./format";
 import { ActionMenu, Card, Icon, ObjectIcon, PathBar, PhoneReveal, StageBadge } from "./ui";
-import { RequestTransferDialog, TransferRequestList } from "./TransferRequests";
+import { AssignLeadDialog, RequestTransferDialog, TransferRequestList } from "./TransferRequests";
 import { api } from "./api";
 
-import { ATTACHMENT_UPLOAD_STAGES, LEAD_FLOW, LEAD_OPTIONAL_STAGES, OPPORTUNITY_FLOW } from "./domain";
+import { ATTACHMENT_UPLOAD_STAGES, isPooledLead, LEAD_FLOW, LEAD_OPTIONAL_STAGES, OPPORTUNITY_FLOW } from "./domain";
 
 // Unqualified comes first, as in the requirement: new leads start at New, and Unqualified is chosen (with a reason)
 // for a lead that isn't eligible
@@ -91,7 +91,7 @@ export function TaskLine({ task, toggleTask, setModal }) {
   );
 }
 
-function ActivityTab({ item, tasks, toggleTask, setModal, openTask, collection, emails, sendEmail, addFiles }) {
+function ActivityTab({ item, tasks, toggleTask, setModal, openTask, collection, emails, sendEmail, addFiles, canAddTask = true, canEmail = true }) {
   const open = tasks.filter((t) => !t.completed).sort((a, b) => a.due_date.localeCompare(b.due_date));
   const done = tasks.filter((t) => t.completed);
   const past = [
@@ -101,15 +101,22 @@ function ActivityTab({ item, tasks, toggleTask, setModal, openTask, collection, 
   return (
     <div className="activity-tab">
       <div className="activity-actions">
-        <button className="sf-button" onClick={() => openTask(item.id, collection)}>
-          <ObjectIcon type="task" size={18} /> New Task
-        </button>
-        <button className="sf-button" onClick={sendEmail}>
-          <ObjectIcon type="event" size={18} /> Email
-        </button>
-        <button className="sf-button" onClick={() => setModal({ type: "note", collection, record: item })}>
-          <ObjectIcon type="note" size={18} /> New Note
-        </button>
+        {/* a lead in the Unassigned Pool gets its follow-ups once it is assigned (there is nobody to do them yet) */}
+        {canAddTask && (
+          <button className="sf-button" onClick={() => openTask(item.id, collection)}>
+            <ObjectIcon type="task" size={18} /> New Task
+          </button>
+        )}
+        {canEmail && (
+          <button className="sf-button" onClick={sendEmail}>
+            <ObjectIcon type="event" size={18} /> Email
+          </button>
+        )}
+        {canEmail && (
+          <button className="sf-button" onClick={() => setModal({ type: "note", collection, record: item })}>
+            <ObjectIcon type="note" size={18} /> New Note
+          </button>
+        )}
         {/* opportunities: the proposal, pricing or signed order go to the Attachments card (open or Won deals) */}
         {addFiles && (
           <button className="sf-button" onClick={addFiles} title="Add files to this opportunity's Attachments">
@@ -157,10 +164,12 @@ function ActivityTab({ item, tasks, toggleTask, setModal, openTask, collection, 
 export default function RecordPage({ collection, item, data, user, openLead, openTask, toggleTask, convert, setModal, openEmail, emailVersion, reload }) {
   const lead = collection === "leads";
   const [tab, setTab] = useState("activity");
-  const { emails } = useEmails(lead ? "lead_id" : "opportunity_id", item?.id, emailVersion);
+  // (a pooled lead shown without its contact details has no emails to show this user: none are asked for)
+  const { emails } = useEmails(lead ? "lead_id" : "opportunity_id", lead && item?.contact_hidden ? null : item?.id, emailVersion);
   // lead transfer requests: asking for someone else's lead, and approving requests for this one
   const [requests, setRequests] = useState([]);
   const [asking, setAsking] = useState(false);
+  const [assigning, setAssigning] = useState(false); // the Unassigned Pool: Assign (Admin / authorised Manager)
   const loadRequests = () => {
     if (lead && item?.id) api.leadTransferRequests(item.id).then(setRequests).catch(() => setRequests([]));
   };
@@ -177,15 +186,24 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
     );
 
   const closed = ["Won", "Lost", "Converted", "Unqualified"].includes(item.stage);
+  // the Unassigned Pool: no owner yet. It keeps its stage until it is assigned (no stage change, conversion, closing,
+  // follow-ups or transfer); a user who can only request it sees it without the person's contact details
+  const pooled = lead && isPooledLead(item);
+  const summaryOnly = pooled && !!item.contact_hidden;
   // Salespeople change only their own records; Managers and Admins can change any (the backend checks it too)
   const canEdit = canEditRecord(user, item);
-  const canConvert = canEdit && canCreateSales(user); // the Admin, Managers and Salespeople convert leads they may edit
+  const canWork = canEdit && !pooled; // stage, conversion, closing, demo: only once the lead has an owner
+  const canConvert = canEdit && canCreateSales(user) && !pooled; // the Admin, Managers and Salespeople convert leads they may edit
   const canTransfer = lead && canTransferLead(user, item); // Admin: any lead; owner with "Transfer leads": their own
   const transfers = (lead && item.transfers) || [];
+  const askedAlready = requests.some((r) => r.status === "Pending" && r.requested_by_id === user.id);
   // anyone but the Admin (who transfers directly) can ask for an open lead they don't own; approval is required
   const canRequest =
-    lead && !closed && user.role !== "Admin" && item.owner_id !== user.id &&
-    !requests.some((r) => r.status === "Pending" && r.requested_by_id === user.id);
+    lead && !pooled && !closed && user.role !== "Admin" && item.owner_id !== user.id &&
+    !askedAlready;
+  // a pooled lead: the Admin or a Manager with "Reassign owner" assigns it; a Salesperson requests it (approval needed)
+  const canAssign = pooled && !closed && canAssignPool(user);
+  const canAskForPool = pooled && !closed && canRequestPool(user) && !askedAlready;
   const tasks = data.tasks.filter((t) => t.relatedId === item.id && t.relatedType === collection);
   const edit = () => (lead ? openLead(item) : setModal({ type: "opportunity", record: item }));
   // the pencils on the Details tab follow the same rule as Actions > Edit (none for a view-only user)
@@ -288,16 +306,28 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
             </h1>
           </div>
           <div className="button-group">
-            <button className="sf-button" onClick={sendEmail}>
-              Send Email
-            </button>
+            {canAssign && (
+              <button className="sf-button brand" onClick={() => setAssigning(true)}>
+                Assign
+              </button>
+            )}
+            {canAskForPool && (
+              <button className="sf-button brand" onClick={() => setAsking(true)}>
+                Request Assignment
+              </button>
+            )}
+            {!summaryOnly && (
+              <button className="sf-button" onClick={sendEmail}>
+                Send Email
+              </button>
+            )}
             {/* New Task is in the Activity tab (the same form, already linked to this record) */}
             {canConvert && lead && !closed && (
               <button className="sf-button" onClick={() => convert(item.id)}>
                 Convert
               </button>
             )}
-            {canEdit && !closed && (
+            {canWork && !closed && (
               <button className="sf-button" onClick={() => setModal({ type: "lost", collection, record: item })}>
                 Mark as Lost
               </button>
@@ -311,12 +341,12 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
                   onClick: () => setModal({ type: "transfer", record: item }),
                 },
                 canRequest && { label: "Request Transfer", onClick: () => setAsking(true) },
-                canEdit && lead && item.stage === "Demo" && {
+                canWork && lead && item.stage === "Demo" && {
                   label: "Reschedule / Cancel Demo",
                   onClick: () => setModal({ type: "cancelDemo", record: item }),
                 },
                 // not eligible: closes the lead with a reason (it can be reopened later)
-                canEdit && lead && !closed && {
+                canWork && lead && !closed && {
                   label: "Mark as Unqualified",
                   onClick: () => setModal({ type: "unqualified", record: item }),
                 },
@@ -366,15 +396,27 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
           stepState={stepState}
           current={item.stage}
           closed={closed}
-          onSelect={canEdit ? selectStage : () => {}}
+          onSelect={canWork ? selectStage : () => {}}
           lostLabel={item.stage === "Lost" ? (lead ? "Lost" : "Closed Lost") : null}
         />
-        {!canEdit && !closed && (
+        {pooled && !closed && (
+          <span className="read-only-note pool-note">
+            <Icon name="lock" size={14} /> In the Unassigned Pool: no owner yet.{" "}
+            {canAssign
+              ? "Assign it to a Salesperson before its status can change."
+              : canRequestPool(user)
+                ? askedAlready
+                  ? "You have asked for it: your Manager or the Admin decides."
+                  : "Request it if you should work on it: your Manager or the Admin decides."
+                : "The Admin or a Manager assigns it."}
+          </span>
+        )}
+        {!canEdit && !pooled && !closed && (
           <span className="read-only-note">
             <Icon name="lock" size={14} /> Owned by {item.owner}. Only the owner or a Manager can change it.
           </span>
         )}
-        {canEdit && !closed && nextStage && (nextStage !== "Converted" || canConvert) && (
+        {canWork && !closed && nextStage && (nextStage !== "Converted" || canConvert) && (
           <button className="sf-button brand" onClick={() => selectStage(nextStage)}>
             <Icon name="check" size={14} />
             {nextStage === "Converted" ? "Convert" : nextStage === "Won" ? "Mark as Won" : `Mark ${lead ? "Status" : "Stage"} as Complete`}
@@ -412,6 +454,8 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
               collection={collection}
               emails={emails}
               sendEmail={sendEmail}
+              canAddTask={!pooled}
+              canEmail={!summaryOnly}
               addFiles={
                 !lead && canEdit && ATTACHMENT_UPLOAD_STAGES.includes(item.stage)
                   ? () => window.dispatchEvent(new Event(PICK_ATTACHMENTS))
@@ -422,6 +466,11 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
             <>
               <Section title="Lead Information">
                 <Field label="Lead Owner">{item.owner}</Field>
+                {summaryOnly && (
+                  <Field label="Contact Details">
+                    <span className="muted">Shown to the lead&apos;s owner once it is assigned</span>
+                  </Field>
+                )}
                 <Field label="Lead Status"><StageBadge stage={item.stage} /></Field>
                 <Field label="Name" onEdit={editField}>
                   {[item.salutation, item.first_name, item.last_name].filter(Boolean).join(" ")}
@@ -470,7 +519,12 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
                 </Section>
               )}
               <Section title="System Information">
+                <Field label="Created By">{item.created_by_name}</Field>
                 <Field label="Created">{dateTime(item.created_at)}</Field>
+                {/* when the current owner got the lead (an older lead's assignment date wasn't recorded) */}
+                <Field label="Assigned Date">
+                  {pooled ? "Not assigned yet" : item.owner_since ? dateTime(item.owner_since) : <span className="muted">Not recorded</span>}
+                </Field>
                 <Field label="Last Modified">{dateTime(item.updated_at)}</Field>
                 <Field label="Last Transferred">
                   {transfers[0] && `${dateTime(transfers[0].transferred_at)} (to ${transfers[0].to_user_name})`}
@@ -542,9 +596,11 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
             title={`Notes (${item.notes.length})`}
             icon="note"
             actions={
-              <button className="sf-button small" onClick={() => setModal({ type: "note", collection, record: item })}>
-                New
-              </button>
+              !summaryOnly && (
+                <button className="sf-button small" onClick={() => setModal({ type: "note", collection, record: item })}>
+                  New
+                </button>
+              )
             }
           >
             {item.notes.length ? (
@@ -563,12 +619,13 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
             )}
           </Card>
           {lead && requests.length > 0 && (
-            <Card title={`Transfer Requests (${requests.length})`} icon="contact">
+            <Card title={`${pooled || requests.some((r) => r.pool) ? "Requests" : "Transfer Requests"} (${requests.length})`} icon="contact">
               <TransferRequestList
                 rows={requests}
                 onChange={(saved) => {
                   loadRequests();
-                  if (saved?.status === "Approved") reload?.(); // the lead has a new owner
+                  // the lead has a new owner (or someone else decided first: the page is loaded again)
+                  if (!saved || saved.status === "Approved") reload?.();
                 }}
               />
             </Card>
@@ -580,17 +637,23 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
                   {transfers.map((t) => (
                     <li key={t.id}>
                       <b>
-                        {t.from_user_name || "Unassigned"} → {t.to_user_name}
+                        {t.from_user_name || (t.from_user_id == null ? "Unassigned Pool" : "Unassigned")} → {t.to_user_name}
                       </b>
                       {t.note && <p className="history-note">{t.note}</p>}
                       <small>
+                        {t.from_user_id == null ? "Assigned by " : ""}
                         {t.transferred_by_name} • {dateTime(t.transferred_at)}
+                        {t.request_id ? ` • Request #${t.request_id}` : ""}
                       </small>
                     </li>
                   ))}
                 </ul>
               ) : (
-                <p className="muted pad">Not transferred yet. Owned by {item.owner} since {dateTime(item.created_at)}.</p>
+                <p className="muted pad">
+                  {pooled
+                    ? `In the Unassigned Pool since ${dateTime(item.created_at)}: not assigned yet.`
+                    : `Not transferred yet. Owned by ${item.owner} since ${dateTime(item.created_at)}.`}
+                </p>
               )}
             </Card>
           )}
@@ -611,11 +674,24 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
       </div>
       {asking && (
         <RequestTransferDialog
-          lead={{ id: item.id, name: item.name, owner_name: item.owner }}
+          lead={{ id: item.id, name: item.name, owner_name: pooled ? null : item.owner, pool: pooled }}
           onClose={() => setAsking(false)}
           onDone={() => {
             setAsking(false);
             loadRequests();
+          }}
+        />
+      )}
+      {assigning && (
+        <AssignLeadDialog
+          lead={{ id: item.id, name: item.name }}
+          user={user}
+          users={data.users || []}
+          onClose={() => setAssigning(false)}
+          onDone={() => {
+            setAssigning(false);
+            loadRequests();
+            reload?.(); // the lead has an owner now
           }}
         />
       )}

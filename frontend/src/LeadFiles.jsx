@@ -9,9 +9,14 @@ import { amount } from "./format";
 import { Icon } from "./ui";
 
 const SAMPLE_LEADS = [
-  "First Name,Last Name,Title,Company,Email,Phone,Person Linkedin Url,Website,Company Linkedin Url,Annual Revenue,# Employees,City,State,Country,Lead Source,Lead Owner",
-  "Priya,Menon,Head of Operations,Brightline Logistics,priya.menon@brightline.example,+1 512 555 0100,https://www.linkedin.com/in/priya-menon,https://brightline.example,https://www.linkedin.com/company/brightline,12500000,250,Austin,Texas,United States,Website,",
+  "First Name,Last Name,Title,Company,Email,Phone,Person Linkedin Url,Website,Company Linkedin Url,Annual Revenue,# Employees,City,State,Country,Lead Source",
+  "Priya,Menon,Head of Operations,Brightline Logistics,priya.menon@brightline.example,+1 512 555 0100,https://www.linkedin.com/in/priya-menon,https://brightline.example,https://www.linkedin.com/company/brightline,12500000,250,Austin,Texas,United States,Website",
 ].join("\n");
+// Every uploaded lead starts with no owner, whoever uploads it: the uploader is its Created By. A Lead Owner column in
+// the file isn't used (the server ignores any owner sent with an upload too).
+export const POOL_UPLOAD_NOTE =
+  "Uploaded leads go to the Unassigned Pool, with no owner. The Admin or a Manager assigns each lead to a Salesperson; " +
+  "Salespeople can request one from Unassigned Leads. You are recorded as Created By.";
 const SAMPLE_OPPS = [
   "Opportunity Name,Company,Amount,Close Date,Stage,Contact Name,Contact Email,Lost Reason",
   "Brightline CRM rollout,Brightline Logistics,45000,2026-12-15,Proposal,Priya Menon,priya.menon@brightline.example,",
@@ -23,7 +28,7 @@ const OBJECTS = {
     one: "lead",
     sample: SAMPLE_LEADS,
     intro: "Import leads from an Excel (.xlsx) or CSV file.",
-    rules: ["Required: Last Name, Company", "Email must match the company website", "Emails already in the CRM are skipped", "Leads start at New"],
+    rules: ["Required: Last Name, Company", "Email must match the company website", "Emails already in the CRM are skipped", "Leads start at New, in the Unassigned Pool"],
     columns: [
       ["Name", (l) => [l.first_name, l.last_name].filter(Boolean).join(" ")],
       ["Title", (l) => l.title],
@@ -198,17 +203,12 @@ function UploadDone({ result, word }) {
 export function UploadLeads({ object = "leads", user, data, onClose, onDone, notify }) {
   const info = OBJECTS[object];
   const admin = user.role === "Admin";
-  // leads: anyone who uploads can assign them to teammates (each person is told); opportunities: Reassign owner
-  const canAssign = object === "leads" || admin || can(user, "reassign_owner");
+  const leads = object === "leads";
+  // opportunities: who owns them (Reassign owner). Leads have no owner choice: they go to the Unassigned Pool
+  const canAssign = !leads && (admin || can(user, "reassign_owner"));
   const owners = (data.users || []).filter((u) => u.is_active !== false && u.role !== "Admin");
   const [file, setFile] = useState(null);
   const [owner, setOwner] = useState(admin ? "" : String(user.id));
-  // Leads only: who owns them, as in Salesforce's Data Import Wizard
-  const [assign, setAssign] = useState("one");
-  const [team, setTeam] = useState([]); // "even": the people to share between
-  const [quota, setQuota] = useState([{ id: "", count: "" }]); // "counts": how many leads each person gets
-  const leads = object === "leads";
-  const changed = (fn) => (...args) => (fn(...args), setCheck(null));
   const [check, setCheck] = useState(null);
   const [done, setDone] = useState(null); // the result after uploading, kept on screen when rows were skipped
   const [busy, setBusy] = useState("");
@@ -222,35 +222,18 @@ export function UploadLeads({ object = "leads", user, data, onClose, onDone, not
   };
   const send = async (dryRun) => {
     if (!file) return setError("Choose an Excel (.xlsx) or CSV file.");
-    if (assign === "even" && team.length < 1) return setError("Choose the people to share the leads between.");
-    const quotaRows = quota.filter((q) => q.id || q.count);
-    if (assign === "counts") {
-      if (!quotaRows.length) return setError("Choose who gets how many leads.");
-      if (quotaRows.some((q) => !q.id || !(Number(q.count) >= 1))) return setError("Give each person a number of leads (1 or more).");
-      if (new Set(quotaRows.map((q) => q.id)).size !== quotaRows.length) return setError("Each person can be listed once.");
-    }
-    if (assign !== "even" && admin && !owner)
-      return setError(assign === "column"
-        ? "Choose who gets the rows without a Lead Owner."
-        : `Choose who will own the uploaded ${info.label.toLowerCase()}.`);
+    if (!leads && admin && !owner) return setError(`Choose who will own the uploaded ${info.label.toLowerCase()}.`);
     setBusy(dryRun ? "check" : "upload");
     setError("");
     try {
-      const result = await api.importData(object, file, {
-        ownerId: assign === "even" ? "" : owner,
-        dryRun,
-        ...(leads
-          ? {
-              assign,
-              ownerIds: assign === "even" ? team : [],
-              counts: assign === "counts" ? quotaRows.map((q) => `${q.id}:${Number(q.count)}`) : [],
-            }
-          : {}),
-      });
+      // leads: no owner is sent (the Unassigned Pool)
+      const result = await api.importData(object, file, { ownerId: leads ? "" : owner, dryRun });
       if (dryRun) setCheck(result);
       else {
         const word = result.created === 1 ? info.one : info.label.toLowerCase();
-        notify(`${n(result.created)} ${word} uploaded and assigned to ${result.owner}.`);
+        notify(leads
+          ? `${n(result.created)} ${word} uploaded to the Unassigned Pool.`
+          : `${n(result.created)} ${word} uploaded and assigned to ${result.owner}.`);
         if (result.errors?.length || result.warnings?.length) setDone(result);
         else onDone();
       }
@@ -323,7 +306,7 @@ export function UploadLeads({ object = "leads", user, data, onClose, onDone, not
       <button type="button" className="link sample-link" onClick={() => saveText(`SalesTrack-${object}-upload-sample.csv`, info.sample)}>
         Download sample file
       </button>
-      {canAssign && !leads && (
+      {canAssign && (
         <label className="field">
           <span>
             Owner <i>*</i>
@@ -338,102 +321,11 @@ export function UploadLeads({ object = "leads", user, data, onClose, onDone, not
           </select>
         </label>
       )}
-      {canAssign && leads && (
-        <fieldset className="assign-box" disabled={!!busy}>
-          <legend>Assign leads</legend>
-          {[
-            ["one", "Assign all to one person"],
-            ["column", "Use the Lead Owner column in the file", "The owner's email or full name. Rows without one go to:"],
-            ["even", "Share evenly between people (round-robin)"],
-            ["counts", "Set how many each person gets", "The rest of the leads go to:"],
-          ].map(([value, label, hint]) => (
-            <div key={value} className={`assign-option ${assign === value ? "on" : ""}`}>
-              <label className="assign-choice">
-                <input type="radio" name="assign" value={value} checked={assign === value} onChange={changed(() => setAssign(value))} />
-                <span>{label}</span>
-              </label>
-              {assign === value && value === "counts" && (
-                <div className="assign-detail assign-quota">
-                  {quota.map((q, i) => (
-                    <div key={i} className="quota-row">
-                      <select
-                        value={q.id}
-                        aria-label={`Person ${i + 1}`}
-                        onChange={changed((e) => setQuota((all) => all.map((x, j) => (j === i ? { ...x, id: e.target.value } : x))))}
-                      >
-                        <option value="">Choose a teammate</option>
-                        {owners.map((u) => (
-                          <option key={u.id} value={u.id} disabled={quota.some((x, j) => j !== i && x.id === String(u.id))}>
-                            {u.full_name} ({u.role})
-                          </option>
-                        ))}
-                      </select>
-                      <input
-                        type="number"
-                        min="1"
-                        placeholder="Leads"
-                        aria-label={`How many leads for person ${i + 1}`}
-                        value={q.count}
-                        onChange={changed((e) => setQuota((all) => all.map((x, j) => (j === i ? { ...x, count: e.target.value } : x))))}
-                      />
-                      {quota.length > 1 && (
-                        <button
-                          type="button"
-                          className="link"
-                          aria-label={`Remove person ${i + 1}`}
-                          onClick={changed(() => setQuota((all) => all.filter((_, j) => j !== i)))}
-                        >
-                          Remove
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                  <button type="button" className="link" onClick={() => setQuota((all) => [...all, { id: "", count: "" }])}>
-                    + Add person
-                  </button>
-                  <small>
-                    {(() => {
-                      const total = quota.reduce((sum, q) => sum + (Number(q.count) || 0), 0);
-                      return total ? `${n(total)} leads assigned in file order (top rows first).` : "Rows are given out in file order.";
-                    })()}
-                  </small>
-                </div>
-              )}
-              {assign === value && value !== "even" && (
-                <div className="assign-detail">
-                  {hint && <small>{hint}</small>}
-                  <select value={owner} onChange={changed((e) => setOwner(e.target.value))} aria-label={value === "one" ? "Owner" : "Default owner"}>
-                    {admin && <option value="">Choose a Manager or Salesperson</option>}
-                    {owners.map((u) => (
-                      <option key={u.id} value={u.id}>
-                        {u.full_name} ({u.role})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-              {assign === value && value === "even" && (
-                <div className="assign-detail assign-people">
-                  {owners.map((u) => (
-                    <label key={u.id} className={`person-chip ${team.includes(String(u.id)) ? "on" : ""}`}>
-                      <input
-                        type="checkbox"
-                        checked={team.includes(String(u.id))}
-                        onChange={changed((e) =>
-                          setTeam((t) => (e.target.checked ? [...t, String(u.id)] : t.filter((id) => id !== String(u.id)))),
-                        )}
-                      />
-                      {u.full_name}
-                    </label>
-                  ))}
-                  <small>{team.length ? `${team.length} selected · leads are shared in turn` : "Pick two or more people"}</small>
-                </div>
-              )}
-            </div>
-          ))}
-        </fieldset>
+      {leads && (
+        <p className="pool-upload-note" role="note">
+          <Icon name="user" size={14} /> {POOL_UPLOAD_NOTE}
+        </p>
       )}
-      {!canAssign && leads && <p className="field-hint">The uploaded leads will be assigned to you.</p>}
       {check && (
         <div className="upload-check">
           <div className="upload-counts">
@@ -450,6 +342,8 @@ export function UploadLeads({ object = "leads", user, data, onClose, onDone, not
             )}
           </div>
           <IssueList result={check} file={check.file} />
+          {/* leads: an owner or Lead Owner column the server didn't use (the pool itself is explained above) */}
+          {check.pool && check.owner_ignored && <p className="field-hint pool-upload-check">{check.owner_ignored}</p>}
           {check.owners?.length > 0 && (
             <div className="owner-split" aria-label="Owners">
               {check.assign_note && <small className="assign-note">{check.assign_note}</small>}

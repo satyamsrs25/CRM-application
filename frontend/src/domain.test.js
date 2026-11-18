@@ -35,6 +35,8 @@ import {
   stageNoteMessage,
   leadBoardColumns,
   leadStageAction,
+  isPooledLead,
+  POOL_CANT_CONVERT,
   TASK_SUBJECT_REQUIRED,
   TASK_DUE_REQUIRED,
   stageTaskNeeded,
@@ -345,19 +347,28 @@ test("every stage change popup has a required note; creating and editing records
 });
 test("the Leads board has seven columns in order; Converted, Unqualified and Lost are closed; the list view decides which can fill", () => {
   const all = leadBoardColumns("all", null);
-  assert.deepEqual(all.map((c) => c.stage), ["Unqualified", "New", "Nurturing", "Revisit", "Demo", "Converted", "Lost"]);
+  // the Unassigned column (the Unassigned Pool) comes first, before Unqualified
+  assert.deepEqual(all.map((c) => c.stage), ["Unassigned", "Unqualified", "New", "Nurturing", "Revisit", "Demo", "Converted", "Lost"]);
+  assert.deepEqual(all.filter((c) => c.pool).map((c) => c.stage), ["Unassigned"]);
   assert.deepEqual(all.filter((c) => c.closed).map((c) => c.stage), ["Unqualified", "Converted", "Lost"]);
   assert.ok(all.every((c) => c.excluded === ""));
-  const excluded = (view, stage) => leadBoardColumns(view, stage).filter((c) => c.excluded).map((c) => c.stage);
+  const excluded = (view, stage, owner) => leadBoardColumns(view, stage, owner).filter((c) => c.excluded).map((c) => c.stage);
   const open = ["New", "Nurturing", "Revisit", "Demo"];
   assert.deepEqual(excluded("all_open"), ["Unqualified", "Converted", "Lost"]);
-  assert.deepEqual(excluded("my_open"), ["Unqualified", "Converted", "Lost"]);
-  assert.deepEqual(excluded("converted"), ["Unqualified", ...open, "Lost"]);
-  assert.deepEqual(excluded("lost"), ["Unqualified", ...open, "Converted"]);
-  assert.deepEqual(excluded("unqualified"), [...open, "Converted", "Lost"]);
-  assert.deepEqual(excluded("revisit_due"), ["Unqualified", "New", "Nurturing", "Demo", "Converted", "Lost"]);
+  assert.deepEqual(excluded("my_open"), ["Unassigned", "Unqualified", "Converted", "Lost"]); // only my own leads
+  assert.deepEqual(excluded("converted"), ["Unassigned", "Unqualified", ...open, "Lost"]);
+  assert.deepEqual(excluded("lost"), ["Unassigned", "Unqualified", ...open, "Converted"]);
+  assert.deepEqual(excluded("unqualified"), ["Unassigned", ...open, "Converted", "Lost"]);
+  assert.deepEqual(excluded("revisit_due"), ["Unassigned", "Unqualified", "New", "Nurturing", "Demo", "Converted", "Lost"]);
   assert.deepEqual(excluded("uploaded"), []);
-  assert.deepEqual(excluded("all", "Demo"), ["Unqualified", "New", "Nurturing", "Revisit", "Converted", "Lost"]); // the Lead Status filter
+  assert.deepEqual(excluded("my_uploaded"), ["Unassigned"]);
+  assert.deepEqual(excluded("all", "Demo"), ["Unassigned", "Unqualified", "New", "Nurturing", "Revisit", "Converted", "Lost"]); // the Lead Status filter
+  assert.deepEqual(excluded("all", "New"), ["Unqualified", "Nurturing", "Revisit", "Demo", "Converted", "Lost"]);
+  // the Unassigned Leads view and the Owner filter: the pool column alone, or every column but the pool
+  assert.deepEqual(excluded("unassigned"), ["Unqualified", ...open, "Converted", "Lost"]);
+  assert.deepEqual(excluded("all", null, "unassigned"), ["Unqualified", ...open, "Converted", "Lost"]);
+  assert.deepEqual(excluded("all", null, "12"), ["Unassigned"]);
+  assert.equal(leadBoardColumns("all", null, "12")[0].excluded, "Hidden by the Owner filter");
   assert.equal(leadBoardColumns("all_open", "Demo").find((c) => c.stage === "New").excluded, "Hidden by the Lead Status filter");
   assert.equal(leadBoardColumns("all_open", null).find((c) => c.stage === "Lost").excluded, "Not in this list view");
 });
@@ -369,6 +380,21 @@ test("stage order: skipped stages must be confirmed, Revisit is optional, going 
   assert.deepEqual(skippedStages(OPPORTUNITY_FLOW, "Opportunity", "Proposal"), ["Discovery"]);
   assert.deepEqual(skippedStages(OPPORTUNITY_FLOW, "Opportunity", OPPORTUNITY_FLOW.length), ["Discovery", "Proposal"]);
   assert.deepEqual(skippedStages(OPPORTUNITY_FLOW, "Proposal", OPPORTUNITY_FLOW.length), []);
+});
+test("a pooled lead can't be converted from the Leads list either, whoever ticks it", () => {
+  const pooled = { id: 9, stage: "New", owner_id: null, in_pool: true };
+  const all = () => ({ canEdit: true, canCreateSales: true });
+  assert.deepEqual(leadConvertChoice([pooled], all), { reason: POOL_CANT_CONVERT });
+  assert.equal(leadConvertChoice([{ ...pooled, owner_id: 4, in_pool: false }], all).action.type, "convert");
+});
+test("a pooled lead (no owner) never moves on the board, whoever drags it", () => {
+  const pooled = { id: 9, stage: "New", owner_id: null, in_pool: true };
+  const both = { canEdit: true, canConvert: true };
+  for (const stage of ["Unassigned", "Nurturing", "Demo", "Converted", "Lost", "Unqualified"])
+    assert.equal(leadStageAction(pooled, stage, both), null);
+  assert.ok(isPooledLead(pooled) && isPooledLead({ owner_id: null }) && !isPooledLead({ owner_id: 4 }) && !isPooledLead({}));
+  // once assigned it moves as before
+  assert.deepEqual(leadStageAction({ ...pooled, owner_id: 4, in_pool: false }, "Nurturing", both).type, "stage");
 });
 test("a lead card opens the existing popups and only for moves the lead page allows", () => {
   const lead = { id: 7, stage: "Nurturing" };
@@ -1023,6 +1049,22 @@ test("Leads selection actions: only with leads ticked, keeping Convert's one-lea
   assert.equal(byKey(actions([lead(1)], seller)).delete.disabled, false); // within the limit
 });
 
+test("Leads selection bar: a Salesperson requests the ticked pooled leads (requests only, up to 500)", () => {
+  const choice = { reason: "x" };
+  const keys = (extra) => leadSelectionActions({ count: 3, convertChoice: choice, canCampaign: true, canTransfer: true, ...extra }).map((a) => a.key);
+  assert.deepEqual(keys({}), ["convert", "campaign", "transfer", "delete"]); // nobody else gets it
+  assert.deepEqual(keys({ canRequest: true }), ["request", "convert", "campaign", "transfer", "delete"]); // pooled leads ticked
+  assert.deepEqual(keys({ poolOnly: true }), ["request"]); // Unassigned Leads: the only thing a Salesperson can do there
+  const [request] = leadSelectionActions({ count: BULK_LIMIT + 1, convertChoice: choice, poolOnly: true });
+  assert.equal(request.label, "Request Assignment");
+  assert.equal(request.disabled, true);
+  assert.equal(request.reason, "Up to 500 leads at a time");
+  // only the ticked leads are sent (never the whole pool), and only to the request endpoint
+  const table = source("./LeadsTable.jsx");
+  assert.match(table, /request: \(\) => setPoolRequest\(\[\.\.\.selected\]\)/);
+  assert.match(source("./api.js"), /requestPoolLeads: \(lead_ids, reason\) => apiRequest\("\/transfer-requests\/bulk"/);
+});
+
 test("Leads selection bar: shown only in the list with leads ticked; Convert's popup and warning are wired as before", () => {
   const leads = source("./LeadsTable.jsx");
   assert.match(leads, /const selecting = !kanban && selected\.size > 0;/);
@@ -1609,7 +1651,9 @@ test("Leads Kanban: only the latest request of a column is shown", () => {
 test("Leads Kanban: every column pages through the server query, with the List page's filters and page sizes", () => {
   const table = source("./LeadsTable.jsx");
   assert.doesNotMatch(table, /BOARD_CARDS|limit: 100/); // no fixed first 100 cards
-  assert.match(table, /load\(\{ stage: column, offset: at \* cardSize, limit: cardSize \}\)/);
+  assert.match(table, /load\(\{ \.\.\.columnQuery\(col\), offset: at \* cardSize, limit: cardSize \}\)/);
+  // the Unassigned column asks for the pool; the stage columns then leave pooled leads out (each lead shown once)
+  assert.match(table, /column\.pool \? \{ owner: POOL_OWNER \} : \{ stage: column\.stage, \.\.\.\(poolShown \? \{ assigned: "true" \} : \{\}\) \}/);
   assert.match(table, /if \(!requests\.current\.isLatest\(column, id\)\) return;/);
   assert.match(table, /const fixed = clampPage\(at, r\.total, cardSize\);/);
   assert.match(table, /\{defs\.map\(\(def\) => \(\s+<FilterButton key=\{def\.key\} def=\{def\} values=\{filters\} onChange=\{onFilter\} \/>/);
@@ -1739,8 +1783,8 @@ test("Home: one dashboard per role, each card with its permission", async () => 
 
 test("Lead transfer requests, the lead list's Created By / Transferred To, and duplicate warnings", () => {
   const table = source("./LeadsTable.jsx");
-  assert.doesNotMatch(table, /"Created By"/); // the owner who added a lead is its Owner: only Owner and Transferred To
-  assert.match(table, /\["Transferred To", "transferred", \d+\]/);
+  // Created By is back, just before Created (uploads go to the Unassigned Pool: whoever added a lead isn't always its owner)
+  assert.match(table, /\["Transferred To", "transferred", \d+\],[^\]]*\["Created By", "created_by", \d+\],\s*\["Created", "created", \d+\]/);
   assert.match(table, /l\.last_transferred_to/);
   const api = source("./api.js");
   for (const path of ["/transfer-requests`", "/transfer-requests?box=", "/cancel`", "/accounts/duplicates?", "/contacts/duplicates?"])
@@ -2327,8 +2371,8 @@ test("Leads table: no Wrap text; cut-off names, companies, emails and owners ope
   assert.doesNotMatch(table, /setWrap|tool-toggle|"wrap"|>\s*Wrap text/);
   for (const label of ["name", "company", "title", "email", "owner"])
     assert.match(table, new RegExp(`label="${label}"`), label);
-  // Owner and Transferred To (no Created By column): the Owner keeps the preview; every row cell has its column
-  assert.doesNotMatch(table, /label="creator"|created_by_name/);
+  // Owner, Transferred To and Created By: the Owner and Created By keep the preview; every row cell has its column
+  assert.match(table, /value=\{l\.created_by_name\} label="creator"/);
   assert.match(table, /<PhoneReveal value=\{l\.phone\} \/>/); // the phone keeps its own mask and eye button
   assert.doesNotMatch(table, /value=\{l\.phone\}\s+label=/);
   assert.match(table, /<CellPreview ref=\{preview\} \/>/);

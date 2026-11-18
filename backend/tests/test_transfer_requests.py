@@ -62,7 +62,8 @@ def test_request_needs_the_owners_approval(client):
     assert (transfer.from_user_id, transfer.to_user_id, transfer.transferred_by_id) == (PRIYA, RAVI, PRIYA)
     assert "Transfer request approved by Priya Sharma" in transfer.note
     assert "Lead assigned to you" in titles(RAVI)
-    assert client.post(f"/api/transfer-requests/{request['id']}/approve", json={}).status_code == 400  # decided already
+    # decided already: a conflict (409), so a second approval never moves the lead again
+    assert client.post(f"/api/transfer-requests/{request['id']}/approve", json={}).status_code == 409
 
 
 def test_rejecting_needs_a_reason_and_keeps_the_lead(client):

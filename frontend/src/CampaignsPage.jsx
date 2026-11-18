@@ -241,6 +241,8 @@ export function NewCampaign({ user, users = [], leadIds = null, onClose, onCreat
     [reasons.unsubscribed, "unsubscribed"],
     [reasons.invalid, "bounced before"],
     [reasons.no_email, "no email"],
+    // pooled leads or other people's leads (also when typed in): only their owner, a Manager or the Admin emails them
+    [reasons.not_allowed, "not yours to email"],
     [reasons.other, "duplicate"],
   ].filter(([count]) => count);
   return (

@@ -43,7 +43,9 @@ def test_email_on_another_domain_is_kept_with_a_note(client):
     body = res.json()
     assert body["created"] == 2 and body["with_blanks"] == 1
     assert "on another domain than the company website (acme-example.com)" in body["warnings"][0]["reason"]
-    emails = {l["last_name"]: l["email"] for l in client.get("/api/leads/page").json()["items"]}
+    # uploaded leads are in the Unassigned Pool; the Manager sees their details there
+    emails = {l["last_name"]: l["email"] for l in login_as(client, 1).get(
+        "/api/leads/page", params={"view": "unassigned"}).json()["items"]}
     assert emails == {"Iyer": "asha@acme-group.example", "Cole": "ben@acme-example.com"}
 
 
@@ -58,71 +60,52 @@ def test_emails_already_in_the_crm_are_skipped_whatever_the_stage(client):
     assert "old@acme-example.com is already in the CRM" in body["errors"][0]["reason"]
 
 
-def test_a_salesperson_can_assign_uploads_to_teammates(client):
-    login_as(client, 2)  # Ravi, Salesperson
-    assert upload(client, rows(2), dry_run=True).json()["owners"] == [{"id": 2, "name": "Ravi Kumar", "count": 2}]
-    assert upload(client, rows(2), dry_run=True, owner_id="1").json()["owners"] == [{"id": 1, "name": "Priya Sharma", "count": 2}]
-    assert upload(client, rows(2), dry_run=True, assign="even", owner_ids=[2, 1]).status_code == 200
-    assert upload(client, rows(2), dry_run=True, owner_id="3").status_code == 400  # the Admin doesn't own leads
-
-
-def test_set_how_many_each_person_gets_and_they_are_told(client):
+def test_uploads_go_to_the_unassigned_pool_whatever_owner_is_sent(client):
+    """Every uploaded lead starts with no owner (the Unassigned Pool), whoever uploads it. An owner sent with the
+    upload (the old one / even / counts choices) is not used: the result says so, and the uploader is Created By."""
     tara = add_salesperson(client, "Tara Nair", "tara@crm.test")
     ravi = login_as(client, 2)
-    res = upload(ravi, rows(6), dry_run=True, assign="counts", counts=[f"{tara}:3", "1:2"])
-    assert res.status_code == 200, res.text
-    body = res.json()
-    assert body["owners"] == [{"id": tara, "name": "Tara Nair", "count": 3}, {"id": 1, "name": "Priya Sharma", "count": 2},
-                              {"id": 2, "name": "Ravi Kumar", "count": 1}]
-    assert body["assign_note"] == "The other 1 go to Ravi Kumar."
-    done = upload(ravi, rows(6), assign="counts", counts=[f"{tara}:3", "1:2"]).json()
-    assert done["created"] == 6
-    got = owners_of(client, *[f"Row{i}" for i in range(6)])
-    assert [got[f"Row{i}"] for i in range(6)] == [tara, tara, tara, 1, 1, 2]
-    bell = login_as(client, tara).get("/api/notifications").json()
-    assert any(n["title"] == "Leads assigned to you" and "Ravi Kumar uploaded 3 leads" in n["message"] for n in bell)
-    # asking for more than the file has: the last people get fewer, and the screen says so
-    short = upload(login_as(client, 2), rows(2, prefix="Short"), dry_run=True, assign="counts", counts=["1:5"]).json()
-    assert short["owners"] == [{"id": 1, "name": "Priya Sharma", "count": 2}] and "asked for 5" in short["assign_note"]
-    assert upload(client, rows(1), dry_run=True, assign="counts", counts=["1:0"]).status_code == 400
-    assert upload(client, rows(1), dry_run=True, assign="counts").status_code == 400
+    for form in ({}, {"owner_id": "1"}, {"assign": "even", "owner_ids": [2, tara]},
+                 {"assign": "counts", "counts": [f"{tara}:1"]}, {"owner_id": "3"}):
+        res = upload(ravi, rows(2), dry_run=True, **form)
+        assert res.status_code == 200, (form, res.text)
+        body = res.json()
+        assert (body["owner"], body["owners"], body["pool"]) == ("Unassigned Pool", [], True)
+        assert all(p["owner_name"] == "Unassigned Pool" for p in body["preview"])
+        assert "Unassigned Pool" in body["assign_note"]
+        assert ("owner chosen for this upload was not used" in body["assign_note"]) == bool(form)
+    done = upload(ravi, rows(3), owner_id=str(tara), assign="one").json()
+    assert done["created"] == 3
+    got = owners_of(client, "Row0", "Row1", "Row2")
+    assert got == {"Row0": None, "Row1": None, "Row2": None}
+    items = login_as(client, 1).get("/api/leads/page", params={"view": "unassigned"}).json()["items"]
+    assert {(l["created_by_id"], l["owner_name"], l["in_pool"]) for l in items} == {(2, None, True)}
+    # nobody is told leads were assigned to them (none were)
+    for user in (tara, 1, 2):
+        bell = login_as(client, user).get("/api/notifications").json()
+        assert not any(n["title"] in ("Leads assigned to you", "Leads created for your team") for n in bell)
 
 
-def test_share_evenly_round_robin(client):
-    tara = add_salesperson(client, "Tara Nair", "tara@crm.test")
-    manager = login_as(client, 1)  # Priya, Manager: may assign to others
-    res = upload(manager, rows(5), assign="even", owner_ids=[2, tara])
-    assert res.status_code == 200, res.text
-    assert res.json()["owners"] == [{"id": 2, "name": "Ravi Kumar", "count": 3}, {"id": tara, "name": "Tara Nair", "count": 2}]
-    got = owners_of(client, *[f"Row{i}" for i in range(5)])
-    assert [got[f"Row{i}"] for i in range(5)] == [2, tara, 2, tara, 2]
-    # each owner gets one "Leads assigned to you" notification with their count
-    ravi_bell = login_as(client, 2).get("/api/notifications").json()
-    assert any(n["title"] == "Leads assigned to you" and "uploaded 3 leads" in n["message"] for n in ravi_bell)
-    manager = login_as(client, 1)
-    assert upload(manager, rows(1), assign="even", owner_ids=[3]).status_code == 400  # the Admin doesn't own leads
-    assert upload(manager, rows(1), assign="even").status_code == 400  # nobody chosen
-
-
-def test_lead_owner_column_by_email_or_name_with_a_default(client):
+def test_a_lead_owner_column_is_not_used(client):
     tara = add_salesperson(client, "Tara Nair", "tara@crm.test")
     data = [["A", "ByEmail", "Acme", "byemail@acme-example.com", "acme-example.com", "TARA@crm.test"],
             ["A", "ByName", "Acme", "byname@acme-example.com", "acme-example.com", "ravi kumar"],
-            ["A", "Blank", "Acme", "blank@acme-example.com", "acme-example.com", ""],
-            ["A", "Unknown", "Acme", "unknown@acme-example.com", "acme-example.com", "Nobody Here"],
-            ["A", "AdminRow", "Acme", "adminrow@acme-example.com", "acme-example.com", "Asha Rao"]]
-    res = upload(login_as(client, 3), data, assign="column", owner_id=str(tara))  # the Admin, default owner Tara
+            ["A", "Blank", "Acme", "blank@acme-example.com", "acme-example.com", ""]]
+    res = upload(login_as(client, 3), data, assign="column", owner_id=str(tara))  # the Admin: the same pool
     assert res.status_code == 200, res.text
-    got = owners_of(client, "ByEmail", "ByName", "Blank", "Unknown", "AdminRow")
-    assert got == {"ByEmail": tara, "ByName": 2, "Blank": tara, "Unknown": tara, "AdminRow": tara}
-    notes = {w["row"]: w["reason"] for w in res.json()["warnings"]}
-    assert "Owner 'Nobody Here' isn't an active Manager or Salesperson; assigned to Tara Nair" in notes[5]
-    # the column is needed for this choice
+    body = res.json()
+    assert body["created"] == 3 and body["owner"] == "Unassigned Pool"
+    assert "Lead Owner" in body["columns_ignored"] and "Lead Owner" not in body["columns_used"]
+    assert '"Lead Owner" column was not used' in body["assign_note"]
+    assert body["owner_ignored"].startswith("The file's \"Lead Owner\" column was not used")
+    assert not any("Owner" in w["reason"] for w in body["warnings"])
+    assert owners_of(client, "ByEmail", "ByName", "Blank") == {"ByEmail": None, "ByName": None, "Blank": None}
+    # an upload without that column still works (it was required for the old "column" choice)
     out = io.StringIO()
     csv.writer(out).writerows([["Last Name", "Company"], ["NoOwner", "Acme"]])
     res = login_as(client, 1).post("/api/leads/import", data={"assign": "column", "dry_run": "true"},
                                    files={"file": ("x.csv", out.getvalue().encode(), "text/csv")})
-    assert res.status_code == 400 and "Lead Owner column" in res.json()["detail"]
+    assert res.status_code == 200 and res.json()["ready"] == 1
 
 
 def test_skipped_rows_are_listed_with_name_company_and_email(client):

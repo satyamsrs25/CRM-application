@@ -1,7 +1,11 @@
 """Turn database rows into API responses, adding readable names (owner, account, related record)."""
 from app import schemas
 from app.models import Account, Contact, Lead, Note, Opportunity, StageHistory, Task
+from app.security import sees_pool_contacts
 from app.services import demo_instant, is_date_reminder, start_of_today, task_related
+
+# A pooled lead (no owner) seen by someone who can't assign it: everything but how to reach the person
+POOL_CONTACT_FIELDS = ("email", "phone", "linkedin_url")
 
 
 def task_out(t: Task) -> schemas.TaskOut:
@@ -29,9 +33,30 @@ def history_out(h: StageHistory) -> schemas.StageHistoryOut:
     )
 
 
+def pool_summary_only(lead: Lead) -> bool:
+    """A pooled lead shown to a user who can only request it: its contact details stay hidden."""
+    return lead.owner_id is None and not sees_pool_contacts()
+
+
+def owner_since(lead: Lead):
+    """When the current owner got the lead: the saved assignment time, else (older leads) the latest transfer when it
+    went to this owner. None when it was never recorded (no date is made up)."""
+    if lead.owner_id is None:
+        return None
+    if lead.assigned_at is not None:
+        return lead.assigned_at
+    last = lead.transfers[-1] if lead.transfers else None
+    return last.transferred_at if last is not None and last.to_user_id == lead.owner_id else None
+
+
 def lead_out(lead: Lead) -> schemas.LeadOut:
+    hidden = pool_summary_only(lead)
     return schemas.LeadOut.model_validate(lead).model_copy(
         update={
+            **({field: None for field in POOL_CONTACT_FIELDS} if hidden else {}),
+            "contact_hidden": hidden,
+            "in_pool": lead.owner_id is None,
+            "owner_since": owner_since(lead),
             "owner_name": lead.owner.full_name if lead.owner else None,
             "opportunity_id": lead.opportunity.id if lead.opportunity else None,
             "created_by_name": lead.created_by.full_name if lead.created_by else None,
@@ -46,10 +71,11 @@ def lead_out(lead: Lead) -> schemas.LeadOut:
 
 def lead_detail(lead: Lead) -> schemas.LeadDetail:
     base = lead_out(lead).model_dump()
+    summary = base["contact_hidden"]  # a pooled lead for someone who can only request it: no tasks or notes either
     return schemas.LeadDetail(
         **base,
-        tasks=[task_out(t) for t in sorted(lead.tasks, key=lambda t: (t.status != "Open", t.due_date))],
-        notes=[note_out(n) for n in sorted(lead.notes, key=lambda n: n.id, reverse=True)],
+        tasks=[] if summary else [task_out(t) for t in sorted(lead.tasks, key=lambda t: (t.status != "Open", t.due_date))],
+        notes=[] if summary else [note_out(n) for n in sorted(lead.notes, key=lambda n: n.id, reverse=True)],
         history=[history_out(h) for h in sorted(lead.history, key=lambda h: h.id)],
         transfers=[transfer_out(t) for t in sorted(lead.transfers, key=lambda t: t.id, reverse=True)],
     )

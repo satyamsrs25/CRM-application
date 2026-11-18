@@ -26,7 +26,7 @@ from app import ai_email, campaigns as engine
 from app.constants import LEAD_OPEN_STAGES, LEAD_STAGES
 from app.database import SessionLocal, get_db
 from app.models import Campaign, CampaignRecipient, EmailAddress, Lead
-from app.security import acting_user, require, require_edit, visible
+from app.security import acting_user, campaign_leads, may_campaign_to, require, require_edit, visible
 from app.services import log_activity, notify, now
 
 router = APIRouter(prefix="/api/campaigns", tags=["Email campaigns"])
@@ -98,17 +98,22 @@ class EmailStatusIn(BaseModel):
     reason: str | None = Field(default=None, max_length=300)
 
 
+# A campaign reaches only the leads its sender may email (security.campaign_leads): the Admin any lead; Managers who
+# see the team's records any assigned lead, and with Reassign owner the Unassigned Pool; everyone else only the
+# leads they own (other Salespeople's leads and pooled leads never, even with team access). Typed-in addresses that
+# belong to such a lead are left out too, and the sender checks it again just before each email goes.
+NOT_YOURS = engine.NOT_YOURS
+
+
 def audience_query(data: Audience):
     me = acting_user()
-    query = visible(select(Lead), Lead)
+    query = select(Lead).where(or_(*campaign_leads(me.id, me.role, me.permissions)))
     if data.lead_ids or data.emails:
         query = query.where(Lead.id.in_(data.lead_ids))  # typed-in addresses are added by targets()
     else:
         query = query.where(Lead.stage.in_(data.stages or LEAD_OPEN_STAGES))
         if data.owner_id:
             query = query.where(Lead.owner_id == data.owner_id)
-    if not me.sees_team:
-        query = query.where(Lead.owner_id == me.id)  # a salesperson's campaign reaches only their own leads
     return query
 
 
@@ -118,9 +123,11 @@ def audience_size(db: Session, data: Audience) -> int:
 
 @dataclass
 class Target:
-    """One person a campaign goes to: a lead, or a typed-in address (lead is None)."""
+    """One person a campaign goes to: a lead, or a typed-in address (lead is None). blocked: why it is left out before
+    any other check (a lead the sender may not email; its details are not shown)."""
     lead: Lead | None
     person: engine.Person
+    blocked: str | None = None
 
     @property
     def email(self) -> str | None:
@@ -135,25 +142,39 @@ def targets(db: Session, data: Audience) -> list[Target]:
     if audience_size(db, data) > MAX_RECIPIENTS:
         raise HTTPException(status_code=400, detail=f"A campaign can go to up to {MAX_RECIPIENTS:,} people. "
                                                     "Choose fewer leads or emails.")
+    me = acting_user()
     out = [Target(lead, engine.Person.of_lead(lead)) for lead in db.scalars(audience_query(data).order_by(Lead.id))]
+    found = {t.lead.id for t in out}
+    # ticked leads this user may not email (pooled, or someone else's): left out, without their name or email
+    for lead_id in dict.fromkeys(data.lead_ids):
+        if lead_id not in found:
+            out.append(Target(None, engine.Person(None, name="A selected lead"), blocked=NOT_YOURS))
     typed = [e for e in data.emails if e.email.strip()]
     if typed:
-        # a typed address that belongs to a lead this user can see is that lead (its name, company and owner)
+        # a typed address that belongs to a lead this user may email is that lead (its name, company and owner); one
+        # that belongs only to leads they may not email is left out (typing it in doesn't get round the rule)
         wanted = {e.email.strip().lower() for e in typed}
-        mine = {}
-        for lead in db.scalars(visible(select(Lead), Lead).where(func.lower(Lead.email).in_(wanted)).order_by(Lead.id)):
-            mine.setdefault(lead.email.lower(), lead)
+        mine, theirs = {}, set()
+        for lead in db.scalars(select(Lead).where(func.lower(Lead.email).in_(wanted)).order_by(Lead.id)):
+            if may_campaign_to(lead, me.id, me.role, me.permissions):
+                mine.setdefault(lead.email.lower(), lead)
+            else:
+                theirs.add(lead.email.lower())
         for e in typed:
-            lead = mine.get(e.email.strip().lower())
-            out.append(Target(lead, engine.Person.of_lead(lead)) if lead
-                       else Target(None, engine.Person.typed(e.email.strip(), e.name, e.company)))
+            key = e.email.strip().lower()
+            lead = mine.get(key)
+            if lead is not None:
+                out.append(Target(lead, engine.Person.of_lead(lead)))
+            else:
+                out.append(Target(None, engine.Person.typed(e.email.strip(), e.name, e.company),
+                                  blocked=NOT_YOURS if key in theirs else None))
     return out
 
 
 def split(db: Session, people: list[Target]) -> tuple[list[Target], list[tuple[Target, str]]]:
     ok, left_out, seen = [], [], set()
     for t in people:
-        reason = (engine.exclusion(t.lead) if t.lead else None) or engine.address_exclusion(db, t.email)
+        reason = t.blocked or (engine.exclusion(t.lead) if t.lead else None) or engine.address_exclusion(db, t.email)
         if reason is None and t.email.lower() in seen:
             reason = "Same email twice in this campaign"
         if reason:
@@ -172,10 +193,11 @@ def sample_of(t: Target, reason: str | None = None) -> dict:
 
 
 def reason_counts(left_out) -> dict:
-    counts = {"unsubscribed": 0, "invalid": 0, "no_email": 0, "other": 0}
+    counts = {"unsubscribed": 0, "invalid": 0, "no_email": 0, "not_allowed": 0, "other": 0}
     for _, reason in left_out:
         key = ("unsubscribed" if reason == "Unsubscribed" else "invalid" if reason.startswith("Invalid")
-               else "no_email" if reason == "No email address" else "other")
+               else "no_email" if reason == "No email address" else "not_allowed" if reason == NOT_YOURS
+               else "other")
         counts[key] += 1
     return counts
 
@@ -295,7 +317,8 @@ def create_campaign(data: CampaignIn, db: Session = Depends(get_db)):
                                  name=t.name, company=(t.person.company or None) if not t.lead else None,
                                  manual=t.lead is None, **extra)
     db.add_all([row(t) for t in ok])
-    db.add_all([row(t, status="Skipped", error=reason[:300]) for t, reason in left_out])
+    # (a ticked lead the sender may not email has no row: its details aren't copied into the campaign)
+    db.add_all([row(t, status="Skipped", error=reason[:300]) for t, reason in left_out if t.lead or t.email])
     when = "now" if due else f"at {send_at:%d %b %Y %I:%M %p}"
     log_activity(db, me.id, "Campaign created", campaign.name,
                  f"{len(ok):,} people, sending {when} • {len(left_out):,} left out (unsubscribed, invalid or no email)")
@@ -610,7 +633,8 @@ def _set_subscribed(db: Session, who: Subscriber, subscribed: bool) -> None:
             continue
         lead.unsubscribed_at = None if subscribed else now()
         log_activity(db, None, title, lead.name, "From the link in a campaign email")
-        notify(db, lead.owner_id, title, f"{lead.name} ({lead.email}) {text}", link=f"/leads/{lead.id}")
+        if lead.owner_id is not None:  # a pooled lead has nobody to tell (the Activity Log has it)
+            notify(db, lead.owner_id, title, f"{lead.name} ({lead.email}) {text}", link=f"/leads/{lead.id}")
     if not subscribed:  # anything still queued for this address is left out
         db.query(CampaignRecipient).filter(func.lower(CampaignRecipient.email) == who.email.lower(),
                                            CampaignRecipient.status == "Queued").update(
