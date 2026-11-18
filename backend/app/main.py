@@ -196,6 +196,16 @@ def upgrade_database() -> None:
         conn.execute(text("ALTER TABLE leads DROP CONSTRAINT IF EXISTS ck_leads_unqualified_reason"))
         conn.execute(text("ALTER TABLE leads ADD CONSTRAINT ck_leads_unqualified_reason "
                           "CHECK (stage <> 'Unqualified' OR unqualified_reason IS NOT NULL)"))
+        # the Unassigned Pool: an uploaded lead has no owner until the Admin or a Manager assigns it. Only constraints
+        # and new empty columns change: no lead row is updated, so owners and Last Modified stay as they are, and
+        # assigned_at stays empty for older leads (their assignment date was never recorded).
+        conn.execute(text("ALTER TABLE leads ALTER COLUMN owner_id DROP NOT NULL"))
+        conn.execute(text("ALTER TABLE leads ADD COLUMN IF NOT EXISTS assigned_at TIMESTAMP"))
+        conn.execute(text("ALTER TABLE lead_transfer_requests ALTER COLUMN owner_id DROP NOT NULL"))
+        conn.execute(text("ALTER TABLE lead_transfers ADD COLUMN IF NOT EXISTS request_id INT "
+                          "REFERENCES lead_transfer_requests(id) ON DELETE SET NULL"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_leads_unassigned ON leads (created_at DESC) "
+                          "WHERE owner_id IS NULL"))
 
 
 @asynccontextmanager

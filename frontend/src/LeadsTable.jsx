@@ -7,10 +7,11 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, apiRequest } from "./api";
 import { CellPreview, markCutCells, PreviewCell } from "./CellPreview";
-import { leadBoardColumns, leadConvertChoice } from "./domain";
+import { leadBoardColumns, leadConvertChoice, POOL_LABEL, POOL_OWNER } from "./domain";
 import LeadsKanban from "./LeadsKanban";
 import { NewCampaign, queuedMessage, watchCampaign } from "./CampaignsPage";
-import { can, canCreateSales } from "./permissions";
+import { can, canCreateSales, canRequestPool } from "./permissions";
+import { BulkRequestDialog } from "./TransferRequests";
 import { DateCell, Icon, PAGE_SIZES, Pagination, PhoneReveal, StageBadge } from "./ui";
 import { dateTime } from "./format";
 import { FilterButton, rangeBounds, Th } from "./Filters";
@@ -39,9 +40,11 @@ const COLUMNS = [
   ["Phone", "phone", 172], // wide enough for a shown international number beside the eye button
   ["Status", "stage", 124],
   ["Source", "source", 104],
-  ["Owner", "owner", 144],
+  ["Owner", "owner", 144], // "Unassigned" for a lead in the Unassigned Pool
   // who the lead was last transferred to, and when (empty when it never changed owner)
   ["Transferred To", "transferred", 200],
+  // who added the lead (by hand or by an upload): not always its owner, since uploads go to the Unassigned Pool
+  ["Created By", "created_by", 144],
   ["Created", "created", 108],
   ["Last Modified", "modified", 124],
 ];
@@ -238,6 +241,7 @@ export default function LeadsTable({
   const [selected, setSelected] = useState(() => new Set());
   const [bulk, setBulk] = useState(null); // { type: "transfer" | "delete", ids }
   const [campaignFor, setCampaignFor] = useState(null); // lead ids for "Email" (a campaign to the selected leads)
+  const [poolRequest, setPoolRequest] = useState(null); // lead ids for Request Assignment (Unassigned Pool)
   // a short explanation with OK: "one lead at a time" when Convert is chosen with several ticked, or why an action is off
   const [notice, setNotice] = useState(null); // { title, message }
   // long values end in "…"; their full value opens in this preview (CellPreview.jsx), which replaces "Wrap text"
@@ -247,7 +251,7 @@ export default function LeadsTable({
   const [again, setAgain] = useState(0); // reloads the list after a bulk action, or on Try again
   const selectAll = useRef(null);
   const kanban = mode === "kanban";
-  const columns = leadBoardColumns(view, stage || filters.stage);
+  const columns = leadBoardColumns(view, stage || filters.stage, filters.owner);
 
   useEffect(() => {
     const t = setTimeout(() => (setTerm(search.trim()), setPage(0)), 350); // search after typing stops
@@ -272,7 +276,8 @@ export default function LeadsTable({
       if (to) params.set(`${key}_to`, to.toISOString());
     }
     if (term) params.set("search", term);
-    return apiRequest(`/leads/page?${new URLSearchParams([...params, ...Object.entries(extra)])}`);
+    for (const [key, value] of Object.entries(extra)) params.set(key, value); // a board column's own stage / owner
+    return apiRequest(`/leads/page?${params}`);
   };
 
   useEffect(() => {
@@ -294,6 +299,11 @@ export default function LeadsTable({
   const boardKey = boardQueryKey({ view, stage: stage || filters.stage, filters, search: term, sort, size: cardSize });
   const pagesNow = boardPages(colPages, boardKey);
   const shownColumns = columns.filter((c) => !c.excluded);
+  // the Unassigned column holds the pooled leads; when it is on the board, the stage columns leave them out, so each
+  // lead is on the board once and the totals add up
+  const poolShown = shownColumns.some((c) => c.pool);
+  const columnQuery = (column) =>
+    column.pool ? { owner: POOL_OWNER } : { stage: column.stage, ...(poolShown ? { assigned: "true" } : {}) };
   useEffect(() => {
     if (!kanban) {
       loadedBoard.current = { key: null, reload: null, pages: {} };
@@ -309,11 +319,12 @@ export default function LeadsTable({
       requests.current.forgetAll(); // answers to the previous query are dropped
       setBoard(null);
     }
-    todo.forEach(({ stage: column }) => {
+    todo.forEach((col) => {
+      const column = col.stage;
       const at = pagesNow[column] || 0;
       const id = requests.current.start(column);
       setBusyCols((b) => ({ ...b, [column]: true }));
-      load({ stage: column, offset: at * cardSize, limit: cardSize })
+      load({ ...columnQuery(col), offset: at * cardSize, limit: cardSize })
         .then((r) => {
           if (!requests.current.isLatest(column, id)) return;
           const fixed = clampPage(at, r.total, cardSize);
@@ -393,12 +404,17 @@ export default function LeadsTable({
     setSelected(new Set());
     requestAnimationFrame(() => selectAll.current?.focus()); // the bar goes away: keep the keyboard in the table
   };
-  // the actions for the ticked leads (listHelpers.js): Convert, Email Campaign, Transfer, Delete
+  // a Salesperson asks for ticked leads from the Unassigned Pool (only the ticked ones: never the whole pool)
+  const asksForPool = canRequestPool(user);
+  const pooledTicked = asksForPool && [...selected].some((id) => seen.current.get(id)?.in_pool);
+  // the actions for the ticked leads (listHelpers.js): Request Assignment, Convert, Email Campaign, Transfer, Delete
   const actions = leadSelectionActions({
     count: selected.size,
     convertChoice,
     canCampaign: can(user, "send_campaigns"),
     canTransfer: canTransferAny,
+    canRequest: pooledTicked,
+    poolOnly: asksForPool && view === "unassigned",
   });
   const run = {
     // opens the usual Convert popup for the one ticked lead (nothing is converted until it's saved);
@@ -409,6 +425,7 @@ export default function LeadsTable({
     campaign: () => setCampaignFor([...selected]),
     transfer: () => setBulk({ type: "transfer", ids: [...selected] }),
     delete: () => setBulk({ type: "delete", ids: [...selected] }),
+    request: () => setPoolRequest([...selected]),
   };
   const finish = (res) => {
     const transfer = bulk.type === "transfer";
@@ -675,9 +692,14 @@ export default function LeadsTable({
                         <StageBadge stage={l.stage} />
                       </td>
                       <Cell title={l.uploaded_from ? `Uploaded from ${l.uploaded_from}` : l.source}>{l.source}</Cell>
-                      {/* Owner (the full name on hover, focus or ⋯); there is no Created By column: the owner who
-                          added a lead is its Owner, and Transferred To shows a later owner */}
-                      <PreviewCell preview={preview} value={l.owner_name} label="owner" className="strong" />
+                      {/* Owner (the full name on hover, focus or ⋯): "Unassigned" while the lead is in the Unassigned
+                          Pool; Transferred To shows a later owner and Created By who added it */}
+                      <PreviewCell
+                        preview={preview}
+                        value={l.owner_name || (l.in_pool ? POOL_LABEL : "")}
+                        label="owner"
+                        className={l.in_pool ? "strong pool-owner" : "strong"}
+                      />
                       <Cell
                         className="transferred"
                         title={l.last_transferred_to ? `Transferred to ${l.last_transferred_to} on ${dateTime(l.last_transferred_at)}` : "Not transferred"}
@@ -688,6 +710,7 @@ export default function LeadsTable({
                           </>
                         )}
                       </Cell>
+                      <PreviewCell preview={preview} value={l.created_by_name} label="creator" />
                       <Cell className="date" title={dateTime(l.created_at)}>
                         <DateCell value={l.created_at} />
                       </Cell>
@@ -754,6 +777,18 @@ export default function LeadsTable({
           me={user}
           onClose={() => setBulk(null)}
           onDone={finish}
+        />
+      )}
+      {poolRequest && (
+        <BulkRequestDialog
+          leadIds={poolRequest}
+          onClose={(changed) => {
+            setPoolRequest(null);
+            if (changed) {
+              setSelected(new Set());
+              setAgain((n) => n + 1);
+            }
+          }}
         />
       )}
       {campaignFor && (

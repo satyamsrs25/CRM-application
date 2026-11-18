@@ -15,10 +15,10 @@ from app import schemas
 from app.constants import (AUTO_TASKS, DEFAULT_CURRENCY, LEAD_FLOW, LEAD_OPEN_STAGES, LEAD_OPTIONAL_STAGES, LEAD_SOURCES, LEAD_STAGES,
                            LEAD_START, STAGE_PROBABILITY)
 from app.database import get_db
-from app.security import (acting_user, acting_user_id, owner_for_new, require_edit,
+from app.security import (acting_user, acting_user_id, manages_pool, owner_for_new, require_edit,
                           require_transfer, require_view, visible)
-from app.models import (Account, Contact, Email, EmailAttachment, Lead, LeadTransfer, Note, Notification, Opportunity,
-                        StageHistory, Task, User)
+from app.models import (Account, Contact, Email, EmailAttachment, Lead, LeadTransfer, LeadTransferRequest, Note,
+                        Notification, Opportunity, StageHistory, Task, User)
 from app.phone_matches import check_lead_phone, find_phone_matches, phone_key, phone_message
 from app.text_rules import person_name_problem, text_problem
 from app.serializers import account_out, contact_out, history_out, lead_detail, lead_out, opportunity_out, task_out
@@ -61,6 +61,22 @@ router = APIRouter(prefix="/api/leads", tags=["Leads"])
 def ensure_open(lead: Lead):
     if lead.stage not in LEAD_OPEN_STAGES:
         raise HTTPException(status_code=400, detail=f"Lead {lead.id} is {lead.stage} (closed); it can't change any more")
+
+
+POOL_DETAIL = ("This lead is in the Unassigned Pool. The Admin or a Manager assigns it to a Salesperson first "
+               "(Salespeople can request it).")
+
+
+def ensure_owned(lead: Lead):
+    """A pooled lead (no owner) doesn't change stage, convert, close or get tasks until it is assigned: there is
+    nobody to do the follow-ups. Its stage stays where the upload put it."""
+    if lead.owner_id is None:
+        raise HTTPException(status_code=400, detail=POOL_DETAIL)
+
+
+def pool_conflict(lead: Lead) -> HTTPException:
+    return HTTPException(status_code=409, detail="This lead is no longer in the Unassigned Pool: it was just assigned "
+                                                 f"to {lead.owner.full_name if lead.owner else 'someone'}")
 
 
 # ---------- list, create, view, edit ----------
@@ -202,7 +218,7 @@ def add_lead(db: Session, data: schemas.LeadCreate):
     check_lead_email(db, data.email, data.company_website, confirmed=data.confirm_email_domain)
     lead = Lead(**data.model_dump(exclude={"owner_id", "created_by_id", "confirm_email_domain", "phone_country",
                                         "confirm_shared_phone"}),
-                owner_id=owner_id, created_by_id=acting_user_id(), stage=LEAD_START)
+                owner_id=owner_id, created_by_id=acting_user_id(), stage=LEAD_START, assigned_at=now())
     db.add(lead)
     db.flush()
     db.refresh(lead)  # loads "name", which the database builds from first + last name
@@ -218,9 +234,12 @@ def add_lead(db: Session, data: schemas.LeadCreate):
 
 @router.get("/{lead_id}", response_model=schemas.LeadDetail)
 def get_lead(lead_id: int, db: Session = Depends(get_db)):
-    """The lead record page: details, tasks, notes and stage history."""
+    """The lead record page: details, tasks, notes and stage history. A pooled lead (Unassigned Pool) opens for
+    everyone, so Salespeople can decide whether to request it; those who can't assign it don't get its contact
+    details, tasks or notes (serializers.pool_summary_only)."""
     lead = get_or_404(db, Lead, lead_id, "Lead")
-    require_view(lead.owner_id, "lead")
+    if lead.owner_id is not None:
+        require_view(lead.owner_id, "lead")
     return lead_detail(lead)
 
 
@@ -294,6 +313,9 @@ def update_lead(lead_id: int, data: schemas.LeadUpdate, db: Session = Depends(ge
     for field, value in changes.items():
         setattr(lead, field, value)
     if new_owner is not None and new_owner != lead.owner_id:
+        if lead.owner_id is None:  # pooled: only Assign gives it an owner (one lead, to a Salesperson)
+            raise HTTPException(status_code=400, detail="This lead is in the Unassigned Pool: use Assign to give it "
+                                                        "to a Salesperson")
         require_transfer(lead.owner_id)
         transfer_lead(db, lead, new_owner, None, actor)
     if lead.stage == "Demo" and lead.demo_date != old_demo:
@@ -313,9 +335,13 @@ def update_lead(lead_id: int, data: schemas.LeadUpdate, db: Session = Depends(ge
 # ---------- transfer ----------
 
 def transfer_lead(db: Session, lead: Lead, to_user_id: int, note: str | None, actor_id: int,
-                  quiet: bool = False) -> LeadTransfer:
-    """Gives the lead to another user and saves who, when, from and to. Only the owner changes.
-    quiet=True (bulk transfer): no notifications here; the caller sends one summary instead."""
+                  quiet: bool = False, request_id: int | None = None) -> LeadTransfer:
+    """Gives the lead to another user and saves who, when, from and to (and the approved request, if any). Only the
+    owner changes. quiet=True (bulk transfer): no notifications here; the caller sends one summary instead.
+    A pooled lead never moves this way (Transfer, an edit, bulk transfer, the Assistant): it is assigned (below)."""
+    if lead.owner_id is None:
+        raise HTTPException(status_code=400, detail="This lead is in the Unassigned Pool: the Admin or a Manager "
+                                                    "assigns it with Assign, one lead at a time")
     target = db.get(User, resolve_user_id(db, to_user_id))
     if not target.is_active:
         raise HTTPException(status_code=400, detail=f"{target.full_name} is deactivated. Choose an active user.")
@@ -323,9 +349,9 @@ def transfer_lead(db: Session, lead: Lead, to_user_id: int, note: str | None, ac
         raise HTTPException(status_code=400, detail=f"This lead already belongs to {target.full_name}")
     previous = lead.owner
     record = LeadTransfer(lead_id=lead.id, from_user_id=lead.owner_id, to_user_id=target.id,
-                          transferred_by_id=actor_id, note=(note or "").strip() or None)
+                          transferred_by_id=actor_id, note=(note or "").strip() or None, request_id=request_id)
     db.add(record)
-    lead.owner_id = target.id
+    lead.owner_id, lead.assigned_at = target.id, now()  # the new owner's ownership starts now
     db.flush()
     db.refresh(lead)
     # the lead stays at its stage with its history; its open follow-ups (the previous owner's and the system's,
@@ -447,6 +473,8 @@ def bulk_delete(data: schemas.BulkLeads, db: Session = Depends(get_db)):
         _summary_notice(db, "Leads deleted", [f"{me.full_name} deleted {len(deleted)} lead{'s' if len(deleted) != 1 else ''}: {names}."],
                         managers, {me.id})
         for owner_id, lead_names in by_owner.items():
+            if owner_id is None:  # pooled leads: nobody owned them
+                continue
             _summary_notice(db, "Leads deleted", [f"{me.full_name} deleted {len(lead_names)} of your leads: {', '.join(lead_names[:10])}."],
                             {owner_id}, {me.id, *managers})
     db.commit()
@@ -467,6 +495,85 @@ def transfer(lead_id: int, data: schemas.LeadTransfer, db: Session = Depends(get
     return lead_detail(lead)
 
 
+# ---------- the Unassigned Pool: one pooled lead to a Salesperson ----------
+
+def pool_recipient(db: Session, user_id: int, approver=None) -> User:
+    """Who a pooled lead can go to: an active Salesperson; for a Manager, only one who reports to them."""
+    me = approver or acting_user()
+    target = db.get(User, user_id)
+    if target is None or not target.is_active or target.role != "Salesperson":
+        raise HTTPException(status_code=400, detail="Choose an active Salesperson to assign the lead to")
+    if not me.is_admin and target.reports_to_id != me.id:
+        raise HTTPException(status_code=403, detail="You can assign leads only to Salespeople in your team "
+                                                    "(who report to you)")
+    return target
+
+
+def assign_from_pool(db: Session, lead: Lead, target: User, actor_id: int, note: str | None,
+                     request: LeadTransferRequest | None = None) -> LeadTransfer:
+    """Gives a pooled lead its first owner. The caller locked the lead (get_for_update) and checked who may do it.
+    Only the owner changes: the stage, Created By and Created Date stay. The assignment time is saved, and the
+    transfer history says who assigned it, to whom, when, and the request behind it. Every other pending request
+    for the lead is closed, so a later approval can't overwrite the owner. The new owner is told once; emails follow
+    each person's settings and go only after the save."""
+    if lead.owner_id is not None:  # someone assigned it first (two Managers at once, or a request approved)
+        raise pool_conflict(lead)
+    ensure_open(lead)
+    record = LeadTransfer(lead_id=lead.id, from_user_id=None, to_user_id=target.id, transferred_by_id=actor_id,
+                          note=(note or "").strip() or None, request_id=request.id if request else None)
+    db.add(record)
+    lead.owner_id, lead.assigned_at = target.id, now()
+    db.flush()
+    db.refresh(lead)
+    # a pooled lead has no follow-ups (none can be added there); any system task left over goes with it
+    tasks = reassign_system_tasks(db, target.id, lead_id=lead.id)
+    actor = db.get(User, actor_id)
+    others = select(LeadTransferRequest).where(LeadTransferRequest.lead_id == lead.id,
+                                               LeadTransferRequest.status == "Pending")
+    if request is not None:
+        others = others.where(LeadTransferRequest.id != request.id)
+    for other in db.scalars(others).all():
+        other.status, other.decided_by_id, other.decided_at = "Rejected", actor_id, now()
+        other.decision_note = f"The lead was assigned to {target.full_name}"
+        if other.requested_by_id != target.id:
+            notify(db, other.requested_by_id, "Lead request closed",
+                   f'Your request for lead "{lead.name}" was closed: it was assigned to {target.full_name}.',
+                   link="/transfer-requests", category="assignment")
+    if target.id != actor_id:
+        how = "approved your request for the lead" if request else "assigned you the lead"
+        lines = [f'{actor.full_name if actor else "Someone"} {how} "{lead.name}" ({lead.company or "no company"}) '
+                 "from the Unassigned Pool.", *handover_lines(db, stage=lead.stage, tasks=tasks, lead_id=lead.id)]
+        if record.note:
+            lines.append(f"Note: {record.note}")
+        notify(db, target.id, "Lead assigned to you", "\n".join(lines), link=f"/leads/{lead.id}",
+               category="assignment")
+    log_activity(db, actor_id, "Lead assigned", lead.name,
+                 f"From the Unassigned Pool to {target.full_name}" + (f" • Request #{request.id}" if request else "")
+                 + (f" • Note: {record.note}" if record.note else ""))
+    return record
+
+
+@router.post("/{lead_id}/assign", response_model=schemas.LeadDetail)
+def assign(lead_id: int, data: schemas.LeadAssign, db: Session = Depends(get_db)):
+    """Give one lead from the Unassigned Pool to an active Salesperson: the Admin (anyone), or a Manager with
+    Reassign owner (only the Salespeople who report to them). One lead per request: there is no bulk assign or
+    claim. The lead is locked while this runs, so when two people assign it at the same moment one succeeds and the
+    other gets 409 without changing the owner. Salespeople request a pooled lead instead (transfer requests)."""
+    me = acting_user()
+    if not manages_pool(me):
+        raise HTTPException(status_code=403, detail='Only the Admin or a Manager with "Reassign owner" can assign '
+                                                    "leads from the Unassigned Pool."
+                                                    + (" You can request this lead instead." if me.role == "Salesperson" else ""))
+    lead = get_for_update(db, Lead, lead_id, "Lead")
+    if lead.owner_id is not None:
+        raise pool_conflict(lead)
+    target = pool_recipient(db, data.to_user_id)
+    assign_from_pool(db, lead, target, me.id, data.note)
+    db.commit()
+    db.refresh(lead)
+    return lead_detail(lead)
+
+
 # ---------- demo cancellation ----------
 
 @router.post("/{lead_id}/cancel-demo", response_model=schemas.LeadDetail)
@@ -478,6 +585,7 @@ def cancel_demo(lead_id: int, data: schemas.CancelDemo, db: Session = Depends(ge
       required."""
     lead = get_for_update(db, Lead, lead_id, "Lead")
     require_edit(lead.owner_id, "lead")
+    ensure_owned(lead)
     if lead.stage != "Demo":
         raise HTTPException(status_code=400, detail="Only a lead at the Demo stage has a demo to cancel")
     reason = (data.reason or "").strip()
@@ -538,6 +646,7 @@ def change_stage(lead_id: int, data: schemas.LeadStageChange, db: Session = Depe
     if lead.stage == data.stage:
         raise HTTPException(status_code=400, detail=f"Lead {lead_id} is already at {data.stage}")
     require_edit(lead.owner_id, "lead")
+    ensure_owned(lead)
     if data.stage == "Demo" and data.demo_date:  # in server time, and in the future
         data.demo_date = future_demo(data.demo_date)
     task_owner = stage_task_owner(db, data.task, lead.owner_id)
@@ -593,6 +702,7 @@ def mark_lost(lead_id: int, data: schemas.MarkLost, db: Session = Depends(get_db
     lead = get_for_update(db, Lead, lead_id, "Lead")
     ensure_open(lead)
     require_edit(lead.owner_id, "lead")
+    ensure_owned(lead)
     lead.untouched = False  # someone is working on it now
     by = acting_user_id()
     old = lead.stage
@@ -619,6 +729,7 @@ def mark_unqualified(lead_id: int, data: schemas.MarkUnqualified, db: Session = 
     lead = get_for_update(db, Lead, lead_id, "Lead")
     ensure_open(lead)
     require_edit(lead.owner_id, "lead")
+    ensure_owned(lead)
     lead.untouched = False
     by = acting_user_id()
     old = lead.stage
@@ -644,6 +755,7 @@ def reopen(lead_id: int, data: schemas.ReopenLead, db: Session = Depends(get_db)
     if lead.stage != "Unqualified":
         raise HTTPException(status_code=400, detail="Only an Unqualified lead can be reopened")
     require_edit(lead.owner_id, "lead")
+    ensure_owned(lead)
     task_owner = stage_task_owner(db, data.task, lead.owner_id)
     by = acting_user_id()
     lead.stage, lead.closed_at = LEAD_START, None
@@ -671,6 +783,7 @@ def convert_lead(lead_id: int, data: schemas.ConvertLead, db: Session = Depends(
     lead = get_for_update(db, Lead, lead_id, "Lead")
     ensure_open(lead)
     require_edit(lead.owner_id, "lead")
+    ensure_owned(lead)
     task_owner = stage_task_owner(db, data.task, lead.owner_id)  # the new opportunity's owner is the lead's
     lead.untouched = False  # someone is working on it now
     # Convert comes after Demo: every required stage up to Demo must be done (or confirmed as done)
@@ -794,7 +907,7 @@ def delete_one(db: Session, lead: Lead, actor_id: int) -> tuple[str, str, int]:
     Permission is checked by the caller. Returns (name, summary, owner id) for the notifications."""
     if lead.stage == "Converted" or lead.opportunity is not None:
         raise HTTPException(status_code=400, detail="A converted lead can't be deleted: it has an opportunity.")
-    owner = lead.owner.full_name if lead.owner else "Unknown"
+    owner = lead.owner.full_name if lead.owner else ("Unassigned Pool" if lead.owner_id is None else "Unknown")
     summary = " • ".join(x for x in (lead.company, lead.email, f"Owner: {owner}", f"Stage: {lead.stage}") if x)
     name = lead.name
     owner_id = lead.owner_id

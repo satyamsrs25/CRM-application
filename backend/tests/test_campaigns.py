@@ -82,7 +82,7 @@ def test_preview_and_send_leave_out_invalid_unsubscribed_and_no_email(client, se
     ids = [good["id"], invalid["id"], gone["id"], none["id"]]
     preview = client.post("/api/campaigns/preview", json={"lead_ids": ids}).json()
     assert (preview["eligible"], preview["left_out"]) == (1, 3)
-    assert preview["reasons"] == {"unsubscribed": 1, "invalid": 1, "no_email": 1, "other": 0}
+    assert preview["reasons"] == {"unsubscribed": 1, "invalid": 1, "no_email": 1, "not_allowed": 0, "other": 0}
 
     res = make(client, ids)
     assert res.status_code == 201, res.text
@@ -299,15 +299,18 @@ def test_typed_in_emails_people_not_in_the_crm(client, sent):
 
 
 def test_unsubscribing_a_typed_address_also_unsubscribes_the_lead_with_it(client, sent):
-    """The same person can be a lead for one salesperson and a typed address for another: one opt-out covers both."""
-    login_as(client, 1)
-    theirs = lead(client, "Omar")  # Priya's lead; Ravi can't see it
+    """The same person can be a typed address for one salesperson and (later) a lead for another: one opt-out covers
+    both. (Typing in the address of someone else's lead doesn't email it: test_unassigned_pool.py.)"""
+    address = "omar.typed@bluebird.example"
     login_as(client, 2)
     made = client.post("/api/campaigns", json={"name": "Ravi typed", "subject": "Hello", "body": "Hello there friend",
-                                               "emails": [{"email": theirs["email"]}]}).json()
+                                               "emails": [{"email": address}]}).json()
     run_round()
     row = client.get(f"/api/campaigns/{made['id']}").json()["recipients"]["items"][0]
-    assert row["lead_id"] is None and row["name"] != theirs["name"]  # Priya's lead stays private to Ravi
+    assert row["lead_id"] is None and row["status"] == "Sent"
+    login_as(client, 1)  # Priya adds the same person as her lead afterwards
+    theirs = client.post("/api/leads", json={"first_name": "Omar", "last_name": "Typed", "company": "Bluebird",
+                                             "source": "Website", "email": address}).json()
     client.post("/api/public/unsubscribe", data={"t": campaigns.recipient_token(row["id"]), "action": "unsubscribe"})
     assert login_as(client, 1).get(f"/api/leads/{theirs['id']}").json()["unsubscribed_at"]
     res = client.post("/api/campaigns/preview", json={"lead_ids": [theirs["id"]]}).json()
