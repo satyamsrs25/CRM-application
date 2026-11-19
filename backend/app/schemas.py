@@ -34,6 +34,21 @@ class Out(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+def server_instant(value: datetime | None) -> datetime | None:
+    """A moment the server recorded (stored in the server's time zone, TZ in docker-compose.yml, with no zone) sent with
+    that zone's offset, e.g. 2026-11-18T20:33:20-05:00, so every browser shows the same moment in its own local time
+    (issue 46: without it a browser in India read New York times as India times). The stored value doesn't change.
+    Times people type in (task due dates, demo and revisit dates) are not sent through this.
+
+    The offset is the zone's rule for that value's own date (a July time gets -04:00 in New York, a January one -05:00),
+    not today's. This assumes PostgreSQL's TimeZone and the API's TZ are the same zone, and that it hasn't changed since
+    the values were stored (docker-compose.yml sets both). A stored value can't tell which of a repeated hour it was
+    (New York, first Sunday of November, 01:00-01:59 happens twice): it is read as the first one (daylight time), so a
+    time really recorded in the second one shows an hour early. Times in the skipped spring hour never come from the
+    clock; they would be read as standard time (the same moment as an hour later in daylight time)."""
+    return value.astimezone() if value is not None and value.tzinfo is None else value
+
+
 def money(value: Decimal | float | None) -> float | None:
     return float(value) if value is not None else None
 
@@ -462,6 +477,12 @@ class LeadOut(Out):
     def _revenue(self, value):
         return money(value)
 
+    # the lead's own recorded moments (Created, Last Modified, Assigned, Transferred, Converted, Closed, email status)
+    @field_serializer("created_at", "updated_at", "assigned_at", "owner_since", "last_transferred_at", "converted_at",
+                      "closed_at", "email_invalid_at", "unsubscribed_at")
+    def _recorded(self, value):
+        return server_instant(value)
+
 
 class LeadTransferOut(Out):
     id: int
@@ -474,6 +495,10 @@ class LeadTransferOut(Out):
     note: str | None
     transferred_at: datetime | None
     request_id: int | None = None  # the approved request behind it (empty: a direct transfer or assignment)
+
+    @field_serializer("transferred_at")
+    def _recorded(self, value):
+        return server_instant(value)
 
 
 class LeadDetail(LeadOut):

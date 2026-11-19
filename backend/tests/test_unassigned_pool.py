@@ -4,7 +4,7 @@ ownership. Users: 1 Priya (Manager), 2 Ravi (Salesperson), 3 Asha (Admin), plus 
 All data is made up."""
 import csv
 import io
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -139,8 +139,9 @@ def test_a_salesperson_sees_the_pool_without_contacts_and_cannot_act_on_it(clien
     # contact details can't be found by searching or sorting on them either
     assert ravi.get("/api/leads/page", params={"view": "unassigned", "search": "pool0@"}).json()["total"] == 0
     assert ravi.get("/api/leads/page", params={"view": "unassigned", "sort": "email"}).status_code == 200
-    # the pool isn't in his own lists
-    assert ravi.get("/api/leads/page", params={"view": "all_open"}).json()["total"] == 0
+    # All Open Leads lists the open pool too (contact details hidden), but My Open Leads stays his own
+    assert ravi.get("/api/leads/page", params={"view": "all_open"}).json()["total"] == 3
+    assert ravi.get("/api/leads/page", params={"view": "my_open"}).json()["total"] == 0
     detail = ravi.get(f"/api/leads/{lead_id}").json()
     assert detail["contact_hidden"] and detail["email"] is None and detail["linkedin_url"] is None
     assert detail["notes"] == [] and detail["owner_id"] is None
@@ -200,7 +201,7 @@ def test_assigning_one_lead_changes_only_the_owner_and_records_it(client, team, 
     assert res.status_code == 200, res.text
     lead = res.json()
     assert (lead["owner_id"], lead["stage"], lead["created_by_id"]) == (team["tara"], "New", RAVI)
-    assert lead["created_at"] == before.created_at.isoformat() and lead["assigned_at"] and lead["owner_since"]
+    assert datetime.fromisoformat(lead["created_at"]).replace(tzinfo=None) == before.created_at and lead["assigned_at"] and lead["owner_since"]
     assert lead["in_pool"] is False and lead["untouched"] is True
     [move] = lead["transfers"]
     assert (move["from_user_id"], move["to_user_id"], move["transferred_by_id"], move["note"], move["request_id"]) == \
@@ -352,6 +353,103 @@ def test_requests_for_owned_leads_work_as_before_and_record_the_request(client, 
     assert login_as(client, RAVI).post(f"/api/leads/{priyas['id']}/transfer",
                                        json={"to_user_id": team["tara"]}).status_code == 200
     assert priyas["id"] not in pooled_ids(client)
+
+
+# ---------- Salesperson pool visibility (original issue 47): All Open Leads lists the open pool too ----------
+
+def page(client, **params):
+    res = client.get("/api/leads/page", params={"limit": 500, **params})
+    assert res.status_code == 200, res.text
+    return res.json()
+
+
+def test_a_salesperson_sees_their_own_leads_and_the_open_pool_in_all_open_leads(client, team, sent):
+    upload(login_as(client, ASHA), pool_rows(3))
+    pooled = sorted(pooled_ids(client))
+    pooled_email = lead_row(pooled[0]).email
+    mine = own_lead(client, RAVI, "Mine", "mine.open@pool-synthetic.example")
+    lost = own_lead(client, RAVI, "Gone", "mine.lost@pool-synthetic.example")
+    assert login_as(client, RAVI).post(f"/api/leads/{lost['id']}/lost",
+                                       json={"lost_reason": "Price", "lost_notes": "Synthetic"}).status_code == 200
+    taras = own_lead(client, team["tara"], "Teammate", "tara.lead@pool-synthetic.example")
+    ravi = login_as(client, RAVI)
+    ids = lambda body: sorted(l["id"] for l in body["items"])  # noqa: E731
+    # All Open Leads: his open lead and the open pool; not Tara's lead, not his Lost lead
+    all_open = page(ravi, view="all_open")
+    assert all_open["total"] == 4 and ids(all_open) == sorted([mine["id"], *pooled])
+    rows = {l["id"]: l for l in all_open["items"]}
+    assert all(rows[i]["contact_hidden"] and rows[i]["email"] is None and rows[i]["phone"] is None for i in pooled)
+    assert rows[mine["id"]]["email"] == "mine.open@pool-synthetic.example" and not rows[mine["id"]]["contact_hidden"]
+    # the Kanban asks the same list per column: Unassigned + the stage columns (assigned leads) = the List's total
+    pool_col = page(ravi, view="all_open", owner="unassigned")["total"]
+    stage_cols = sum(page(ravi, view="all_open", stage=s, assigned="true")["total"]
+                     for s in ("New", "Nurturing", "Revisit", "Demo"))
+    assert (pool_col, stage_cols) == (3, 1)
+    # the other lists keep their meaning
+    assert ids(page(ravi, view="all")) == sorted([mine["id"], lost["id"], *pooled])
+    assert ids(page(ravi, view="my_open")) == [mine["id"]]
+    assert ids(page(ravi, view="my")) == sorted([mine["id"], lost["id"]])
+    assert ids(page(ravi, view="unassigned")) == pooled
+    assert ids(page(ravi, view="lost")) == [lost["id"]]
+    assert ids(page(ravi, view="uploaded")) == pooled
+    assert page(ravi, view="all_open", owner="me")["total"] == 1
+    assert page(ravi, view="all_open", owner=str(team["tara"]))["total"] == 0  # other people's leads stay hidden
+    # email-status lists stay his own: the pool's emails aren't his to see (List and Kanban alike)
+    assert ids(page(ravi, view="email_ok")) == sorted([mine["id"], lost["id"]])
+    assert page(ravi, view="email_ok", owner="unassigned")["total"] == 0
+    assert page(ravi, view="no_email", owner="unassigned")["total"] == 0
+    # search and sort never use a pooled lead's hidden email or phone
+    assert page(ravi, view="all_open", search=pooled_email)["total"] == 0
+    assert ids(page(ravi, view="all_open", search="mine.open@")) == [mine["id"]]
+    assert page(ravi, view="all_open", search="Pool Synthetic Co")["total"] == 3
+    by_email = page(ravi, view="all_open", sort="email", direction="asc")
+    assert [l["id"] for l in by_email["items"]][0] == mine["id"] and by_email["total"] == 4
+    # paging: one page at a time, exact totals, no repeats
+    first, second = page(ravi, view="all_open", limit=2), page(ravi, view="all_open", limit=2, offset=2)
+    assert first["total"] == second["total"] == 4 and not set(ids(first)) & set(ids(second))
+    # a Manager's lists are unchanged (everyone's leads and the pool)
+    assert page(login_as(client, PRIYA), view="all_open")["total"] == 5
+    # seeing pooled leads in his list gives no rights over them: mixed selections leave them out, saying why
+    ravi = login_as(client, RAVI)
+    moved = ravi.post("/api/leads/bulk-transfer", json={"lead_ids": [mine["id"], pooled[0]], "to_user_id": team["tara"]}).json()
+    assert moved["transferred"] == 1 and moved["skipped"][0]["id"] == pooled[0]
+    assert "Unassigned Pool" in moved["skipped"][0]["reason"] and moved["skipped"][0]["name"] == lead_row(pooled[0]).name
+    gone = ravi.post("/api/leads/bulk-delete", json={"lead_ids": [pooled[1]]}).json()
+    assert gone["deleted"] == 0 and "Unassigned Pool" in gone["skipped"][0]["reason"]
+    preview = ravi.post("/api/campaigns/preview", json={"lead_ids": [lost["id"], *pooled]}).json()
+    assert preview["reasons"]["not_allowed"] == 3
+    asked = ravi.post("/api/transfer-requests/bulk", json={"lead_ids": [lost["id"], pooled[2]], "reason": REASON}).json()
+    assert asked["requested"] == 1 and asked["skipped"] == [{"lead_id": lost["id"], "name": lead_row(lost["id"]).name,
+                                                             "reason": "This lead is already yours"}]
+    assert [lead_row(i).owner_id for i in pooled] == [None, None, None]
+
+
+def test_uploaded_leads_keeps_its_upload_filter_for_pooled_leads(client, team):
+    """Uploaded Leads has always meant: leads that came from a file (uploaded_from), among the leads you can see. A
+    Salesperson now sees the open pool too, but a pooled lead that didn't come from a file is never an Uploaded Lead
+    (in the List or in the Kanban's Unassigned column)."""
+    upload(login_as(client, ASHA), pool_rows(3))
+    first, second, third = sorted(pooled_ids(client))
+    assert login_as(client, ASHA).post(f"/api/leads/{third}/assign", json={"to_user_id": RAVI}).status_code == 200
+    # a pooled lead that wasn't uploaded (the app never makes one; synthetic, to prove the filter)
+    manual = own_lead(client, team["tara"], "Manualpool", "manual.pool@pool-synthetic.example")["id"]
+    with db() as s:
+        lead = s.get(Lead, manual)
+        lead.owner_id, lead.uploaded_from = None, None
+        s.commit()
+    ids = lambda body: sorted(l["id"] for l in body["items"])  # noqa: E731
+    ravi = login_as(client, RAVI)
+    # Uploaded Leads: his uploaded lead and the uploaded pooled ones, never the manual pooled record
+    assert ids(page(ravi, view="uploaded")) == sorted([first, second, third])
+    # the Kanban asks the same: the Unassigned column (uploaded pooled leads) + his uploaded lead in its stage column
+    assert ids(page(ravi, view="uploaded", owner="unassigned")) == sorted([first, second])
+    assert ids(page(ravi, view="uploaded", stage="New", assigned="true")) == [third]
+    # All Open Leads and Unassigned Leads have no upload rule, so the manual pooled record is there
+    assert manual in ids(page(ravi, view="all_open")) and manual in ids(page(ravi, view="unassigned"))
+    # My Uploaded Leads stays his own uploads
+    assert ids(page(ravi, view="my_uploaded")) == [third]
+    # a Manager's Uploaded Leads: every uploaded lead, still not the manual pooled record
+    assert ids(page(login_as(client, PRIYA), view="uploaded")) == sorted([first, second, third])
 
 
 # ---------- several pooled leads requested at once ----------

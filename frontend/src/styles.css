@@ -1591,6 +1591,18 @@ td.high {
 .record-side .card-header h2 {
   font-size: 14px;
 }
+/* Account page only: Details, Leads and Opportunities stacked in the main column (Emails and Contacts on the right).
+   Long names, emails and links wrap instead of widening the page. */
+.account-main {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.account-columns .related-records a,
+.account-columns .related-records dd,
+.account-columns .field-value {
+  overflow-wrap: anywhere;
+}
 .tabs {
   display: flex;
   gap: 4px;

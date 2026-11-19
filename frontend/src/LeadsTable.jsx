@@ -10,7 +10,7 @@ import { CellPreview, markCutCells, PreviewCell } from "./CellPreview";
 import { leadBoardColumns, leadConvertChoice, POOL_LABEL, POOL_OWNER } from "./domain";
 import LeadsKanban from "./LeadsKanban";
 import { NewCampaign, queuedMessage, watchCampaign } from "./CampaignsPage";
-import { can, canCreateSales, canRequestPool } from "./permissions";
+import { can, canCreateSales, canRequestPool, seesPoolContacts } from "./permissions";
 import { BulkRequestDialog } from "./TransferRequests";
 import { DateCell, Icon, PAGE_SIZES, Pagination, PhoneReveal, StageBadge } from "./ui";
 import { dateTime } from "./format";
@@ -251,7 +251,7 @@ export default function LeadsTable({
   const [again, setAgain] = useState(0); // reloads the list after a bulk action, or on Try again
   const selectAll = useRef(null);
   const kanban = mode === "kanban";
-  const columns = leadBoardColumns(view, stage || filters.stage, filters.owner);
+  const columns = leadBoardColumns(view, stage || filters.stage, filters.owner, { poolContacts: seesPoolContacts(user) });
 
   useEffect(() => {
     const t = setTimeout(() => (setTerm(search.trim()), setPage(0)), 350); // search after typing stops
@@ -405,8 +405,11 @@ export default function LeadsTable({
     requestAnimationFrame(() => selectAll.current?.focus()); // the bar goes away: keep the keyboard in the table
   };
   // a Salesperson asks for ticked leads from the Unassigned Pool (only the ticked ones: never the whole pool)
+  // All Open Leads lists the pool as well as their own leads: with any pooled lead ticked, Request Assignment is the
+  // only action offered (for the pooled ones); the server refuses anything else on them too
   const asksForPool = canRequestPool(user);
-  const pooledTicked = asksForPool && [...selected].some((id) => seen.current.get(id)?.in_pool);
+  const pooledIds = asksForPool ? [...selected].filter((id) => seen.current.get(id)?.in_pool) : [];
+  const pooledTicked = pooledIds.length > 0;
   // the actions for the ticked leads (listHelpers.js): Request Assignment, Convert, Email Campaign, Transfer, Delete
   const actions = leadSelectionActions({
     count: selected.size,
@@ -414,7 +417,7 @@ export default function LeadsTable({
     canCampaign: can(user, "send_campaigns"),
     canTransfer: canTransferAny,
     canRequest: pooledTicked,
-    poolOnly: asksForPool && view === "unassigned",
+    poolOnly: asksForPool && (view === "unassigned" || pooledTicked),
   });
   const run = {
     // opens the usual Convert popup for the one ticked lead (nothing is converted until it's saved);
@@ -425,7 +428,7 @@ export default function LeadsTable({
     campaign: () => setCampaignFor([...selected]),
     transfer: () => setBulk({ type: "transfer", ids: [...selected] }),
     delete: () => setBulk({ type: "delete", ids: [...selected] }),
-    request: () => setPoolRequest([...selected]),
+    request: () => setPoolRequest({ ids: pooledIds, others: selected.size - pooledIds.length }),
   };
   const finish = (res) => {
     const transfer = bulk.type === "transfer";
@@ -465,6 +468,12 @@ export default function LeadsTable({
             <p className="selection-summary">
               <b aria-live="polite">{plural(ticked.count)} selected</b>
               <span>{ticked.where}</span>
+              {pooledTicked && pooledIds.length < selected.size && (
+                <span className="selection-pool-note">
+                  {plural(pooledIds.length)} in the Unassigned Pool: untick {pooledIds.length === 1 ? "it" : "them"} for actions on your own
+                  leads
+                </span>
+              )}
             </p>
             <button type="button" className="link selection-clear" onClick={clearSelection}>
               Clear selection
@@ -781,7 +790,8 @@ export default function LeadsTable({
       )}
       {poolRequest && (
         <BulkRequestDialog
-          leadIds={poolRequest}
+          leadIds={poolRequest.ids}
+          others={poolRequest.others}
           onClose={(changed) => {
             setPoolRequest(null);
             if (changed) {

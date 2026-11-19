@@ -2,7 +2,7 @@ import "./analyticsCharts.test.js"; // Home > Analytics
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { canCreateOpportunity, canCreateSales, canEditRecord } from "./permissions.js";
+import { canCreateOpportunity, canCreateSales, canEditRecord, seesPoolContacts } from "./permissions.js";
 import {
   api,
   apiRequest,
@@ -88,7 +88,7 @@ import {
   sourceAfterLinkedInMatch,
 } from "./domain.js";
 import { BUSINESS_TIMEZONE, BUSINESS_TZ_LABEL, businessNow, formatBusiness, formatBusinessTime, fromBusinessInput, toBusinessInput } from "./businessTime.js";
-import { attachedSummary, fileSize, formatPhone, maskPhone, sourceMaskedPhone } from "./format.js";
+import { attachedSummary, dateTime, fileSize, formatPhone, maskPhone, shortDate, sourceMaskedPhone, time } from "./format.js";
 import {
   BULK_LIMIT,
   chipText,
@@ -381,6 +381,67 @@ test("stage order: skipped stages must be confirmed, Revisit is optional, going 
   assert.deepEqual(skippedStages(OPPORTUNITY_FLOW, "Opportunity", "Proposal"), ["Discovery"]);
   assert.deepEqual(skippedStages(OPPORTUNITY_FLOW, "Opportunity", OPPORTUNITY_FLOW.length), ["Discovery", "Proposal"]);
   assert.deepEqual(skippedStages(OPPORTUNITY_FLOW, "Proposal", OPPORTUNITY_FLOW.length), []);
+});
+test("Issue 46: a recorded time sent with its offset shows the same moment in each browser's own time zone", () => {
+  const saved = process.env.TZ;
+  const created = "2026-11-18T20:33:20.874534-05:00"; // what the API sends now: New York server time with its offset
+  try {
+    process.env.TZ = "Asia/Kolkata";
+    assert.equal(dateTime(created), "11/19/2026, 7:03 AM");
+    assert.deepEqual([shortDate(created), time(created)], ["11/19/2026", "7:03 AM"]); // the Leads table's date cell
+    process.env.TZ = "America/New_York";
+    assert.equal(dateTime(created), "11/18/2026, 8:33 PM");
+    assert.deepEqual([shortDate(created), time(created)], ["11/18/2026", "8:33 PM"]);
+  } finally {
+    if (saved === undefined) delete process.env.TZ;
+    else process.env.TZ = saved;
+  }
+});
+test("Salesperson pool visibility (original issue 47): the Kanban leaves the pool out where the List does", () => {
+  const excluded = (view, poolContacts) =>
+    leadBoardColumns(view, null, null, { poolContacts }).filter((c) => c.excluded).map((c) => c.stage);
+  // All Open Leads, All Leads and Uploaded Leads: the Unassigned column for everyone (the List lists the pool too)
+  for (const view of ["all_open", "all", "uploaded"]) assert.ok(!excluded(view, false).includes("Unassigned"), view);
+  // email-status lists: someone who can't see pooled leads' emails gets their own leads only, as in the List
+  for (const view of ["invalid_email", "unsubscribed", "email_ok", "no_email"]) {
+    assert.ok(excluded(view, false).includes("Unassigned"), view);
+    assert.ok(!excluded(view, true).includes("Unassigned"), view); // unchanged for the Admin and Managers
+  }
+  assert.deepEqual(leadBoardColumns("email_ok", null, null), leadBoardColumns("email_ok", null, null, { poolContacts: true }));
+  // who sees pooled leads' contact details: the same rule as the server
+  assert.equal(seesPoolContacts({ role: "Salesperson", permissions: [] }), false);
+  assert.equal(seesPoolContacts({ role: "Salesperson", permissions: ["view_team_records"] }), true);
+  assert.equal(seesPoolContacts({ role: "Manager", permissions: ["reassign_owner"] }), true);
+  assert.equal(seesPoolContacts({ role: "Admin", permissions: [] }), true);
+  // with a pooled lead ticked, a Salesperson gets Request Assignment only, for the pooled ones
+  const table = source("./LeadsTable.jsx");
+  assert.match(table, /poolOnly: asksForPool && \(view === "unassigned" \|\| pooledTicked\)/);
+  assert.match(table, /request: \(\) => setPoolRequest\(\{ ids: pooledIds, others: selected\.size - pooledIds\.length \}\)/);
+  assert.match(table, /leadBoardColumns\(view, stage \|\| filters\.stage, filters\.owner, \{ poolContacts: seesPoolContacts\(user\) \}\)/);
+});
+test("Account page (issue 49): Details, Leads and Opportunities in the main column; Emails and Contacts beside it", () => {
+  const related = source("./RelatedPages.jsx");
+  const page = related.slice(related.indexOf("export function AccountPage"), related.indexOf("export function ContactPage"));
+  const at = (text) => page.indexOf(text);
+  const order = ['<div className="account-main">', "Account Information", "<AccountLeads accountId={account.id} />",
+    "title={`Opportunities (${opps.length})`}", '<aside className="record-side">', "title={`Emails (${emails.length})`}",
+    "title={`Contacts (${contacts.length})`}"];
+  order.forEach((text) => assert.ok(at(text) > 0, text));
+  for (let i = 1; i < order.length; i++) assert.ok(at(order[i - 1]) < at(order[i]), `${order[i - 1]} before ${order[i]}`);
+  // the other record pages keep their layout: the new styles are the Account page's own classes
+  const css = source("./styles.css");
+  assert.match(css, /\.account-main \{\s*display: grid;\s*gap: 12px;\s*min-width: 0;\s*\}/);
+  assert.doesNotMatch(source("./RecordPage.jsx"), /account-main|account-columns/);
+  assert.doesNotMatch(related.slice(related.indexOf("export function ContactPage")), /account-main|account-columns/);
+});
+test("merge of qa_main (homepage-enhancements): no conflict markers; Transfer Requests and Analytics both open", () => {
+  // 4c48632 committed an unresolved conflict in App.jsx, which stopped the production build
+  for (const file of readdirSync(new URL(".", import.meta.url)).filter((f) => /\.(jsx?|css)$/.test(f)))
+    assert.doesNotMatch(source(`./${file}`), /^(<{7}|={7}|>{7})( |\r?$)/m, file);
+  const app = source("./App.jsx");
+  // a bell notice opens one request (#/transfer-requests?request=ID): the page needs the query and remounts on it
+  assert.match(app, /section === "transfer-requests"\) page = <TransferRequestsPage key=\{query\} user=\{user\} reload=\{reload\} query=\{query\} \/>/);
+  assert.match(app, /section === "analytics"\) page = <AnalyticsPage user=\{user\} query=\{query\} \/>/);
 });
 test("a pooled lead can't be converted from the Leads list either, whoever ticks it", () => {
   const pooled = { id: 9, stage: "New", owner_id: null, in_pool: true };
@@ -1062,7 +1123,7 @@ test("Leads selection bar: a Salesperson requests the ticked pooled leads (reque
   assert.equal(request.reason, "Up to 500 leads at a time");
   // only the ticked leads are sent (never the whole pool), and only to the request endpoint
   const table = source("./LeadsTable.jsx");
-  assert.match(table, /request: \(\) => setPoolRequest\(\[\.\.\.selected\]\)/);
+  assert.match(table, /request: \(\) => setPoolRequest\(\{ ids: pooledIds,/); // only the ticked pooled leads
   assert.match(source("./api.js"), /requestPoolLeads: \(lead_ids, reason\) => apiRequest\("\/transfer-requests\/bulk"/);
 });
 

@@ -128,31 +128,55 @@ export function AccountPage({ id, data, user, openNew, emailVersion }) {
           </button>
         )}
       </Highlights>
-      <div className="record-columns">
-        <section className="card record-main">
-          <div className="tabs">
-            <button className="on">Details</button>
-          </div>
-          <div className="detail-section">
-            <span className="section-toggle static">
-              <Icon name="down" size={12} /> Account Information
-            </span>
-            <FieldGrid
-              rows={[
-                ["Account Name", account.name],
-                ["Account Owner", account.owner_name],
-                ["Industry", account.industry],
-                ["Phone", account.phone && <PhoneReveal value={account.phone} />],
-                ["Website", site(account.website)],
-                ["LinkedIn", site(account.linkedin_url)],
-                ["Address", account.address],
-                ["Headcount", account.employees != null ? Number(account.employees).toLocaleString() : ""],
-                ["Turnover", amount(account.annual_revenue, account.currency)],
-                ["Created", dateTime(account.created_at)],
-              ]}
-            />
-          </div>
-        </section>
+      {/* main column: Details, then the account's Leads and Opportunities; Emails and Contacts on the right */}
+      <div className="record-columns account-columns">
+        <div className="account-main">
+          <section className="card record-main">
+            <div className="tabs">
+              <button className="on">Details</button>
+            </div>
+            <div className="detail-section">
+              <span className="section-toggle static">
+                <Icon name="down" size={12} /> Account Information
+              </span>
+              <FieldGrid
+                rows={[
+                  ["Account Name", account.name],
+                  ["Account Owner", account.owner_name],
+                  ["Industry", account.industry],
+                  ["Phone", account.phone && <PhoneReveal value={account.phone} />],
+                  ["Website", site(account.website)],
+                  ["LinkedIn", site(account.linkedin_url)],
+                  ["Address", account.address],
+                  ["Headcount", account.employees != null ? Number(account.employees).toLocaleString() : ""],
+                  ["Turnover", amount(account.annual_revenue, account.currency)],
+                  ["Created", dateTime(account.created_at)],
+                ]}
+              />
+            </div>
+          </section>
+          <AccountLeads accountId={account.id} />
+          <Card title={`Opportunities (${opps.length})`} icon="opportunity">
+            <ul className="related-records">
+              {opps.map((o) => (
+                <li key={o.id}>
+                  <a href={`#/opportunities/${o.id}`}>{o.name}</a>
+                  <dl>
+                    <dt>Stage:</dt>
+                    <dd>
+                      <StageBadge stage={o.stage} />
+                    </dd>
+                    <dt>Amount:</dt>
+                    <dd>{amount(o.value, o.currency)}</dd>
+                    <dt>Close Date:</dt>
+                    <dd>{shortDate(o.expected_close_date)}</dd>
+                  </dl>
+                </li>
+              ))}
+              {!opps.length && <p className="muted pad">No opportunities yet.</p>}
+            </ul>
+          </Card>
+        </div>
         <aside className="record-side">
           <Card title={`Emails (${emails.length})`} icon="event">
             <EmailList emails={emails} />
@@ -181,27 +205,6 @@ export function AccountPage({ id, data, user, openNew, emailVersion }) {
                 </li>
               ))}
               {!contacts.length && <p className="muted pad">No contacts yet.</p>}
-            </ul>
-          </Card>
-          <AccountLeads accountId={account.id} />
-          <Card title={`Opportunities (${opps.length})`} icon="opportunity">
-            <ul className="related-records">
-              {opps.map((o) => (
-                <li key={o.id}>
-                  <a href={`#/opportunities/${o.id}`}>{o.name}</a>
-                  <dl>
-                    <dt>Stage:</dt>
-                    <dd>
-                      <StageBadge stage={o.stage} />
-                    </dd>
-                    <dt>Amount:</dt>
-                    <dd>{amount(o.value, o.currency)}</dd>
-                    <dt>Close Date:</dt>
-                    <dd>{shortDate(o.expected_close_date)}</dd>
-                  </dl>
-                </li>
-              ))}
-              {!opps.length && <p className="muted pad">No opportunities yet.</p>}
             </ul>
           </Card>
         </aside>
