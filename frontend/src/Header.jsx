@@ -389,7 +389,8 @@ export function Sidebar({ section, data, user, collapsed }) {
               className={
                 section === key ||
                 (key === "users" && ["permissions", "activity", "team-activity"].includes(section)) ||
-                (key === "leads" && section === "transfer-requests")
+                (key === "leads" && section === "transfer-requests") ||
+                (key === "home" && section === "analytics")
                   ? "active"
                   : ""
               }

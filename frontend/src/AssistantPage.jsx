@@ -498,7 +498,8 @@ export default function AssistantPage({ user, reload }) {
               <div className="alert ai-off" role="status">
                 <Icon name="warn" size={16} />
                 <span>
-                  The AI Assistant isn't set up yet. Add <code>OPENAI_API_KEY</code> to the <code>.env</code> file and restart the app.
+                  The AI Assistant isn't set up yet. Add <code>OPENAI_API_KEY</code>, or <code>OLLAMA_MODEL</code> for a local model
+                  (e.g. Qwen), to the <code>.env</code> file and restart the app.
                 </span>
               </div>
             )}

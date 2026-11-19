@@ -190,6 +190,51 @@ class LeadTransfer(Base):
     transferred_by: Mapped[User] = relationship(foreign_keys=[transferred_by_id])
 
 
+class AnalyticsChart(Base):
+    """One chart on a user's Analytics board (Home > Analytics), built by the user: what to count (metric), how to
+    split it (group_by), how to draw it (chart_type) and over which period. Their Manager and the Admin see it live."""
+
+    __tablename__ = "analytics_charts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    title: Mapped[str] = mapped_column(String(80))
+    metric: Mapped[str] = mapped_column(String(30))       # app/routers/analytics.py METRICS
+    group_by: Mapped[str] = mapped_column(String(20))     # app/routers/analytics.py GROUPS
+    chart_type: Mapped[str] = mapped_column(String(10))   # bar, column, line, donut, number
+    period: Mapped[str] = mapped_column(String(15))       # app/routers/analytics.py PERIODS (custom: start_date, end_date)
+    start_date: Mapped[date | None]
+    end_date: Mapped[date | None]
+    currency: Mapped[str] = mapped_column(String(3), default="USD", server_default="USD")  # money metrics only
+    width: Mapped[str] = mapped_column(String(10), default="half", server_default="half")  # quarter, half, full
+    position: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[datetime | None] = mapped_column(server_default=func.now())
+    updated_at: Mapped[datetime | None] = mapped_column(server_default=func.now(), onupdate=func.now())
+
+
+class AnalyticsReport(Base):
+    """A dated snapshot of a user's Analytics charts (Send Report: the board; Share as Excel: one chart) with a note,
+    sent to the people the user picked, who can mark it reviewed with an optional comment."""
+
+    __tablename__ = "analytics_reports"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    title: Mapped[str] = mapped_column(String(120))
+    note: Mapped[str | None] = mapped_column(Text)
+    charts: Mapped[str] = mapped_column(Text)  # JSON: the charts with their numbers when it was sent
+    kind: Mapped[str] = mapped_column(String(10), default="board")  # board (Send Report) or chart (Share as Excel)
+    sent_to: Mapped[str | None] = mapped_column(String(300))  # who it went to, for the record ("Priya Sharma")
+    recipient_ids: Mapped[str | None] = mapped_column(Text)  # ",3,7,": who it went to (older reports: none)
+    reviewed_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    reviewed_at: Mapped[datetime | None]
+    review_comment: Mapped[str | None] = mapped_column(String(1000))
+    created_at: Mapped[datetime | None] = mapped_column(server_default=func.now())
+
+    user: Mapped[User] = relationship(foreign_keys=[user_id])
+    reviewed_by: Mapped[User | None] = relationship(foreign_keys=[reviewed_by_id])
+
+
 class LeadTransferRequest(Base):
     """A user asks for someone else's lead. The lead's owner, the owner's Manager or the Admin approves or rejects it;
     the lead moves (a LeadTransfer) only when it is approved."""

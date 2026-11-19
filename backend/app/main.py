@@ -18,8 +18,9 @@ from app.constants import LEAD_SOURCES, LEAD_STAGES, LEAD_START, OPPORTUNITY_STA
 from app.database import Base, SessionLocal, engine, get_db
 from app import mailer, scheduler, schemas
 from app.security import authenticate, ensure_default_admin, require_admin
-from app.routers import (accounts, activity, assistant, attachments, auth, campaigns, emails, home, lead_enrichment,
-                         lead_files, leads, opportunities, opportunity_files, tasks, transfer_requests, user_files)
+from app.routers import (accounts, activity, analytics, assistant, attachments, auth, campaigns, emails, home,
+                         lead_enrichment, lead_files, leads, opportunities, opportunity_files, tasks, transfer_requests,
+                         user_files)
 from app import campaigns as campaign_sender
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:     %(name)s - %(message)s")
@@ -71,6 +72,27 @@ def upgrade_database() -> None:
             decided_by_id INT REFERENCES users(id), decision_note VARCHAR(300), decided_at TIMESTAMP,
             created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)"""))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_lead_transfer_requests_lead ON lead_transfer_requests (lead_id)"))
+        # Home > Analytics (database/schema.sql)
+        conn.execute(text("""CREATE TABLE IF NOT EXISTS analytics_charts (
+            id SERIAL PRIMARY KEY, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            title VARCHAR(80) NOT NULL, metric VARCHAR(30) NOT NULL, group_by VARCHAR(20) NOT NULL,
+            chart_type VARCHAR(10) NOT NULL, period VARCHAR(15) NOT NULL, start_date DATE, end_date DATE,
+            currency VARCHAR(3) NOT NULL DEFAULT 'USD', width VARCHAR(10) NOT NULL DEFAULT 'half',
+            position INT NOT NULL DEFAULT 0,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)"""))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_analytics_charts_user ON analytics_charts (user_id)"))
+        conn.execute(text("ALTER TABLE analytics_charts ADD COLUMN IF NOT EXISTS width VARCHAR(10) NOT NULL DEFAULT 'half'"))
+        conn.execute(text("""CREATE TABLE IF NOT EXISTS analytics_reports (
+            id SERIAL PRIMARY KEY, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            title VARCHAR(120) NOT NULL, note TEXT, charts TEXT NOT NULL, sent_to VARCHAR(300),
+            reviewed_by_id INT REFERENCES users(id), reviewed_at TIMESTAMP, review_comment VARCHAR(1000),
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)"""))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_analytics_reports_user ON analytics_reports (user_id)"))
+        conn.execute(text("ALTER TABLE analytics_reports ADD COLUMN IF NOT EXISTS kind VARCHAR(10) NOT NULL DEFAULT 'board'"))
+        conn.execute(text("ALTER TABLE analytics_reports ADD COLUMN IF NOT EXISTS recipient_ids TEXT"))
+        # "Send proposal" is a High priority task (it was Normal): open ones are raised too
+        conn.execute(text("UPDATE tasks SET priority = 'High' WHERE is_auto AND title = 'Send proposal' "
+                          "AND status = 'Open' AND priority <> 'High'"))
         for table, column, kind in (
             ("leads", "linkedin_url", "VARCHAR(300)"), ("leads", "company_website", "VARCHAR(255)"),
             ("leads", "company_linkedin_url", "VARCHAR(300)"), ("leads", "annual_revenue", "NUMERIC(16,2)"),
@@ -247,7 +269,7 @@ app.include_router(campaigns.public)
 for router in (user_files.router, emails.router, home.router, lead_files.router, lead_enrichment.router,
                lead_enrichment.contacts_router, campaigns.router, campaigns.leads_router, leads.router, opportunity_files.router,
                opportunities.router, attachments.router, tasks.router, accounts.router, activity.router, assistant.router,
-               transfer_requests.router):
+               transfer_requests.router, analytics.router):
     app.include_router(router, dependencies=[Depends(authenticate)])
 
 

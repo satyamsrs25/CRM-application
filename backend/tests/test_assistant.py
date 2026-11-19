@@ -31,6 +31,8 @@ def ai(monkeypatch):
 
 def test_off_without_api_key(client, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OLLAMA_MODEL", raising=False)  # nor a local model
+    monkeypatch.delenv("ASSISTANT_PROVIDER", raising=False)
     assert client.get("/api/assistant/status").json()["enabled"] is False
     res = client.post("/api/assistant/chat", json={"message": "hi"})
     assert res.status_code == 503 and "OPENAI_API_KEY" in res.json()["detail"]
