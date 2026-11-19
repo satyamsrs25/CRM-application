@@ -50,7 +50,7 @@ AUTO_TASKS = {
     "Revisit": ("Revisit lead", 7, "Normal"),  # due on the chosen revisit date
     "Demo": ("Conduct demo", 3, "High"),
     "Opportunity": ("Schedule discovery call", 2, "Normal"),
-    "Discovery": ("Send proposal", 3, "Normal"),
+    "Discovery": ("Send proposal", 3, "High"),
     "Proposal": ("Follow up on proposal", 3, "High"),
 }
 

@@ -46,11 +46,8 @@ PERMISSION_GROUPS = {
     "Email": ("send_emails", "send_campaigns"),
     "Data": ("import_leads", "export_data"),
     "Administration": ("manage_users", "manage_permissions"),
-    # which Home cards each role sees (the Admin always has every permission; Lead Sources and Closing Soon are the
-    # Admin's own cards, so they are not listed here)
-    "Home dashboard": tuple(f"home_{card}" for card in (
-        "action_items", "meetings", "pipeline", "follow_up_radar", "scorecard", "recent_activity", "win_loss",
-        "team_performance")),
+    # Home's two tabs (the Admin always has both)
+    "Home": ("home_dashboard", "home_analytics"),
 }
 BOTH = ("Manager", "Salesperson")
 PERMISSIONS = {
@@ -74,21 +71,9 @@ PERMISSIONS = {
                     ("Manager", "Salesperson")),
     "manage_users": ("Manage users", "Add users, reset passwords, deactivate, transfer leads", ()),
     "manage_permissions": ("Manage roles & permissions", "Change this permission matrix", ()),
-    # Home dashboard cards (frontend/src/SellerHome.jsx shows a card only with its permission). "Me" cards are on a
-    # Salesperson's Home and a Manager's Me view; team cards on the Team view (needs View team dashboard).
-    "home_action_items": ("Action Needed", "Home card: my tasks, today (overdue first) and the next 7 days", BOTH),
-    "home_meetings": ("Scheduled Demos", "Home card: my demos, today and the next 7 days", BOTH),
-    "home_pipeline": ("Overall Value", "Home card: open, won and lost amounts of the opportunities in the period", BOTH),
-    "home_follow_up_radar": ("Follow-up Radar", "Home card (Me): leads, accounts and contacts with past or no activity",
-                             BOTH),
-    "home_scorecard": ("My Scorecard", "Home card (Me): won and lost deals, converted leads, win rate, average deal",
-                       BOTH),
-    "home_recent_activity": ("Recent Activity", "Home card (Me): the leads, opportunities, accounts and contacts changed last",
-                             BOTH),
-    "home_win_loss": ("Win/Loss Analysis", "Home card (Team): won vs lost, win rate and the top lost reasons",
-                      ("Manager",)),
-    "home_team_performance": ("Team Performance", "Home card (Team): each salesperson's leads, pipeline and wins, ranked",
-                              ("Manager",)),
+    # Home's tabs (frontend/src/SellerHome.jsx and Analytics.jsx; the analytics API checks home_analytics too)
+    "home_dashboard": ("Dashboard", "Home > Dashboard: tasks, demos, pipeline, scorecard and activity cards", BOTH),
+    "home_analytics": ("Analytics", "Home > Analytics: build charts, download them and send reports", BOTH),
 }
 LOCKED_FOR_ADMIN = True  # the Admin keeps every permission, so nobody can lock themselves out
 

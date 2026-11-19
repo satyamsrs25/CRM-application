@@ -42,15 +42,15 @@ class Rename(BaseModel):
 
 def require_enabled():
     if not assistant.enabled():
-        raise HTTPException(status_code=503, detail="The AI Assistant isn't set up yet. "
-                            "Add OPENAI_API_KEY to the .env file and restart the app (docker compose up -d).")
+        raise HTTPException(status_code=503, detail="The AI Assistant isn't set up yet. Add OPENAI_API_KEY (or "
+                            "OLLAMA_MODEL for a local model) to the .env file and restart the app (docker compose up -d).")
 
 
 @router.get("/status")
 def status():
     """Is the assistant switched on? (The page shows a setup message when it isn't.)"""
     cfg = assistant.settings()
-    return {"enabled": bool(cfg["key"]), "model": cfg["model"]}
+    return {"enabled": assistant.enabled(), "model": cfg["model"], "provider": cfg["provider"]}
 
 
 # ---------- saved chats (history panel) ----------

@@ -1,4 +1,4 @@
-"""Home: the period selector, Action Needed / Scheduled Demos, the team cards, the Admin's team picker, and which cards
+"""Home: the period selector, Active Tasks / Scheduled Demos, the team cards, the Admin's team picker, and which cards
 each role sees. All data is made up."""
 from datetime import date, datetime, timedelta
 
@@ -11,9 +11,7 @@ from conftest import login_as
 from test_opportunity_duplicates import create, new_lead
 
 PRIYA, RAVI, ASHA = 1, 2, 3  # Manager, Salesperson, Admin
-HOME_CARDS = {"home_action_items", "home_meetings", "home_pipeline", "home_win_loss", "home_follow_up_radar",
-              "home_scorecard", "home_recent_activity", "home_team_performance"}
-TEAM_CARDS = {"home_win_loss", "home_team_performance"}
+HOME_TABS = {"home_dashboard", "home_analytics"}
 
 
 def iso(when: datetime) -> str:
@@ -133,18 +131,18 @@ def test_admin_sees_every_record(client):
     assert radar["build_pipeline"]["total"] == 1 and radar["accounts"]["total"] == 2
 
 
-def test_admin_chooses_the_home_cards_for_each_role(client):
+def test_admin_chooses_the_home_tabs_for_each_role(client):
+    """Manage Access > Permissions > Home: Dashboard and Analytics for each role (on by default; the Admin has both)."""
     rows = {r["key"]: r for r in login_as(client, ASHA).get("/api/permissions").json()["permissions"]}
-    home_rows = {k for k, r in rows.items() if r["group"] == "Home dashboard"}
-    assert home_rows == HOME_CARDS
-    assert not any(rows[k]["roles"]["Salesperson"]["allowed"] for k in TEAM_CARDS)  # team cards: Managers
-    assert all(rows[k]["roles"]["Salesperson"]["allowed"] for k in HOME_CARDS - TEAM_CARDS)
-    assert all(rows[k]["roles"]["Manager"]["allowed"] for k in HOME_CARDS)
+    assert {k for k, r in rows.items() if r["group"] == "Home"} == HOME_TABS
+    assert all(rows[k]["roles"][role]["allowed"] for k in HOME_TABS for role in ("Salesperson", "Manager"))
+    assert [rows[k]["label"] for k in ("home_dashboard", "home_analytics")] == ["Dashboard", "Analytics"]
 
-    res = client.put("/api/permissions", json={"role": "Salesperson", "permission": "home_recent_activity", "allowed": False})
+    res = client.put("/api/permissions", json={"role": "Salesperson", "permission": "home_analytics", "allowed": False})
     assert res.status_code == 200, res.text
     salesperson = set(login_as(client, RAVI).get("/api/auth/me").json()["permissions"])
-    manager = set(login_as(client, PRIYA).get("/api/auth/me").json()["permissions"])
-    admin = set(login_as(client, ASHA).get("/api/auth/me").json()["permissions"])
-    assert "home_recent_activity" not in salesperson and "home_scorecard" in salesperson
-    assert "home_recent_activity" in manager and HOME_CARDS <= admin  # the Admin always has every card
+    assert "home_analytics" not in salesperson and "home_dashboard" in salesperson
+    denied = client.get(f"/api/analytics/boards/{RAVI}")
+    assert denied.status_code == 403 and "Analytics" in denied.json()["detail"]
+    assert login_as(client, PRIYA).get(f"/api/analytics/boards/{PRIYA}").status_code == 200
+    assert HOME_TABS <= set(login_as(client, ASHA).get("/api/auth/me").json()["permissions"])
