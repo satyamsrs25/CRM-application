@@ -1,3 +1,4 @@
+import "./analyticsCharts.test.js"; // Home > Analytics
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -1797,12 +1798,13 @@ test("Leads Kanban: Sort by only, each field in its default order; the summary n
 
 test("Home period: Past 1 week counts up to now, a custom range has an end", async () => {
   const { PERIODS, DEFAULT_PERIOD, periodRange, periodQuery, periodLabel, localIso } = await import("./homePeriod.js");
-  assert.deepEqual(PERIODS, [["7d", "Past 1 week"], ["custom", "Custom range"]]);
+  assert.deepEqual(PERIODS, [["7d", "Past 1 week"], ["30d", "Past 1 month"], ["custom", "Custom range"]]);
   assert.deepEqual(DEFAULT_PERIOD, { preset: "7d" });
   const now = new Date(2026, 10, 12, 15, 30, 0); // Nov 12, 2026 3:30 PM
   assert.equal(localIso(periodRange({ preset: "7d" }, now).start), "2026-11-05T15:30:00");
   assert.equal(localIso(periodRange({ preset: "1m" }, now).start), "2026-11-05T15:30:00"); // an older choice: 1 week
   assert.equal(periodQuery({ preset: "7d" }, now), "start=2026-11-05T15%3A30%3A00");
+  assert.equal(localIso(periodRange({ preset: "30d" }, now).start), "2026-10-13T15:30:00"); // Past 1 month: 30 days
   const custom = { preset: "custom", from: "2026-01-01T09:00", to: "2026-02-01T18:00" };
   assert.equal(periodQuery(custom, now), "start=2026-01-01T09%3A00%3A00&end=2026-02-01T18%3A00%3A00");
   // a custom range that ends before it starts falls back to Past 1 week
@@ -1810,24 +1812,26 @@ test("Home period: Past 1 week counts up to now, a custom range has an end", asy
   assert.equal(periodLabel("2026-11-05T15:30:00", "2026-11-12T15:30:00"), "Nov 5 – Nov 12, 2026");
 });
 
-test("Home: one dashboard per role, each card with its permission", async () => {
+test("Home: one dashboard per role; the Dashboard and Analytics tabs each need their permission", async () => {
   const fs = await import("node:fs");
   const home = fs.readFileSync(new URL("./SellerHome.jsx", import.meta.url), "utf8");
-  for (const title of ["Action Needed", "Scheduled Demos", "Overall Value", "Closing Soon", "Follow-up Radar", "My Scorecard",
+  for (const title of ["Active Tasks", "Scheduled Demos", "Overall Value", "Closing Soon", "Follow-up Radar", "My Scorecard",
     "Recent Activity", "Team Performance", "Win/Loss Analysis", "Lead Sources"])
     assert.ok(home.includes(title), title);
   for (const old of ["Top Opportunities", "Suggested Actions", "Campaign Performance", "Lead Funnel", "Coaching Alerts",
     "Data Health", "Open deals by stage", "in this period", "My Pipeline", "Team Leaderboard", "Team Comparison", "manager_id"])
     assert.ok(!home.includes(old), old);
-  for (const card of ["action_items", "meetings", "pipeline", "follow_up_radar", "scorecard", "recent_activity", "win_loss",
-    "team_performance"])
-    assert.ok(home.includes(`shows("${card}")`), card);
+  assert.match(home, /const dashboard = can\(user, "home_dashboard"\)/);
+  assert.match(home, /if \(!dashboard\) return <AnalyticsPage/); // no Dashboard: Home opens Analytics
+  const analytics = fs.readFileSync(new URL("./Analytics.jsx", import.meta.url), "utf8");
+  assert.match(analytics, /if \(!can\(user, "home_analytics"\)\)/);
+  assert.match(analytics, /filter\(\(\[key\]\) => can\(user, `home_\$\{key\}`\)\)/); // only the tabs the role may open
   // the Admin's own cards (every record, no team picker); Closing Soon is the Admin's only
   assert.match(home, /isAdmin && charts\.lead_sources/);
   assert.match(home, /isAdmin && charts\.closing_soon && <ClosingSoonCard/);
   assert.match(home, /isAdmin && <RadarCard/);
   assert.match(home, /isAdmin && charts\.recent_records && <RecentCard/); // not on the Manager's My Team view
-  assert.match(home, /!isAdmin && shows\("team_performance"\)/);
+  assert.match(home, /!isAdmin && <LeaderboardCard/);
   assert.equal(home.match(/<Section title="Today"/g).length, 2);
   assert.equal(home.match(/<Section title="Upcoming"/g).length, 2);
 });

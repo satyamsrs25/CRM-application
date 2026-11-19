@@ -12,9 +12,17 @@ How it works
   carries a "pending" action and the user clicks Confirm (POST /api/assistant/confirm) before anything happens.
 
 Settings (.env)
-  OPENAI_API_KEY    required to turn the assistant on
-  OPENAI_MODEL      default gpt-4o-mini
-  OPENAI_BASE_URL   default https://api.openai.com/v1 (any OpenAI-compatible endpoint)
+  OpenAI (or any OpenAI-compatible endpoint):
+    OPENAI_API_KEY    turns the assistant on
+    OPENAI_MODEL      default gpt-4o-mini
+    OPENAI_BASE_URL   default https://api.openai.com/v1
+  A local model with Ollama (e.g. Qwen), no API key needed:
+    OLLAMA_MODEL      turns the assistant on, e.g. qwen3.5:9b (must match `ollama list`; it must support tools)
+    OLLAMA_BASE_URL   default http://host.docker.internal:11434 (the same one email drafting uses)
+    OLLAMA_NUM_CTX    the model's context window, default 16384 (the CRM's tools alone are about 6,000 tokens:
+                      Ollama's small default would cut them off)
+    OLLAMA_KEEP_ALIVE default 30m (keeps the model loaded between messages)
+  ASSISTANT_PROVIDER  optional: openai or ollama, when both are set (default: openai if OPENAI_API_KEY is set)
 """
 import json
 import logging
@@ -45,15 +53,26 @@ MAX_TOOL_CHARS = 12_000  # a tool result the model reads
 
 
 def settings() -> dict:
+    """Which model the assistant uses: OpenAI (OPENAI_API_KEY) or a local Ollama model (OLLAMA_MODEL)."""
+    key = os.getenv("OPENAI_API_KEY", "").strip()
+    local_model = os.getenv("OLLAMA_MODEL", "").strip()
+    chosen = os.getenv("ASSISTANT_PROVIDER", "").strip().lower()
+    provider = chosen if chosen in ("openai", "ollama") else ("openai" if key or not local_model else "ollama")
+    if provider == "ollama":
+        return {
+            "provider": "ollama", "key": "", "model": local_model,
+            "base_url": os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434").strip().rstrip("/"),
+        }
     return {
-        "key": os.getenv("OPENAI_API_KEY", "").strip(),
+        "provider": "openai", "key": key,
         "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini",
         "base_url": os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/"),
     }
 
 
 def enabled() -> bool:
-    return bool(settings()["key"])
+    cfg = settings()
+    return bool(cfg["model"] if cfg["provider"] == "ollama" else cfg["key"])
 
 
 # ---------- tool definitions (what the model can ask for) ----------
@@ -732,6 +751,8 @@ def suggestions_for(model_items: list[str], tools_used: list[str], links: list[d
 def call_model(messages: list[dict]) -> dict:
     """One Chat Completions call. Returns the assistant message (may contain tool_calls)."""
     cfg = settings()
+    if cfg["provider"] == "ollama":
+        return call_ollama(cfg, messages)
     try:
         res = httpx.post(f"{cfg['base_url']}/chat/completions", timeout=60,
                          headers={"Authorization": f"Bearer {cfg['key']}"},
@@ -747,6 +768,77 @@ def call_model(messages: list[dict]) -> dict:
             msg = res.text
         raise HTTPException(status_code=502, detail=f"AI service error: {msg[:300]}")
     return res.json()["choices"][0]["message"]
+
+
+# ---------- a local model with Ollama (e.g. Qwen) ----------
+
+THINKING = re.compile(r"<think>.*?(</think>|$)", flags=re.DOTALL | re.IGNORECASE)
+
+
+def to_ollama(messages: list[dict]) -> list[dict]:
+    """The conversation (OpenAI format) for Ollama's /api/chat: tool call arguments as objects, and each tool result
+    named by its tool."""
+    names, out = {}, []
+    for m in messages:
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            calls = []
+            for c in m["tool_calls"]:
+                names[c["id"]] = c["function"]["name"]
+                try:
+                    args = json.loads(c["function"].get("arguments") or "{}")
+                except ValueError:
+                    args = {}
+                calls.append({"function": {"name": c["function"]["name"], "arguments": args}})
+            out.append({"role": "assistant", "content": m.get("content") or "", "tool_calls": calls})
+        elif m.get("role") == "tool":
+            out.append({"role": "tool", "content": m.get("content") or "", "tool_name": names.get(m.get("tool_call_id"), "")})
+        else:
+            out.append({"role": m["role"], "content": m.get("content") or ""})
+    return out
+
+
+def from_ollama(message: dict) -> dict:
+    """Ollama's reply in OpenAI format: tool calls get ids and JSON arguments; a model's <think> part is left out."""
+    calls = []
+    for i, c in enumerate(message.get("tool_calls") or []):
+        fn = c.get("function") or {}
+        args = fn.get("arguments")
+        calls.append({"id": f"call_{os.urandom(4).hex()}_{i}", "type": "function",
+                      "function": {"name": fn.get("name", ""),
+                                   "arguments": args if isinstance(args, str) else json.dumps(args or {})}})
+    content = THINKING.sub("", message.get("content") or "").strip()
+    return {"role": "assistant", "content": content, **({"tool_calls": calls} if calls else {})}
+
+
+def call_ollama(cfg: dict, messages: list[dict]) -> dict:
+    """One /api/chat call to the local model (with the CRM's tools). Thinking is turned off: it only slows replies."""
+    body = {"model": cfg["model"], "messages": to_ollama(messages), "tools": tools_for(acting_user()), "stream": False,
+            "think": False, "keep_alive": os.getenv("OLLAMA_KEEP_ALIVE", "30m"),
+            "options": {"temperature": 0.1, "num_ctx": int(os.getenv("OLLAMA_NUM_CTX", "16384") or 16384)}}
+    url = f"{cfg['base_url']}/api/chat"
+    try:
+        res = httpx.post(url, json=body, timeout=float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "300") or 300))
+        if res.status_code == 400 and "think" in res.text.lower():  # a model without a thinking switch
+            body.pop("think")
+            res = httpx.post(url, json=body, timeout=float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "300") or 300))
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail="The local AI model took too long to answer. Try again (the first "
+                            "message loads the model), or use a smaller model.") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Ollama could not be reached at {cfg['base_url']}. Check that Ollama "
+                            "is running and OLLAMA_BASE_URL in .env.") from exc
+    if res.status_code == 404:
+        raise HTTPException(status_code=502, detail=f"The Ollama model {cfg['model']} was not found. Check OLLAMA_MODEL "
+                            "in .env against `ollama list`.")
+    if res.status_code >= 400:
+        try:
+            msg = res.json().get("error") or res.text
+        except ValueError:
+            msg = res.text
+        if "does not support tools" in str(msg):
+            msg = f"{cfg['model']} can't use tools, which the assistant needs. Use a model that supports tools (e.g. qwen3)."
+        raise HTTPException(status_code=502, detail=f"Ollama error: {str(msg)[:300]}")
+    return from_ollama(res.json().get("message") or {})
 
 
 def converse(db: Session, history: list[dict]) -> dict:

@@ -5,17 +5,19 @@ import { compactMoney, compactMoneyMix, dateTime, greeting, shortDate, time } fr
 import { Card, EmptyState, Icon, ObjectIcon, Ring, StageBadge } from "./ui";
 import { formatBusiness, formatBusinessTime } from "./businessTime";
 import { can } from "./permissions";
-import { PERIODS, localIso, periodLabel, periodQuery } from "./homePeriod";
+import { localIso, periodQuery } from "./homePeriod";
+import PeriodPicker from "./PeriodPicker";
+import AnalyticsPage, { HomeTabs } from "./Analytics";
 
-// Home: one dashboard per role (each card also needs its "Home dashboard" permission, which the Admin sets for
-// Managers and Salespeople on the Permissions page; the Admin has them all):
-// - Salesperson, and a Manager's Me view: Action Needed, Scheduled Demos, Overall Value, Follow-up Radar, My Scorecard,
+// Home > Dashboard: one dashboard per role. The tab needs the "Dashboard" permission (Manage Access > Permissions >
+// Home; the Admin has it); without it Home opens Analytics (if allowed):
+// - Salesperson, and a Manager's Me view: Active Tasks, Scheduled Demos, Overall Value, Follow-up Radar, My Scorecard,
 //   Recent Activity (GET /api/home)
-// - Manager's My Team view: Action Needed, Scheduled Demos, Overall Value, Win/Loss Analysis, Team Performance
+// - Manager's My Team view: Active Tasks, Scheduled Demos, Overall Value, Win/Loss Analysis, Team Performance
 //   (GET /api/home/team-charts)
 // - Admin (every record): Overall Value, Win/Loss Analysis, Lead Sources, Closing Soon, Follow-up Radar,
 //   Recent Activity
-// The period (top right) applies to every card except Action Needed, Scheduled Demos, Closing Soon and Recent Activity,
+// The period (top right) applies to every card except Active Tasks, Scheduled Demos, Closing Soon and Recent Activity,
 // which are about now.
 
 const COLORS = { open: "#06a59a", won: "#1b96ff", lost: "#ea001e" };
@@ -70,7 +72,7 @@ function BarList({ rows, format = (v) => v, label }) {
   );
 }
 
-// A "Today" or "Upcoming" part of Action Needed / Scheduled Demos
+// A "Today" or "Upcoming" part of Active Tasks / Scheduled Demos
 function Section({ title, count, children }) {
   return (
     <div className="home-section">
@@ -82,15 +84,26 @@ function Section({ title, count, children }) {
   );
 }
 
+// Active Tasks: High priority tasks (and any proposal task) come first, then overdue, then by due date
+const isHighTask = (t) => t.priority === "High" || /proposal/i.test(t.title || "");
+const byPriority = (tasks) =>
+  tasks
+    .map((t, i) => [t, i])
+    .sort(([a, i], [b, j]) => isHighTask(b) - isHighTask(a) || i - j)
+    .map(([t]) => t);
+
 function TaskRows({ tasks, toggleTask, showDay, empty }) {
   if (!tasks.length) return <p className="home-section-empty">{empty}</p>;
   return (
     <ul className="home-tasks work-list">
-      {tasks.slice(0, 5).map((t) => (
+      {byPriority(tasks).slice(0, 5).map((t) => (
         <li key={t.id}>
           <input type="checkbox" aria-label={`Complete ${t.title}`} checked={t.completed} disabled={t.completed} onChange={() => toggleTask(t.id)} />
           <div>
-            <a href={t.relatedType !== "general" ? `#/${t.relatedType}/${t.relatedId}` : `#/tasks?task=${t.id}`}>{t.title}</a>
+            <span className="home-task-title">
+              <a href={t.relatedType !== "general" ? `#/${t.relatedType}/${t.relatedId}` : `#/tasks?task=${t.id}`}>{t.title}</a>
+              {isHighTask(t) && <span className="pill pill-high">High</span>}
+            </span>
             {t.related_to && (
               <small>
                 {t.related_type}: {t.related_to}
@@ -351,59 +364,6 @@ function LeaderboardCard({ people }) {
   );
 }
 
-// Period selector (top right). Past 1 week applies at once; a custom range needs From, To and Apply.
-function PeriodPicker({ period, setPeriod, shown }) {
-  const toInput = (value) => localIso(new Date(value)).slice(0, 16); // datetime-local: 2026-11-12T15:30
-  const [custom, setCustom] = useState(period.preset === "custom" ? { from: period.from, to: period.to } : null);
-  const choose = (preset) => {
-    if (preset === "custom") setCustom({ from: toInput(shown.start), to: toInput(new Date()) });
-    else {
-      setCustom(null);
-      setPeriod({ preset });
-    }
-  };
-  const valid = custom && custom.from && custom.to && custom.from < custom.to;
-  return (
-    <div className="home-period">
-      <div className="home-period-row">
-        <Icon name="calendar" size={16} />
-        <label className="sr-only" htmlFor="home-period">
-          Period
-        </label>
-        <select id="home-period" value={custom ? "custom" : period.preset} onChange={(e) => choose(e.target.value)}>
-          {PERIODS.map(([key, label]) => (
-            <option key={key} value={key}>
-              {label}
-            </option>
-          ))}
-        </select>
-      </div>
-      <small className="home-period-range">{periodLabel(shown.start, shown.end, period.preset === "custom")}</small>
-      {custom && (
-        <form
-          className="home-period-custom"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (valid) setPeriod({ preset: "custom", ...custom });
-          }}
-        >
-          <label>
-            <span>From</span>
-            <input type="datetime-local" value={custom.from} max={custom.to} onChange={(e) => setCustom({ ...custom, from: e.target.value })} required />
-          </label>
-          <label>
-            <span>To</span>
-            <input type="datetime-local" value={custom.to} min={custom.from} onChange={(e) => setCustom({ ...custom, to: e.target.value })} required />
-          </label>
-          <button className="sf-button brand" disabled={!valid}>
-            Apply
-          </button>
-        </form>
-      )}
-    </div>
-  );
-}
-
 // The team cards' data (GET /api/home/team-charts) for this period
 function useTeamCharts(enabled, period) {
   const [charts, setCharts] = useState(null);
@@ -439,11 +399,12 @@ export default function SellerHome({
   setPeriod = () => {},
 }) {
   const isAdmin = user.role === "Admin";
+  const dashboard = can(user, "home_dashboard");
   const teamView = isAdmin || (teamDashboard && scope === "team");
-  const { charts, error } = useTeamCharts(teamView, period);
+  const { charts, error } = useTeamCharts(dashboard && teamView, period);
+  if (!dashboard) return <AnalyticsPage user={user} />; // its own message when Analytics is off too
   const home = data.home?.seller_home;
   if (!home) return null;
-  const shows = (card) => can(user, `home_${card}`);
 
   // the period the API counted (no end = up to now): every pill and View button opens its records with it
   const counted = (teamView ? charts?.period : null) || home.period || { start: localIso(new Date(Date.now() - 7 * 864e5)), end: null };
@@ -457,10 +418,10 @@ export default function SellerHome({
   const work = isAdmin
     ? []
     : [
-        shows("action_items") && (
+        (
           <Card
             key="actions"
-            title="Action Needed"
+            title="Active Tasks"
             className="home-card"
             actions={
               <button className="icon-btn" aria-label="New task" title="New Task" onClick={() => openTask()}>
@@ -477,7 +438,7 @@ export default function SellerHome({
             </Section>
           </Card>
         ),
-        shows("meetings") && (
+        (
           <Card key="meetings" title="Scheduled Demos" className="home-card" footer={<ViewButton href={list("leads", "My Open Leads")}>View Leads</ViewButton>}>
             <Section title="Today" count={home.todays_events.length}>
               <EventRows events={home.todays_events} empty="No demos today." />
@@ -494,9 +455,9 @@ export default function SellerHome({
     const score = home.scorecard || {};
     cards = [
       ...work,
-      shows("pipeline") && <PipelineCard key="pipeline" pipeline={home.close_deals} views={MINE} range={range} />,
-      shows("follow_up_radar") && <RadarCard key="radar" home={home} mine range={range} />,
-      shows("scorecard") && (
+      <PipelineCard key="pipeline" pipeline={home.close_deals} views={MINE} range={range} />,
+      <RadarCard key="radar" home={home} mine range={range} />,
+      (
         <Card key="score" title="My Scorecard" className="home-card">
           <Outcomes won={score.won} wonValues={score.won_values} lost={score.lost} lostValues={score.lost_values} />
           <dl className="home-score">
@@ -515,18 +476,18 @@ export default function SellerHome({
           </dl>
         </Card>
       ),
-      shows("recent_activity") && <RecentCard key="recent" records={home.recent_records} />,
+      <RecentCard key="recent" records={home.recent_records} />,
     ];
   } else if (charts) {
     // ----- the Manager's My Team view / the Admin's dashboard -----
     cards = [
       ...work,
-      shows("pipeline") && <PipelineCard key="pipeline" pipeline={charts.pipeline} views={EVERYONE} range={range} />,
-      shows("win_loss") && <WinLossCard key="winloss" results={charts.win_loss} range={range} />,
+      <PipelineCard key="pipeline" pipeline={charts.pipeline} views={EVERYONE} range={range} />,
+      <WinLossCard key="winloss" results={charts.win_loss} range={range} />,
       isAdmin && charts.lead_sources && <SourcesCard key="sources" sources={charts.lead_sources} range={range} />,
       isAdmin && charts.closing_soon && <ClosingSoonCard key="closing" deals={charts.closing_soon} />,
       isAdmin && <RadarCard key="radar" home={home} range={range} />,
-      !isAdmin && shows("team_performance") && <LeaderboardCard key="leaders" people={charts.people} />,
+      !isAdmin && <LeaderboardCard key="leaders" people={charts.people} />,
       isAdmin && charts.recent_records && <RecentCard key="recent" records={charts.recent_records} showOwner />,
     ];
   }
@@ -534,6 +495,7 @@ export default function SellerHome({
 
   return (
     <div className="page seller-home">
+      <HomeTabs active="dashboard" user={user} />
       <div className="home-title">
         <div className="home-greeting">
           {/* Title Case on the page title: "Good Evening" */}
@@ -561,7 +523,7 @@ export default function SellerHome({
       ) : cards.length ? (
         <div className="home-grid">{cards}</div>
       ) : (
-        !error && <EmptyState text="No Home cards are turned on for your role. Your Admin can choose them on the Permissions page." />
+        !error && <EmptyState text="Nothing to show yet." />
       )}
     </div>
   );

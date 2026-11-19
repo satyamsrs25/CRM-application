@@ -1,14 +1,15 @@
 """Home page API: everything the dashboard needs.
 
 - summary, pipeline, todays_tasks, won_vs_lost: same as the SQL views in database/home-page-views.sql
-- seller_home (GET /api/home): the Salesperson's cards, also a Manager's Me view. Action Needed and Scheduled Demos are
+- seller_home (GET /api/home): the Salesperson's cards, also a Manager's Me view. Active Tasks and Scheduled Demos are
   always the user's own work, today and in the next 7 days. Overall Value, Follow-up Radar and My Scorecard count the
   records in the selected period (default: the past 7 days); Recent Activity (the records changed last) is about now.
   The Admin's Follow-up Radar comes from here too (every record).
 - GET /api/home/team-charts: the team cards (a Manager's team, or for the Admin every record): Overall Value,
   Win/Loss Analysis and Team Performance, and for the Admin also Lead Sources, Closing Soon and Recent Activity.
 Pass owner_id to /home to see only one salesperson's records ("owned by me"); leave it out for everything you can see.
-Which cards a role sees is set by the Admin on the Permissions page ("Home dashboard" permissions, app/security.py).
+Whether a role sees the Dashboard (and Analytics) tab is set by the Admin on the Permissions page ("Home"
+permissions, app/security.py).
 """
 from datetime import date, datetime, timedelta
 
@@ -196,7 +197,7 @@ def home_page(owner_id: int | None = Query(None, description="Only this salesper
     # today's tasks (open, due today or overdue), like v_todays_tasks
     todays_tasks = tasks_due(owned(select(Task), Task).where(Task.due_date < tomorrow))
 
-    # ----- Action Needed and Scheduled Demos: always the user's own work, today and the next 7 days -----
+    # ----- Active Tasks and Scheduled Demos: always the user's own work, today and the next 7 days -----
     my_tasks = select(Task).where(Task.owner_id == me.id)
     my_today = tasks_due(my_tasks.where(Task.due_date < tomorrow))
     my_upcoming = tasks_due(my_tasks.where(Task.due_date >= tomorrow, Task.due_date < upcoming_end))
@@ -252,7 +253,7 @@ def home_page(owner_id: int | None = Query(None, description="Only this salesper
         ],
         "seller_home": {
             "period": {"start": start, "end": end},  # end None: up to now
-            # Action Needed and Scheduled Demos (always the user's own)
+            # Active Tasks and Scheduled Demos (always the user's own)
             "my_tasks": {"today": my_today, "upcoming": my_upcoming},
             "todays_events": [event(lead) for lead in demos_between(ist_day[0], ist_day[1])],
             "upcoming_events": [event(lead) for lead in demos_between(ist_day[1], ist_day[2])],

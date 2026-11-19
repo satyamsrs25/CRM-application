@@ -283,6 +283,25 @@ export const api = {
   // the Unassigned Pool: ask for the ticked leads at once (one request each; nothing is assigned)
   requestPoolLeads: (lead_ids, reason) => apiRequest("/transfer-requests/bulk", { method: "POST", body: { lead_ids, reason } }),
   transferRequests: (box = "all") => apiRequest(`/transfer-requests?box=${box}`),
+  // Home > Analytics: each user's own charts, seen by their Manager and the Admin, and the reports sent up the line
+  analyticsOptions: () => apiRequest("/analytics/options"),
+  analyticsPeople: () => apiRequest("/analytics/people"),
+  analyticsBoard: (userId, filters = "") => apiRequest(`/analytics/boards/${userId}${filters ? `?${filters}` : ""}`),
+  previewAnalyticsChart: (chart) => apiRequest("/analytics/charts/preview", { method: "POST", body: chart }),
+  saveAnalyticsChart: (chart, id) =>
+    apiRequest(id ? `/analytics/charts/${id}` : "/analytics/charts", { method: id ? "PUT" : "POST", body: chart }),
+  removeAnalyticsChart: (id) => apiRequest(`/analytics/charts/${id}`, { method: "DELETE" }),
+  orderAnalyticsCharts: (ids) => apiRequest("/analytics/charts-order", { method: "PUT", body: { ids } }),
+  addSuggestedAnalyticsCharts: () => apiRequest("/analytics/charts/suggested", { method: "POST" }),
+  analyticsRecipients: () => apiRequest("/analytics/recipients"),
+  sendAnalyticsReport: (body) => apiRequest("/analytics/reports", { method: "POST", body }),
+  // Excel: the board (one sheet per chart), one chart of it, or a sent report
+  analyticsBoardExcel: (userId, filters = "", chartId = null) =>
+    api.downloadFile(`/analytics/boards/${userId}/excel?${[filters, chartId ? `chart_id=${chartId}` : ""].filter(Boolean).join("&")}`, "analytics.xlsx"),
+  analyticsReportExcel: (id) => api.downloadFile(`/analytics/reports/${id}/excel`, "analytics-report.xlsx"),
+  analyticsReports: (box = "received") => apiRequest(`/analytics/reports?box=${box}`),
+  analyticsReport: (id) => apiRequest(`/analytics/reports/${id}`),
+  reviewAnalyticsReport: (id, comment) => apiRequest(`/analytics/reports/${id}/review`, { method: "POST", body: { comment } }),
   decideTransferRequest: (id, decision, note) =>
     apiRequest(`/transfer-requests/${id}/${decision}`, { method: "POST", body: { note: note || null } }),
   cancelTransferRequest: (id) => apiRequest(`/transfer-requests/${id}/cancel`, { method: "POST" }),
@@ -471,10 +490,12 @@ export const api = {
   },
   // Download leads to Excel / CSV; the reason is recorded in the Activity Log
   exportLeads: (params) => api.exportData("leads", params),
-  exportData: async (object, params) => {
+  exportData: (object, params) => api.downloadFile(`/${object}/export?${new URLSearchParams(params)}`, `SalesTrack-${object}.xlsx`),
+  // A file from the API saved by the browser (its name from Content-Disposition); returns the file's name
+  downloadFile: async (path, fallbackName) => {
     let response;
     try {
-      response = await fetch(`${BASE}/${object}/export?${new URLSearchParams(params)}`, {
+      response = await fetch(`${BASE}${path}`, {
         headers: authHeaders(),
         signal: AbortSignal.timeout(5 * 60 * 1000),
       });
@@ -487,7 +508,7 @@ export const api = {
       const detail = result?.detail;
       throw new Error(typeof detail === "string" ? detail : Array.isArray(detail) ? detail[0]?.msg : "The download failed.");
     }
-    const name = /filename="([^"]+)"/.exec(response.headers.get("Content-Disposition") || "")?.[1] || `SalesTrack-${object}.xlsx`;
+    const name = /filename="([^"]+)"/.exec(response.headers.get("Content-Disposition") || "")?.[1] || fallbackName;
     const url = URL.createObjectURL(await response.blob());
     const link = Object.assign(document.createElement("a"), { href: url, download: name });
     document.body.append(link);

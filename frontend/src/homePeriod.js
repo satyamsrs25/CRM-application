@@ -1,9 +1,11 @@
-// Home's period selector: the analytics cards count the records created in [start, end) of this period.
-// "Past 1 week" is worked out at the moment Home loads (the last 7 days up to now); a custom range is two local
-// date-times. The period is remembered in this browser (an older saved choice falls back to Past 1 week).
+// Home's period selector (Dashboard and Analytics): the cards count the records created in [start, end) of this period.
+// "Past 1 week" / "Past 1 month" are worked out at the moment Home loads (the last 7 / 30 days up to now); a custom
+// range is two local date-times. The Dashboard's choice is remembered in this browser (an older saved choice falls
+// back to Past 1 week).
 
 export const PERIODS = [
   ["7d", "Past 1 week"],
+  ["30d", "Past 1 month"],
   ["custom", "Custom range"],
 ];
 export const DEFAULT_PERIOD = { preset: "7d" };
@@ -23,11 +25,11 @@ export function periodRange(period = DEFAULT_PERIOD, now = new Date()) {
     const to = new Date(period.to);
     if (!Number.isNaN(from.getTime()) && !Number.isNaN(to.getTime()) && from < to) return { start: from, end: to };
   }
-  start.setDate(start.getDate() - 7); // Past 1 week (also for an incomplete custom range)
+  start.setDate(start.getDate() - (period?.preset === "30d" ? 30 : 7)); // Past 1 week (also for an incomplete custom range)
   return { start, end };
 }
 
-// The API query for this period: "start=..." for Past 1 week (up to now), "start=...&end=..." for a custom range
+// The API query for this period: "start=..." for Past 1 week / month (up to now), "start=...&end=..." for a custom range
 export function periodQuery(period, now = new Date()) {
   const { start, end } = periodRange(period, now);
   const query = `start=${encodeURIComponent(localIso(start))}`;
