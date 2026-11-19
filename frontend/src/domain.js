@@ -29,17 +29,21 @@ export const POOL_OWNER = "unassigned"; // the Owner filter's value, and the API
 export const POOL_LABEL = "Unassigned";
 export const isPooledLead = (lead) => !!lead && (lead.in_pool === true || lead.owner_id === null);
 const OWNER_VIEWS = ["my_open", "my", "my_uploaded"]; // the user's own leads only: never the pool
+// the email-status lists: someone who can't see a pooled lead's email doesn't get the pool there (the List leaves it
+// out too: POOL_VIEWS in backend/app/routers/lead_files.py)
+const EMAIL_VIEWS = ["invalid_email", "unsubscribed", "email_ok", "no_email"];
 // Per board column: whether the current list view, Lead Status filter and Owner filter can contain it ("" = yes, else
 // why not). Pooled leads are in the Unassigned column only (its leads are left out of the stage columns), so every
-// lead is on the board once and the counts add up.
-export function leadBoardColumns(view, stageFilter, ownerFilter) {
+// lead is on the board once and the counts add up. poolContacts: the user sees pooled leads' contact details
+// (permissions.js seesPoolContacts).
+export function leadBoardColumns(view, stageFilter, ownerFilter, { poolContacts = true } = {}) {
   const viewStages = LEAD_VIEW_STAGES[view] || LEAD_STAGES;
   const pool = {
     stage: UNASSIGNED_COLUMN,
     pool: true,
     closed: false,
     excluded:
-      OWNER_VIEWS.includes(view) || !viewStages.includes("New") // pooled leads stay at New
+      OWNER_VIEWS.includes(view) || !viewStages.includes("New") || (!poolContacts && EMAIL_VIEWS.includes(view)) // pooled leads stay at New
         ? "Not in this list view"
         : stageFilter && stageFilter !== "New"
           ? "Hidden by the Lead Status filter"

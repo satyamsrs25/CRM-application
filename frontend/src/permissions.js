@@ -30,6 +30,8 @@ export const canTransferLead = (user, lead) =>
 // a pooled lead, one at a time, to an active Salesperson (a Manager: one who reports to them). Salespeople request one.
 export const canAssignPool = (user) => !!user && (user.role === "Admin" || (user.role === "Manager" && can(user, "reassign_owner")));
 export const canRequestPool = (user) => user?.role === "Salesperson";
+// who sees a pooled lead's email, phone and LinkedIn profile (the same rule as the server's sees_pool_contacts)
+export const seesPoolContacts = (user) => !!user && (canAssignPool(user) || can(user, "view_team_records"));
 // who a pooled lead can go to, for this user's Assign list
 export const poolAssignees = (user, users = []) =>
   users

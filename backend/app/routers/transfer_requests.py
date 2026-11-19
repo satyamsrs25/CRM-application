@@ -214,7 +214,9 @@ def request_pool_leads(data: schemas.PoolRequestBulk, db: Session = Depends(get_
             request = add_pool_request(db, lead, me.id, reason)
         except HTTPException as exc:
             row = {"lead_id": lead.id, "name": lead.name}
-            if lead.owner_id is not None:
+            if lead.owner_id == me.id:  # e.g. one of their own leads ticked beside pooled ones
+                skipped.append(row | {"reason": "This lead is already yours"})
+            elif lead.owner_id is not None:
                 conflicts.append(row | {"reason": "No longer in the Unassigned Pool: assigned since you selected it"})
             else:
                 skipped.append(row | {"reason": "You have already asked for this lead" if exc.detail == ALREADY_ASKED

@@ -399,7 +399,11 @@ def _bulk_leads(db: Session, ids: list[int]) -> list[tuple[int, Lead | None]]:
 
 
 def _skip(lead_id: int, lead: Lead | None, exc: HTTPException) -> dict:
-    """A lead that was left out, and why. Leads the user can't see are not named (and look like they don't exist)."""
+    """A lead that was left out, and why. Leads the user can't see are not named (and look like they don't exist).
+    A pooled lead is listed for everyone, so it is named, with what to do instead."""
+    if lead is not None and lead.owner_id is None and exc.status_code in (403, 404):
+        return {"id": lead_id, "name": lead.name,
+                "reason": "In the Unassigned Pool: only the Admin or a Manager can change it (you can request it)"}
     hidden = lead is None or exc.status_code == 404
     return {"id": lead_id, "name": f"Lead {lead_id}" if hidden else lead.name,
             "reason": "Not found, or you don't have access to it" if hidden else str(exc.detail)}

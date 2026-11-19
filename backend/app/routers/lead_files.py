@@ -13,7 +13,7 @@ from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response
-from sqlalchemy import func, insert, or_, select
+from sqlalchemy import and_, case, false, func, insert, or_, select
 from sqlalchemy.orm import Session, aliased, selectinload
 
 from app import schemas
@@ -401,6 +401,12 @@ LIST_VIEWS = {
     # the Unassigned Pool: leads nobody owns yet (every user can list it; see pool_query)
     "unassigned": lambda q, me: q.where(Lead.owner_id.is_(None)),
 }
+# The Unassigned Pool is open to every user (contact details hidden from those who can only request a lead). Someone
+# who sees only their own leads gets the pool too in these lists (All Open Leads, All Leads, Uploaded Leads and
+# Unassigned Leads), never in "My ..." lists or the email-status lists (they would tell a pooled lead's email apart).
+# Each list keeps its own filter: Uploaded Leads is still only leads that came from a file (uploaded_from), so a pooled
+# lead that wasn't uploaded is never in it; All Open Leads is still only open stages.
+POOL_VIEWS = {"all_open", "all", "uploaded", "unassigned"}
 CreatedBy = aliased(User)  # the Created By column (a second join to users)
 SORTS = {"name": Lead.name, "title": Lead.title, "company": Lead.company, "phone": Lead.phone, "email": Lead.email,
          "stage": Lead.stage, "source": Lead.source, "owner": User.full_name, "created_by": CreatedBy.full_name,
@@ -457,12 +463,17 @@ def leads_page(
     if sort not in SORTS:
         raise HTTPException(status_code=400, detail="Unknown sort column")
     pool_only = view == "unassigned" or owner == "unassigned"
-    limited = False
+    # pooled leads in this list hide their contact details (and aren't searched or sorted on them) for this user
+    limited = not sees_pool_contacts(me)
+    pool_here = me.sees_team or view in POOL_VIEWS  # does this list include the Unassigned Pool for this user?
     if pool_only:  # the Unassigned Pool: every user can list it; contact details only for those who may assign it
-        limited = not sees_pool_contacts(me)
-        query = LIST_VIEWS[view](select(Lead).where(Lead.owner_id.is_(None)), me)
-    else:
+        start = select(Lead).where(Lead.owner_id.is_(None))
+        query = LIST_VIEWS[view](start if pool_here else start.where(false()), me)
+    elif me.sees_team:
         query = LIST_VIEWS[view](visible(select(Lead), Lead), me)
+    else:  # their own leads, and in the lists above the Unassigned Pool too (List and Kanban alike)
+        mine = Lead.owner_id == me.id
+        query = LIST_VIEWS[view](select(Lead).where(or_(mine, Lead.owner_id.is_(None)) if pool_here else mine), me)
     if assigned:
         query = query.where(Lead.owner_id.is_not(None))
     if stage:
@@ -489,14 +500,14 @@ def leads_page(
             query = query.where(column < as_local(end))
     if search and search.strip():
         like = f"%{search.strip()}%"
-        # contact details someone can't see aren't searched or sorted on either
+        # contact details someone can't see aren't searched or sorted on either (a pooled lead's, for this user)
+        contact = or_(Lead.email.ilike(like), Lead.phone.ilike(like))
         query = query.where(or_(Lead.name.ilike(like), Lead.company.ilike(like), Lead.title.ilike(like),
-                                Lead.location.ilike(like),
-                                *(() if limited else (Lead.email.ilike(like), Lead.phone.ilike(like)))))
-    if limited and sort in ("email", "phone"):
-        sort = "created"
+                                Lead.location.ilike(like), and_(Lead.owner_id.is_not(None), contact) if limited else contact))
     total = db.scalar(select(func.count()).select_from(query.subquery()))
     column = SORTS[sort]
+    if limited and sort in ("email", "phone"):  # pooled leads sort as if they had none (at the end)
+        column = case((Lead.owner_id.is_(None), None), else_=column)
     if sort == "owner":  # pooled leads (no owner) are kept, at the end
         query = query.outerjoin(User, User.id == Lead.owner_id)
     elif sort == "created_by":

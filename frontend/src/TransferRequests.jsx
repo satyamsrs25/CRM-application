@@ -252,7 +252,7 @@ export function TransferRequestTable({ rows, onChange, showLead = true, focus = 
 // Request Assignment for the leads ticked in the Leads list (a Salesperson, Unassigned Pool): one reason, one request
 // per lead (each approved or rejected on its own). Nothing is assigned. Afterwards it says what was requested, what
 // was not (already asked for, or assigned since it was ticked) and who decides.
-export function BulkRequestDialog({ leadIds, onClose }) {
+export function BulkRequestDialog({ leadIds, others = 0, onClose }) {
   const count = leadIds.length;
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
@@ -324,6 +324,7 @@ export function BulkRequestDialog({ leadIds, onClose }) {
         <p className="muted">
           You are asking for the {leads(count)} you selected from the Unassigned Pool. Each lead gets its own request, which your
           Manager or the Admin approves or rejects. Asking doesn&apos;t make them yours or let you change them.
+          {others > 0 && ` The other ${leads(others)} you selected ${others === 1 ? "isn't" : "aren't"} in the pool and ${others === 1 ? "is" : "are"} left out.`}
         </p>
         <label className="field">
           <span>

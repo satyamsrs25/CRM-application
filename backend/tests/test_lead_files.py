@@ -90,8 +90,10 @@ def test_upload_preview_then_import(client, outbox):
     done = client.post("/api/leads/import", files=csv_file(APOLLO), data={"dry_run": "false"}).json()
     assert done["created"] == 2
     assert [l["last_name"] for l in client.get("/api/leads").json()] == ["Menon"]  # uploads stay out of the lists
-    # uploads go to the Unassigned Pool: not Ravi's (he uploaded them: Created By), so not in his own lists
-    assert {l["last_name"] for l in client.get("/api/leads/page").json()["items"]} == {"Menon"}
+    # uploads go to the Unassigned Pool: not Ravi's (he uploaded them: Created By), so not in My Open Leads; All Open
+    # Leads lists the open pool too, without contact details
+    assert {l["last_name"] for l in client.get("/api/leads/page", params={"view": "my_open"}).json()["items"]} == {"Menon"}
+    assert {l["last_name"] for l in client.get("/api/leads/page").json()["items"]} == {"Menon", "Iyer", "Diaz"}
     pooled = client.get("/api/leads/page", params={"view": "unassigned"}).json()
     assert pooled["total"] == 2 and all(l["contact_hidden"] and l["email"] is None for l in pooled["items"])
     page = login_as(client, 1).get("/api/leads/page", params={"view": "uploaded"}).json()  # a Manager sees them
