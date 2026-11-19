@@ -52,9 +52,12 @@ from sqlalchemy.orm import Session
 
 from app import mailer
 from app.models import Campaign, CampaignRecipient, EmailAddress, Lead, User
+from app.security import may_campaign_to, user_permissions
 from app.services import log_activity, notify, now
 
 log = logging.getLogger("crm.campaigns")
+# a lead the campaign's sender may not email (security.campaign_leads), or an address that belongs only to such leads
+NOT_YOURS = "Not yours to email: in the Unassigned Pool or owned by someone else"
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$")
 RETRY_AFTER = (timedelta(minutes=5), timedelta(minutes=30), timedelta(hours=2))  # then it counts as Failed
@@ -524,6 +527,7 @@ def _run(db: Session, budget: int | None, pause_seconds: float | None) -> dict:
         .order_by(Campaign.send_at, Campaign.id, CampaignRecipient.id).limit(budget)
     ).all()
     touched = set()
+    rights: dict = {}  # each sender's role and permissions, read once per round
     for i, row in enumerate(rows):
         campaign = row.campaign
         db.refresh(campaign)
@@ -532,10 +536,12 @@ def _run(db: Session, budget: int | None, pause_seconds: float | None) -> dict:
         touched.add(campaign.id)
         lead = db.get(Lead, row.lead_id) if row.lead_id and not row.manual else None
         if row.manual:  # typed in: not a lead (or not one this user could see)
-            reason = address_exclusion(db, row.email)
+            reason = sender_may_not_email(db, campaign, row.email, None, rights) or address_exclusion(db, row.email)
             person = Person.typed(row.email, row.name, row.company)
         else:
-            reason = "The lead was deleted" if lead is None else (exclusion(lead) or address_exclusion(db, lead.email))
+            reason = "The lead was deleted" if lead is None else (
+                sender_may_not_email(db, campaign, lead.email, lead, rights)
+                or exclusion(lead) or address_exclusion(db, lead.email))
             person = Person.of_lead(lead) if lead else None
             if reason is None and lead.email.lower() != (row.email or "").lower():
                 row.email = lead.email  # the email was corrected after the campaign was made
@@ -591,6 +597,24 @@ def _run(db: Session, budget: int | None, pause_seconds: float | None) -> dict:
     if any(done.values()):
         log.info("Campaign round: %s", done)
     return done
+
+
+def sender_may_not_email(db: Session, campaign: Campaign, email: str | None, lead: Lead | None, rights: dict) -> str | None:
+    """Checked again just before each email: the lead may have been given to someone else (or the typed-in address
+    may now belong to a lead) since the campaign was made. The campaign's sender must still be allowed to email it
+    (security.may_campaign_to: the same rule as when the campaign was made). Returns why not, or None."""
+    sender = campaign.created_by
+    if sender is None:
+        return None
+    if sender.id not in rights:
+        rights[sender.id] = (sender.role, user_permissions(db, sender))
+    role, permissions = rights[sender.id]
+    if lead is not None:
+        return None if may_campaign_to(lead, sender.id, role, permissions) else NOT_YOURS
+    found = leads_with(db, email or "")
+    if found and not any(may_campaign_to(l, sender.id, role, permissions) for l in found):
+        return NOT_YOURS
+    return None
 
 
 async def loop(session_factory) -> None:

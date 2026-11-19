@@ -4,8 +4,11 @@
 // Dropping a card on a column, or choosing it in the card's Change Status menu, opens the popup the lead page uses
 // (Change Stage with its required note, Convert, Mark as Lost). Nothing moves until that popup is saved; the board
 // is then loaded again. Converted and Lost are closed: their cards don't move.
+// The Unassigned column (first, before Unqualified) holds the leads in the Unassigned Pool, which are in no stage
+// column too. Its cards never move and nothing can be dropped on it: dragging is not a way to claim or assign a lead.
+// The Admin or a Manager assigns it, and a Salesperson requests it, from the lead's page.
 import React, { useState } from "react";
-import { leadStageAction } from "./domain";
+import { isPooledLead, leadStageAction, POOL_LABEL } from "./domain";
 import { columnRange } from "./listHelpers";
 import { can, canCreateSales } from "./permissions";
 import { ActionMenu, Icon } from "./ui";
@@ -15,6 +18,7 @@ const MENU_LABEL = { Converted: "Convert", Lost: "Mark as Lost" };
 const EXCLUDED_HELP = {
   "Not in this list view": "Choose All Leads (or the matching list view) to see these leads.",
   "Hidden by the Lead Status filter": "Clear the Lead Status filter to see this column.",
+  "Hidden by the Owner filter": "Clear the Owner filter to see this column.",
 };
 
 export default function LeadsKanban({ columns, board, user, setModal, size, pages = {}, busy = {}, onPage }) {
@@ -42,7 +46,7 @@ export default function LeadsKanban({ columns, board, user, setModal, size, page
   };
   return (
     <div className="kanban lead-board">
-      {columns.map(({ stage, closed, excluded }) => {
+      {columns.map(({ stage, closed, excluded, pool }) => {
         const column = excluded ? null : board?.[stage];
         const items = column?.items || [];
         const page = column?.page ?? pages[stage] ?? 0;
@@ -51,7 +55,7 @@ export default function LeadsKanban({ columns, board, user, setModal, size, page
         return (
           <section
             key={stage}
-            className={`kanban-col ${closed ? "closed" : ""} ${excluded ? "excluded" : ""} ${over === stage ? "drag-over" : ""}`}
+            className={`kanban-col ${closed ? "closed" : ""} ${pool ? "pool" : ""} ${excluded ? "excluded" : ""} ${over === stage ? "drag-over" : ""}`}
             aria-label={
               excluded
                 ? `${stage}: ${excluded}`
@@ -59,6 +63,7 @@ export default function LeadsKanban({ columns, board, user, setModal, size, page
             }
             aria-busy={loading || undefined}
             onDragOver={(e) => {
+              if (pool) return; // nothing is dropped on the Unassigned column
               e.preventDefault();
               setOver(stage);
             }}
@@ -74,7 +79,7 @@ export default function LeadsKanban({ columns, board, user, setModal, size, page
                 {excluded ? stage : `${stage} (${column ? column.total.toLocaleString() : "…"})`}
               </h3>
               <p>
-                {excluded || (closed ? "Closed" : "Open")}
+                {excluded || (pool ? "No owner yet" : closed ? "Closed" : "Open")}
                 {range && range.pages > 1 && ` • ${range.range.split(" of ")[0]}`}
               </p>
             </header>
@@ -107,7 +112,7 @@ export default function LeadsKanban({ columns, board, user, setModal, size, page
                       )}
                     </dl>
                     <div className="lead-card-foot">
-                      <small>{lead.owner_name}</small>
+                      <small>{lead.owner_name || (isPooledLead(lead) ? POOL_LABEL : "")}</small>
                       {options.length > 0 && (
                         <ActionMenu
                           label="Change Status"
@@ -126,7 +131,7 @@ export default function LeadsKanban({ columns, board, user, setModal, size, page
                   {excluded ? (
                     EXCLUDED_HELP[excluded] || excluded
                   ) : column ? (
-                    "No leads"
+                    pool ? "No leads waiting to be assigned" : "No leads"
                   ) : loading ? (
                     "Loading…"
                   ) : (

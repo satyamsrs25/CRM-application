@@ -22,22 +22,50 @@ const LEAD_VIEW_STAGES = {
   unqualified: ["Unqualified"],
   revisit_due: ["Revisit"],
 };
-// Per board column: whether the current list view and Lead Status filter can contain it ("" = yes, else why not)
-export function leadBoardColumns(view, stageFilter) {
-  return LEAD_STAGES.map((stage) => ({
+// The Unassigned Pool: leads with no owner yet (every bulk upload starts there). The Admin or a Manager assigns each
+// one; Salespeople request one. A pooled lead keeps the stage the upload gave it (New) and doesn't move until assigned.
+export const UNASSIGNED_COLUMN = "Unassigned"; // the Kanban column, before Unqualified
+export const POOL_OWNER = "unassigned"; // the Owner filter's value, and the API's owner=unassigned
+export const POOL_LABEL = "Unassigned";
+export const isPooledLead = (lead) => !!lead && (lead.in_pool === true || lead.owner_id === null);
+const OWNER_VIEWS = ["my_open", "my", "my_uploaded"]; // the user's own leads only: never the pool
+// Per board column: whether the current list view, Lead Status filter and Owner filter can contain it ("" = yes, else
+// why not). Pooled leads are in the Unassigned column only (its leads are left out of the stage columns), so every
+// lead is on the board once and the counts add up.
+export function leadBoardColumns(view, stageFilter, ownerFilter) {
+  const viewStages = LEAD_VIEW_STAGES[view] || LEAD_STAGES;
+  const pool = {
+    stage: UNASSIGNED_COLUMN,
+    pool: true,
+    closed: false,
+    excluded:
+      OWNER_VIEWS.includes(view) || !viewStages.includes("New") // pooled leads stay at New
+        ? "Not in this list view"
+        : stageFilter && stageFilter !== "New"
+          ? "Hidden by the Lead Status filter"
+          : ownerFilter && ownerFilter !== POOL_OWNER
+            ? "Hidden by the Owner filter"
+            : "",
+  };
+  const stages = LEAD_STAGES.map((stage) => ({
     stage,
     closed: LEAD_CLOSED_STAGES.includes(stage),
-    excluded: !(LEAD_VIEW_STAGES[view] || LEAD_STAGES).includes(stage)
-      ? "Not in this list view"
-      : stageFilter && stageFilter !== stage
-        ? "Hidden by the Lead Status filter"
-        : "",
+    excluded:
+      view === "unassigned" || !viewStages.includes(stage)
+        ? "Not in this list view"
+        : stageFilter && stageFilter !== stage
+          ? "Hidden by the Lead Status filter"
+          : ownerFilter === POOL_OWNER
+            ? "Hidden by the Owner filter"
+            : "",
   }));
+  return [pool, ...stages];
 }
 // The existing popup a lead card opens for a stage (drop or Change Status menu), or null when that move isn't allowed:
-// closed leads don't move, the same stage does nothing, and Convert needs the right to create opportunities.
+// closed leads don't move, the same stage does nothing, and Convert needs the right to create opportunities. A pooled
+// lead never moves (dragging it is not a way to claim it): it is assigned first, or requested.
 export function leadStageAction(lead, stage, { canEdit, canConvert }) {
-  if (!lead || !canEdit || !LEAD_OPEN_STAGES.includes(lead.stage) || lead.stage === stage) return null;
+  if (!lead || !canEdit || isPooledLead(lead) || !LEAD_OPEN_STAGES.includes(lead.stage) || lead.stage === stage) return null;
   if (stage === "Converted") return canConvert ? { type: "convert", record: lead } : null;
   if (stage === "Lost") return { type: "lost", collection: "leads", record: lead };
   if (stage === "Unqualified") return { type: "unqualified", record: lead };
@@ -702,6 +730,7 @@ export const CONVERT_ONE = "Select exactly one lead to convert.";
 export const CONVERT_ONE_AT_A_TIME = "Only one lead can be converted at a time. Please select one lead.";
 // canCreateSales (permissions.js): the Admin, Managers and Salespeople convert leads; any other role can't
 const ROLE_CANT_CONVERT = "Your role can't convert leads. The lead's owner, a Manager or the Admin converts it.";
+export const POOL_CANT_CONVERT = "This lead is in the Unassigned Pool. It is assigned to a Salesperson before it can be converted.";
 export function leadConvertChoice(leads, rights) {
   if (leads.length > 1) {
     const loaded = leads.find(Boolean);
@@ -711,6 +740,7 @@ export function leadConvertChoice(leads, rights) {
   if (leads.length !== 1 || !leads[0]) return { reason: CONVERT_ONE };
   const [lead] = leads;
   if (!LEAD_OPEN_STAGES.includes(lead.stage)) return { reason: `This lead is ${lead.stage}. Only open leads can be converted.` };
+  if (isPooledLead(lead)) return { reason: POOL_CANT_CONVERT };
   const { canEdit, canCreateSales } = rights(lead);
   if (!canCreateSales) return { reason: ROLE_CANT_CONVERT };
   if (!canEdit) return { reason: "You can convert only your own leads (or others' with the Edit team records permission)." };

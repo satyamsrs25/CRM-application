@@ -149,7 +149,9 @@ class Lead(Base):
     revisit_reason: Mapped[str | None] = mapped_column(String(30))
     converted_at: Mapped[datetime | None]
     closed_at: Mapped[datetime | None]
-    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    # no owner: the lead is in the Unassigned Pool (bulk uploads start there) until the Admin or a Manager assigns it
+    owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    assigned_at: Mapped[datetime | None]  # when the current owner got it (empty: not recorded, e.g. older leads)
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))  # who added the lead (by hand or upload)
     # Email campaigns: an address that doesn't work, and leads who unsubscribed, are left out of every campaign
     email_invalid_at: Mapped[datetime | None]
@@ -158,7 +160,7 @@ class Lead(Base):
     created_at: Mapped[datetime | None] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime | None] = mapped_column(server_default=func.now(), onupdate=func.now())
 
-    owner: Mapped[User] = relationship(foreign_keys=[owner_id])
+    owner: Mapped[User | None] = relationship(foreign_keys=[owner_id])
     created_by: Mapped[User | None] = relationship(foreign_keys=[created_by_id])
     opportunity: Mapped["Opportunity | None"] = relationship(back_populates="lead")
     tasks: Mapped[list["Task"]] = relationship(back_populates="lead")
@@ -179,6 +181,8 @@ class LeadTransfer(Base):
     transferred_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     note: Mapped[str | None] = mapped_column(String(300))
     transferred_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    # the approved request that gave the lead to its new owner (empty: a direct transfer or assignment)
+    request_id: Mapped[int | None] = mapped_column(ForeignKey("lead_transfer_requests.id", ondelete="SET NULL"))
 
     lead: Mapped[Lead] = relationship(back_populates="transfers")
     from_user: Mapped[User | None] = relationship(foreign_keys=[from_user_id])
@@ -240,7 +244,7 @@ class LeadTransferRequest(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     lead_id: Mapped[int] = mapped_column(ForeignKey("leads.id", ondelete="CASCADE"))
     requested_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"))  # gets the lead when approved
-    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id"))  # the lead's owner when it was asked for
+    owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))  # the owner when asked for (none: the pool)
     reason: Mapped[str] = mapped_column(String(300))
     status: Mapped[str] = mapped_column(String(10), default="Pending")  # Pending, Approved, Rejected, Cancelled
     decided_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
@@ -250,7 +254,7 @@ class LeadTransferRequest(Base):
 
     lead: Mapped[Lead] = relationship()
     requested_by: Mapped[User] = relationship(foreign_keys=[requested_by_id])
-    owner: Mapped[User] = relationship(foreign_keys=[owner_id])
+    owner: Mapped[User | None] = relationship(foreign_keys=[owner_id])
     decided_by: Mapped[User | None] = relationship(foreign_keys=[decided_by_id])
 
 

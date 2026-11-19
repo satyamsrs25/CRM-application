@@ -62,6 +62,9 @@ def create_task(data: schemas.TaskCreate, db: Session = Depends(get_db)):
     if data.lead_id is not None:
         fallback = get_or_404(db, Lead, data.lead_id, "Lead").owner_id
         require_view(fallback, "lead")
+        if fallback is None:  # a pooled lead: nobody to do the follow-up until it is assigned
+            raise HTTPException(status_code=400, detail="This lead is in the Unassigned Pool. Assign it to a "
+                                                        "Salesperson first, then add the follow-up.")
     if data.opportunity_id is not None:
         fallback = get_or_404(db, Opportunity, data.opportunity_id, "Opportunity").owner_id
         require_view(fallback, "opportunity")

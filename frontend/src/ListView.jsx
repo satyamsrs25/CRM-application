@@ -3,7 +3,17 @@ import { can, canCreateOpportunity, canCreateSales } from "./permissions";
 import LeadsTable from "./LeadsTable";
 import { applyFilters, filterSummary, opts, ownerOptions, Th, useFilters } from "./Filters";
 import { dateFilterOffered, LEAD_DATE_RANGES } from "./listHelpers";
-import { LEAD_OPEN_STAGES, LEAD_SOURCES, LEAD_STAGES, OPPORTUNITY_OPEN_STAGES, OPPORTUNITY_STAGES, UPLOAD_SOURCE } from "./domain";
+import {
+  isPooledLead,
+  LEAD_OPEN_STAGES,
+  LEAD_SOURCES,
+  LEAD_STAGES,
+  OPPORTUNITY_OPEN_STAGES,
+  OPPORTUNITY_STAGES,
+  POOL_LABEL,
+  POOL_OWNER,
+  UPLOAD_SOURCE,
+} from "./domain";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { amount, compact, maskPhone, shortDate } from "./format";
 import { ActionMenu, DateCell, Icon, ObjectIcon, Pagination, PhoneReveal, StageBadge, usePaged } from "./ui";
@@ -21,6 +31,9 @@ const LEAD_VIEWS = {
   "My Open Leads": "my_open",
   "All Leads": "all",
   "My Leads": "my",
+  // the Unassigned Pool: leads with no owner yet (every bulk upload). Everyone can list it; the Admin or a Manager
+  // assigns a lead from its page, a Salesperson requests one there
+  "Unassigned Leads": "unassigned",
   "Converted Leads": "converted",
   "Lost Leads": "lost",
   "Unqualified Leads": "unqualified",
@@ -43,6 +56,7 @@ function views(collection, user) {
       ["My Open Leads", (r) => mine(r) && OPEN_LEAD.includes(r.stage)],
       ["All Leads", () => true],
       ["My Leads", mine],
+      ["Unassigned Leads", isPooledLead],
       ["Converted Leads", (r) => r.stage === "Converted"],
       ["Lost Leads", (r) => r.stage === "Lost"],
       ["Unqualified Leads", (r) => r.stage === "Unqualified"],
@@ -142,11 +156,23 @@ function filterDefs(collection, data, user, viewName, fixedStage) {
   const distinct = (list) => [...new Set(list.filter(Boolean))].sort((a, b) => a.localeCompare(b));
   if (collection === "leads") {
     const st = stages(LEAD_STAGES, OPEN_LEAD);
+    // Owner, with Unassigned (the Unassigned Pool) for everyone: people who see only their own leads get Me and
+    // Unassigned. Not on "My ..." views (only the user's own) or Unassigned Leads (the pool already)
+    const leadOwner =
+      viewName.startsWith("My ") || viewName === "Unassigned Leads"
+        ? []
+        : [{
+            key: "owner",
+            column: "Owner",
+            label: "Owner",
+            options: [...(team ? ownerOptions(data.users || [], user) : [[String(user.id), "Me"]]), [POOL_OWNER, POOL_LABEL]],
+            get: (r) => (isPooledLead(r) ? POOL_OWNER : String(r.owner_id)),
+          }];
     // Created and Last Modified: Any time, Today, Last week, Last month or a custom range (List and Kanban)
     return [
       ...(st ? [{ key: "stage", label: "Lead Status", options: opts(st) }] : []),
       { key: "source", label: "Lead Source", options: opts([...LEAD_SOURCES, UPLOAD_SOURCE]) },
-      ...owner,
+      ...leadOwner,
       { ...created, ranges: LEAD_DATE_RANGES },
       { ...modified, ranges: LEAD_DATE_RANGES },
     ];

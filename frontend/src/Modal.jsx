@@ -516,8 +516,15 @@ export default function Modal({ modal, close, data, run, notify, user }) {
       <label className="field">
         <span>Owner</span>
         <input readOnly value={record?.owner || user?.full_name || ""} aria-readonly="true" />
-        <input type="hidden" name="owner_id" value={record?.owner_id ?? user?.id ?? ""} />
-        {type === "lead" && record && <small className="field-hint">Use Transfer on the lead page to change the owner.</small>}
+        {/* an existing record keeps its owner (none for a lead in the Unassigned Pool: it is assigned, not edited) */}
+        <input type="hidden" name="owner_id" value={record ? (record.owner_id ?? "") : (user?.id ?? "")} />
+        {type === "lead" && record && (
+          <small className="field-hint">
+            {record.owner_id == null
+              ? "This lead is in the Unassigned Pool: use Assign on the lead page to give it an owner."
+              : "Use Transfer on the lead page to change the owner."}
+          </small>
+        )}
       </label>
     ) : select(type === "lead" ? "Lead Owner (assign to)" : "Owner", "owner_id", [
       // records are owned by active Managers and Salespeople (the Admin doesn't own leads)

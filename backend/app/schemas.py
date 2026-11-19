@@ -440,8 +440,12 @@ class LeadOut(Out):
     revisit_reason: str | None = None
     converted_at: datetime | None
     closed_at: datetime | None
-    owner_id: int
+    owner_id: int | None  # empty: the lead is in the Unassigned Pool
     owner_name: str | None = None
+    in_pool: bool = False  # no owner yet (the Unassigned Pool)
+    contact_hidden: bool = False  # a pooled lead for someone who can only request it: email, phone, LinkedIn hidden
+    assigned_at: datetime | None = None  # saved when the current owner got the lead (empty for older leads)
+    owner_since: datetime | None = None  # assigned_at, else the latest transfer to this owner; empty if not recorded
     opportunity_id: int | None = None
     created_at: datetime | None
     updated_at: datetime | None
@@ -469,6 +473,7 @@ class LeadTransferOut(Out):
     transferred_by_name: str | None = None
     note: str | None
     transferred_at: datetime | None
+    request_id: int | None = None  # the approved request behind it (empty: a direct transfer or assignment)
 
 
 class LeadDetail(LeadOut):
@@ -486,8 +491,21 @@ class LeadTransfer(BaseModel):
     note: str | None = Field(None, max_length=300)
 
 
+class LeadAssign(BaseModel):
+    """Give one lead from the Unassigned Pool to an active Salesperson (the Admin, or a Manager: their own team)."""
+    to_user_id: int
+    note: str | None = Field(None, max_length=300)
+
+
 class TransferRequestCreate(BaseModel):
     """Ask for someone else's lead (the owner, their Manager or the Admin must approve)."""
+    reason: str = Field(..., min_length=3, max_length=300)
+
+
+class PoolRequestBulk(BaseModel):
+    """A Salesperson asks for several leads from the Unassigned Pool at once, with one reason (each lead still gets
+    its own request, approved or rejected on its own). The same limit as the other bulk actions."""
+    lead_ids: list[int] = Field(..., min_length=1, max_length=500)
     reason: str = Field(..., min_length=3, max_length=300)
 
 

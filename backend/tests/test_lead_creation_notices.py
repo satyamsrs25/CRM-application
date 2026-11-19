@@ -199,22 +199,23 @@ def upload(client, rows, **form):
                        data={"dry_run": "false", **form})
 
 
-def test_an_upload_tells_the_manager_once_per_team_member_never_per_row(client, outbox):
+def test_an_upload_assigns_nobody_and_tells_nobody_then_one_assignment_tells_the_owner_once(client, outbox):
+    """Uploads go to the Unassigned Pool: no owner, so no "assigned to you" or "created for your team" notices (and
+    no email per row). Assigning one of them tells the new owner once, after the save, by their settings."""
     setup_users({RAVI: {"reports_to_id": PRIYA}, PRIYA: {"email_stage_updates": True}})
     rows = [[f"Row{i}", f"Synthetic{i}", "Upload Synthetic Co", f"row{i}@upload-synthetic.example", ""] for i in range(5)]
     res = upload(login_as(client, ASHA), rows, owner_id=str(RAVI))
     assert res.status_code == 200 and res.json()["created"] == 5, res.text  # phones are optional in uploads
-    [(title, message, link)] = bell(PRIYA)
-    assert title == "Leads created for your team" and link == "/leads"
-    assert message.startswith("5 new leads have been created for your team member.")
-    assert "Owner: Ravi Kumar" in message and "Uploaded by: Asha Rao (team.csv)" in message
-    assert [t for t, _, _ in bell(RAVI)] == ["Leads assigned to you"]  # the owner's summary, as before
-    assert [m["to"] for m in outbox if m["to"] == ["priya@crm.test"]] == [["priya@crm.test"]]  # one email, not five
-    # a Manager uploading for their own team isn't told about their own upload
-    bell_before = bell(PRIYA)
-    more = [[f"More{i}", f"Synthetic{i}", "Upload Synthetic Co", f"more{i}@upload-synthetic.example", ""] for i in range(2)]
-    assert upload(login_as(client, PRIYA), more, owner_id=str(RAVI)).status_code == 200
-    assert bell(PRIYA) == bell_before
+    assert bell(PRIYA) == [] and bell(RAVI) == [] and outbox == []
+    pool = login_as(client, PRIYA).get("/api/leads/page", params={"view": "unassigned"}).json()["items"]
+    assert len(pool) == 5
+    res = login_as(client, PRIYA).post(f"/api/leads/{pool[0]['id']}/assign", json={"to_user_id": RAVI})
+    assert res.status_code == 200, res.text
+    [(title, message, link)] = bell(RAVI)
+    assert title == "Lead assigned to you" and "from the Unassigned Pool" in message
+    assert link == f"/leads/{pool[0]['id']}"
+    assert [m["to"] for m in outbox] == [["ravi@crm.test"]]  # one email, to the new owner only
+    assert bell(PRIYA) == []  # the Manager who assigned it isn't told about their own action
 
 
 def test_transfer_requests_still_need_approval(client, outbox):

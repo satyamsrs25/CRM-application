@@ -64,7 +64,8 @@ def find_phone_matches(db: Session, phone: str | None, *, first_name: str | None
         visible = lead.owner_id == me.id or me.sees_team
         found.append({"type": "Lead", "id": lead.id if visible else None, "name": lead.name if visible else None,
                       "company": lead.company, "stage": lead.stage, "open": open_lead,
-                      "owner_id": lead.owner_id, "owner_name": lead.owner.full_name if lead.owner else None,
+                      "owner_id": lead.owner_id,
+                      "owner_name": lead.owner.full_name if lead.owner else (POOL_OWNER if lead.owner_id is None else None),
                       "can_open": visible, "same_person": same_person,
                       "same_company": bool(company_name) and _company(lead.company) == company_name,
                       "blocks": same_person and open_lead})
@@ -84,6 +85,9 @@ def find_phone_matches(db: Session, phone: str | None, *, first_name: str | None
                       "blocks": same_person})
     found.sort(key=lambda m: (not m["blocks"], not m["same_company"], not m["open"]))
     return found
+
+
+POOL_OWNER = "no one (Unassigned Pool)"  # a pooled lead in the messages: "a lead owned by no one (Unassigned Pool)"
 
 
 def describe(match: dict) -> str:

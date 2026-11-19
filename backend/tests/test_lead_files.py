@@ -90,36 +90,42 @@ def test_upload_preview_then_import(client, outbox):
     done = client.post("/api/leads/import", files=csv_file(APOLLO), data={"dry_run": "false"}).json()
     assert done["created"] == 2
     assert [l["last_name"] for l in client.get("/api/leads").json()] == ["Menon"]  # uploads stay out of the lists
-    page = client.get("/api/leads/page", params={"view": "uploaded"}).json()
+    # uploads go to the Unassigned Pool: not Ravi's (he uploaded them: Created By), so not in his own lists
+    assert {l["last_name"] for l in client.get("/api/leads/page").json()["items"]} == {"Menon"}
+    pooled = client.get("/api/leads/page", params={"view": "unassigned"}).json()
+    assert pooled["total"] == 2 and all(l["contact_hidden"] and l["email"] is None for l in pooled["items"])
+    page = login_as(client, 1).get("/api/leads/page", params={"view": "uploaded"}).json()  # a Manager sees them
     assert page["total"] == 2
     asha = next(l for l in page["items"] if l["last_name"] == "Iyer")
     assert asha["uploaded_from"] == "apollo.csv"
     # uploaded leads are in the normal open-leads list too
     assert {l["last_name"] for l in client.get("/api/leads/page").json()["items"]} == {"Menon", "Iyer", "Diaz"}
-    assert asha["linkedin_url"] == "https://linkedin.com/in/asha" and asha["owner_id"] == 2 and asha["stage"] == "New"
+    assert asha["linkedin_url"] == "https://linkedin.com/in/asha" and asha["owner_id"] is None and asha["stage"] == "New"
+    assert (asha["created_by_id"], asha["in_pool"], asha["assigned_at"]) == (2, True, None)
     assert len(outbox) == sent  # no welcome emails for uploaded leads
     assert client.get(f"/api/leads/{asha['id']}").json()["tasks"] == []  # and no automatic tasks
     log = login_as(client, 3).get("/api/activity-log").json()[0]
     assert log["action"] == "Leads uploaded" and log["by"] == "Ravi Kumar" and "2 created (1 with notes)" in log["details"]
 
 
-def test_upload_excel_and_admin_must_pick_owner(client, outbox):
+def test_upload_excel_and_admin_uploads_go_to_the_pool(client, outbox):
     book = Workbook()
     book.active.append(["Name", "Company", "Email"])
     book.active.append(["Dev Patel", "Zen Labs", "dev@zen.example"])
     data = io.BytesIO()
     book.save(data)
     files = {"file": ("leads.xlsx", data.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
-    login_as(client, 3)
-    assert client.post("/api/leads/import", files=files, data={"dry_run": "false"}).status_code == 400
+    login_as(client, 3)  # the Admin no longer picks an owner: the lead goes to the Unassigned Pool like any upload
     done = client.post("/api/leads/import", files=files, data={"dry_run": "false", "owner_id": "2"}).json()
-    assert done["created"] == 1
-    lead = login_as(client, 2).get("/api/leads/page", params={"view": "my_uploaded"}).json()["items"][0]
-    assert (lead["first_name"], lead["last_name"], lead["owner_id"]) == ("Dev", "Patel", 2)
-    assert "Leads assigned to you" in [n["title"] for n in client.get("/api/notifications").json()]
-    # a salesperson can upload for a teammate, not for the Admin
-    assert client.post("/api/leads/import", files=files, data={"owner_id": "1"}).status_code == 200
-    assert client.post("/api/leads/import", files=files, data={"owner_id": "3"}).status_code == 400
+    assert done["created"] == 1 and done["owner"] == "Unassigned Pool"
+    assert login_as(client, 2).get("/api/leads/page", params={"view": "my_uploaded"}).json()["total"] == 0
+    lead = client.get("/api/leads/page", params={"view": "unassigned"}).json()["items"][0]
+    assert (lead["first_name"], lead["last_name"], lead["owner_id"], lead["created_by_id"]) == ("Dev", "Patel", None, 3)
+    assert "Leads assigned to you" not in [n["title"] for n in client.get("/api/notifications").json()]
+    # an owner sent by a salesperson is not used either (the preview says so); other files are still refused
+    for owner in ("1", "3"):
+        res = client.post("/api/leads/import", files=files, data={"owner_id": owner})
+        assert res.status_code == 200 and res.json()["owner"] == "Unassigned Pool"
     assert client.post("/api/leads/import", files={"file": ("a.pdf", b"x", "application/pdf")}).status_code == 400
 
 
@@ -147,20 +153,31 @@ def test_download_needs_reason_is_tracked_and_respects_access(client, outbox):
 
 def test_leads_list_page_views_search_and_sort(client, outbox):
     rows = [["Last Name", "Company", "Title"]] + [[f"Lead{i}", f"Co{i}", "CTO" if i % 2 else "CFO"] for i in range(5)]
-    client.post("/api/leads/import", files=csv_file(rows), data={"dry_run": "false"})
+    client.post("/api/leads/import", files=csv_file(rows), data={"dry_run": "false"})  # Ravi: to the Unassigned Pool
     new_lead(client, last_name="Manual", email="man@x.example")
+    login_as(client, 1)  # a Manager sees everyone's leads, the pool included
     page = client.get("/api/leads/page", params={"limit": 2}).json()
     assert page["total"] == 6 and len(page["items"]) == 2
     assert client.get("/api/leads/page", params={"view": "uploaded"}).json()["total"] == 5
     assert client.get("/api/leads/page", params={"search": "cfo"}).json()["total"] == 3
     names = [l["last_name"] for l in client.get("/api/leads/page", params={"sort": "name", "direction": "asc"}).json()["items"]]
     assert names == sorted(names)
+    # sorting by Owner keeps the pooled leads (no owner), after the owned ones
+    by_owner = client.get("/api/leads/page", params={"sort": "owner", "direction": "asc"}).json()
+    assert by_owner["total"] == 6 and [l["owner_id"] for l in by_owner["items"]] == [2, None, None, None, None, None]
     first = client.get("/api/leads/page", params={"view": "uploaded"}).json()["items"][0]["id"]
+    # a pooled lead is assigned before anyone works on it
+    assert login_as(client, 3).post(f"/api/leads/{first}/assign", json={"to_user_id": 2}).status_code == 200
+    login_as(client, 2)
     client.put(f"/api/leads/{first}/stage", json={"task": TASK, "stage": "Nurturing", "completed_stages": ["New"], "note": "Synthetic test note"})
     assert client.get("/api/leads/page", params={"stage": "Nurturing", "completed_stages": ["New"]}).json()["total"] == 1
-    # filters: Lead Source, Owner and Created date
+    # filters: Lead Source, Owner (Unassigned too) and Created date
+    login_as(client, 1)
     assert client.get("/api/leads/page", params={"source": "Upload"}).json()["total"] == 5
-    assert client.get("/api/leads/page", params={"owner": "me"}).json()["total"] == 6
+    assert login_as(client, 2).get("/api/leads/page", params={"owner": "me"}).json()["total"] == 2
+    login_as(client, 1)
+    assert client.get("/api/leads/page", params={"owner": "2"}).json()["total"] == 2
+    assert client.get("/api/leads/page", params={"owner": "unassigned"}).json()["total"] == 4
     assert client.get("/api/leads/page", params={"owner": "1"}).json()["total"] == 0
     assert client.get("/api/leads/page", params={"created_from": "2000-01-01T00:00:00Z"}).json()["total"] == 6
     assert client.get("/api/leads/page", params={"created_to": "2000-01-01T00:00:00Z"}).json()["total"] == 0

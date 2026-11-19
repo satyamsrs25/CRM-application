@@ -32,7 +32,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import User
+from app.models import Lead, User
 
 log = logging.getLogger("crm.security")
 
@@ -244,6 +244,47 @@ def require_edit(owner_id: int | None, label: str = "record") -> Acting:
     if owner_id != me.id and not me.can("edit_team_records"):
         raise HTTPException(status_code=403, detail=f"You can only change your own records. This {label} belongs to someone else.")
     return me
+
+
+# ---------- the Unassigned Pool: leads with no owner (bulk uploads start there) ----------
+# Everyone can list the pool and ask for one of its leads; only the Admin and Managers with "Reassign owner" give
+# them out, one lead at a time (a Manager: to the Salespeople who report to them). See routers/leads.py assign.
+
+def manages_pool(me: Acting | None = None) -> bool:
+    """Who assigns pooled leads (and approves requests for them): the Admin, and Managers with Reassign owner."""
+    me = me or acting_user()
+    return me.is_admin or (me.role == "Manager" and me.can("reassign_owner"))
+
+
+def sees_pool_contacts(me: Acting | None = None) -> bool:
+    """Who sees a pooled lead's contact details (email, phone, LinkedIn profile): the Admin, pool managers, and users
+    who already see everyone's records. Others (Salespeople) see the rest and can ask for the lead."""
+    me = me or acting_user()
+    return me.is_admin or me.sees_team or manages_pool(me)
+
+
+def campaign_leads(user_id: int, role: str, permissions) -> list:
+    """The leads a user's campaign may reach, as SQL conditions (any one is enough; the Admin: all of them).
+    Assigned leads: the owner, and Managers who see the team's records. Pooled leads: Managers with Reassign owner.
+    Other Salespeople's leads are never included, even with team access. The Send email campaigns permission is
+    checked separately. A plain function of the user, so the sender can check it again when each email goes."""
+    if role == "Admin":
+        return [Lead.id.is_not(None)]
+    allowed = [Lead.owner_id == user_id]
+    if role == "Manager" and "view_team_records" in permissions:
+        allowed.append(Lead.owner_id.is_not(None))
+    if role == "Manager" and "reassign_owner" in permissions:
+        allowed.append(Lead.owner_id.is_(None))
+    return allowed
+
+
+def may_campaign_to(lead, user_id: int, role: str, permissions) -> bool:
+    """The same rule as campaign_leads, for one lead already loaded."""
+    if role == "Admin" or lead.owner_id == user_id:
+        return True
+    if lead.owner_id is None:
+        return role == "Manager" and "reassign_owner" in permissions
+    return role == "Manager" and "view_team_records" in permissions
 
 
 def owner_for_new(owner_id: int | None) -> int:

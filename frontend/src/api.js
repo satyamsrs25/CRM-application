@@ -275,9 +275,13 @@ export const api = {
     apiRequest(`/leads/${id}/convert`, { method: "POST", body: values }),
   transferLead: (id, values) =>
     apiRequest(`/leads/${id}/transfer`, { method: "POST", body: values }),
+  // the Unassigned Pool: give one pooled lead to a Salesperson (the Admin, or a Manager: their own team)
+  assignLead: (id, values) => apiRequest(`/leads/${id}/assign`, { method: "POST", body: values }),
   // ask for someone else's lead (the owner, their Manager or the Admin approves)
   requestLeadTransfer: (id, reason) => apiRequest(`/leads/${id}/transfer-requests`, { method: "POST", body: { reason } }),
   leadTransferRequests: (id) => apiRequest(`/leads/${id}/transfer-requests`),
+  // the Unassigned Pool: ask for the ticked leads at once (one request each; nothing is assigned)
+  requestPoolLeads: (lead_ids, reason) => apiRequest("/transfer-requests/bulk", { method: "POST", body: { lead_ids, reason } }),
   transferRequests: (box = "all") => apiRequest(`/transfer-requests?box=${box}`),
   // Home > Analytics: each user's own charts, seen by their Manager and the Admin, and the reports sent up the line
   analyticsOptions: () => apiRequest("/analytics/options"),
@@ -465,8 +469,8 @@ export const api = {
     apiRequest(`/leads/company-matches?${new URLSearchParams({ company, ...(excludeId ? { exclude_id: excludeId } : {}) })}`),
   // Bulk upload: dryRun=true only checks the file and returns what would happen
   importLeads: (file, options) => api.importData("leads", file, options),
-  // assign (leads): "one" (all to ownerId), "column" (the file's Lead Owner column, ownerId for the rest) or
-  // "even" (shared round-robin between ownerIds)
+  // ownerId: opportunities' owner. Uploaded leads always go to the Unassigned Pool (no owner is sent for them; the
+  // server ignores one if it is)
   importData: (object, file, { ownerId, dryRun, assign, ownerIds, counts }) => {
     const form = new FormData();
     form.append("file", file);
@@ -597,7 +601,8 @@ function normalizeRecord(record, collection, contacts) {
     value: record.stage === "Won" ? record.final_value : record.expected_value,
     closeDate: record.expected_close_date || "",
     created: day(record.created_at),
-    owner: record.owner_name || "",
+    // a lead in the Unassigned Pool has no owner yet
+    owner: record.owner_name || (collection === "leads" && record.owner_id === null ? "Unassigned" : ""),
     lossReason: record.lost_reason || "",
     source: record.source || "",
     color: "sage",

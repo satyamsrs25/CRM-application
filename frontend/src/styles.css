@@ -1390,6 +1390,41 @@ td.high {
 .lead-board .kanban-col {
   scroll-margin-top: 72px; /* a page change brings the column's top back into view, below the app header */
 }
+/* the Unassigned Pool: its Kanban column (first; its cards don't move), the Owner "Unassigned" and the notes */
+.lead-board .kanban-col.pool {
+  background: #f4f6fb;
+}
+.lead-board .k-unassigned {
+  background: #e3e8f4;
+}
+.pool-owner {
+  color: var(--text-weak);
+  font-style: italic;
+}
+.pool-upload-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #f3f6fb;
+  font-size: 13px;
+}
+.read-only-note.pool-note {
+  white-space: normal;
+}
+/* Transfer Requests: the request a notification opened; the bulk request's "not requested" list */
+.transfer-requests tr.row-focus td {
+  background: #fff8e1;
+}
+.request-results {
+  max-height: 220px;
+  margin: 6px 0 0;
+  padding-left: 18px;
+  overflow-y: auto;
+  font-size: 13px;
+}
 .kanban-pager {
   display: grid;
   gap: 6px;

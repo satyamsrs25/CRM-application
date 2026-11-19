@@ -43,8 +43,15 @@ def upload(client, owner, rows):
 def test_people_count_matches_my_open_leads_including_uploads(client):
     new_lead(client)
     new_lead(client)
-    # uploaded leads nobody has worked on: in My Open Leads, so in the People count too (they used to be left out)
+    # uploads go to the Unassigned Pool: they count for nobody (not the uploader, not the owner sent with them)
     upload(client, RAVI, [[f"Up{i}", f"Loaded{i}", "Upload Synthetic Co", f"up{i}@upload-synthetic.example"] for i in range(3)])
+    assert counts(client) == {RAVI: 2} and my_open_total(client, RAVI) == 2
+    assert counts(client, PRIYA) == {RAVI: 2}
+    # once assigned, uploaded leads nobody has worked on are in My Open Leads, so in the People count too
+    pool = login_as(client, ASHA).get("/api/leads/page", params={"view": "unassigned"}).json()["items"]
+    for lead in pool:
+        res = login_as(client, ASHA).post(f"/api/leads/{lead['id']}/assign", json={"to_user_id": RAVI})
+        assert res.status_code == 200, res.text
     assert counts(client).get(RAVI) == my_open_total(client, RAVI) == 5
     # the workspace list (which the page used to count) leaves the uploads out: that was the mismatch
     workspace = login_as(client, ASHA).get("/api/leads").json()
