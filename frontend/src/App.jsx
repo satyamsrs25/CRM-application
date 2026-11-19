@@ -240,12 +240,8 @@ function Workspace({ user, onLogout, onUserChanged }) {
   else if (["users", "permissions", "activity", "team-activity"].includes(section) && canManageAccess(user))
     page = <ManageAccess tab={section === "users" ? "people" : section} user={user} data={data} reload={reload} notify={notify} onSelfChanged={onUserChanged} />;
   else if (section === "assistant") page = <AssistantPage user={user} reload={reload} />;
-<<<<<<< HEAD
-  else if (section === "transfer-requests") page = <TransferRequestsPage user={user} reload={reload} />;
-  else if (section === "analytics") page = <AnalyticsPage user={user} query={query} />;
-=======
   else if (section === "transfer-requests") page = <TransferRequestsPage key={query} user={user} reload={reload} query={query} />;
->>>>>>> origin/qa_main
+  else if (section === "analytics") page = <AnalyticsPage user={user} query={query} />;
   else if (section === "campaigns") page = <CampaignsPage key={id || "list"} id={id} user={user} data={data} notify={notify} />;
   else if (section === "tasks")
     page = (

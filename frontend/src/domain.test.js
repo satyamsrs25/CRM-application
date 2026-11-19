@@ -434,6 +434,15 @@ test("Account page (issue 49): Details, Leads and Opportunities in the main colu
   assert.doesNotMatch(source("./RecordPage.jsx"), /account-main|account-columns/);
   assert.doesNotMatch(related.slice(related.indexOf("export function ContactPage")), /account-main|account-columns/);
 });
+test("merge of qa_main (homepage-enhancements): no conflict markers; Transfer Requests and Analytics both open", () => {
+  // 4c48632 committed an unresolved conflict in App.jsx, which stopped the production build
+  for (const file of readdirSync(new URL(".", import.meta.url)).filter((f) => /\.(jsx?|css)$/.test(f)))
+    assert.doesNotMatch(source(`./${file}`), /^(<{7}|={7}|>{7})( |\r?$)/m, file);
+  const app = source("./App.jsx");
+  // a bell notice opens one request (#/transfer-requests?request=ID): the page needs the query and remounts on it
+  assert.match(app, /section === "transfer-requests"\) page = <TransferRequestsPage key=\{query\} user=\{user\} reload=\{reload\} query=\{query\} \/>/);
+  assert.match(app, /section === "analytics"\) page = <AnalyticsPage user=\{user\} query=\{query\} \/>/);
+});
 test("a pooled lead can't be converted from the Leads list either, whoever ticks it", () => {
   const pooled = { id: 9, stage: "New", owner_id: null, in_pool: true };
   const all = () => ({ canEdit: true, canCreateSales: true });
