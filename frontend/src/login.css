@@ -53,6 +53,8 @@
 .signin-submit:hover:not(:disabled) { background: #1037b7; }
 .signin-submit:disabled { opacity: .65; cursor: wait; }
 .signin-error { padding: 12px 14px; border: 1px solid #f7b2ac; border-radius: 10px; color: #b52a20; background: #fff2f0; font-size: 14px; overflow-wrap: anywhere; }
+.signin-field.invalid, .signin-field.invalid:focus-within { border-color: #c23934; box-shadow: 0 0 0 3px #c2393415; }
+.signin-field-problem { margin: 6px 0 0; color: #b52a20; font-size: 13px; }
 .signin-password-help { margin-top: 10px; padding: 12px; color: #254f98; background: #eff5ff; border-radius: 8px; font-size: 13px; line-height: 1.5; }
 .signin-help { margin: 20px 0 0; color: #747780; font-size: 13px; line-height: 1.6; text-align: center; }
 .signin-account-note { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 8px; color: #858a96; font-size: 12px; text-align: center; }

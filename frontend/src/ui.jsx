@@ -23,6 +23,8 @@ const paths = {
   kanban: "M3 3h5v18H3ZM10 3h5v12h-5ZM17 3h4v8h-4Z",
   refresh: "M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7",
   calendar: "M8 2v4m8-4v4M3 10h18M3 5h18v17H3Z",
+  building: "M5 21V5h9v16m0-10h5v10M8 8h3m-3 4h3m-3 4h3M3 21h18",
+  briefcase: "M3 8h18v12H3ZM8 8V5h8v3M3 13h18",
   clock: "M12 8v4l3 2M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0",
   warn: "M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z",
   star: "m12 3 2.8 5.7 6.2.9-4.5 4.4 1 6.2L12 17.3l-5.5 2.9 1-6.2L3 9.6l6.2-.9Z",

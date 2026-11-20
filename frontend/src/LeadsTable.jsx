@@ -303,7 +303,9 @@ export default function LeadsTable({
   // lead is on the board once and the totals add up
   const poolShown = shownColumns.some((c) => c.pool);
   const columnQuery = (column) =>
-    column.pool ? { owner: POOL_OWNER } : { stage: column.stage, ...(poolShown ? { assigned: "true" } : {}) };
+    column.pool
+      ? { owner: POOL_OWNER }
+      : { stage: column.stage, ...(column.view ? { view: column.view } : {}), ...(poolShown ? { assigned: "true" } : {}) };
   useEffect(() => {
     if (!kanban) {
       loadedBoard.current = { key: null, reload: null, pages: {} };

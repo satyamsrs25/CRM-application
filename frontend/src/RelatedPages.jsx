@@ -74,141 +74,199 @@ function AccountLeads({ accountId }) {
   const items = leads?.items || [];
   return (
     <Card title={`Leads (${leads ? leads.total : "…"})`} icon="lead">
-      <ul className="related-records">
-        {items.map((l) => (
-          <li key={l.id}>
-            <a href={`#/leads/${l.id}`}>{l.name}</a>
-            <dl>
-              <dt>Stage:</dt>
-              <dd>
-                <StageBadge stage={l.stage} />
-              </dd>
-              <dt>Owner:</dt>
-              <dd>{l.owner_name}</dd>
-              <dt>Email:</dt>
-              <dd>{l.email}</dd>
-              <dt>Linked by:</dt>
-              <dd>{l.why}</dd>
-            </dl>
-          </li>
-        ))}
-        {leads && !items.length && <p className="muted pad">No leads from this company.</p>}
-        {leads && leads.total > items.length && <p className="muted pad">Showing the newest {items.length} of {leads.total}.</p>}
-        {!leads && <p className="muted pad">Loading…</p>}
-      </ul>
+      {!leads ? (
+        <p className="muted pad">Loading…</p>
+      ) : !items.length ? (
+        <p className="muted pad">No leads from this company.</p>
+      ) : (
+        <div className="account-table-wrap">
+          <table className="account-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Stage</th>
+                <th>Owner</th>
+                <th>Linked by</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((l) => (
+                <tr key={l.id}>
+                  <td>
+                    <a href={`#/leads/${l.id}`}>{l.name}</a>
+                  </td>
+                  <td>
+                    <StageBadge stage={l.stage} />
+                  </td>
+                  <td>{l.owner_name || "—"}</td>
+                  <td>{l.why || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {leads && leads.total > items.length && <p className="muted pad">Showing the newest {items.length} of {leads.total}.</p>}
     </Card>
   );
 }
 
+// The account page: a header (name, industry, owner, website), Account information, then its
+// Contacts and Leads side by side, its Opportunities and its emails.
 export function AccountPage({ id, data, user, openNew, emailVersion }) {
   const account = data.accounts.find((a) => String(a.id) === id);
   const { emails } = useEmails("account_id", account?.id, emailVersion);
   if (!account) return <NotFound collection="accounts" />;
   const contacts = data.contacts.filter((c) => c.account_id === account.id);
   const opps = data.opportunities.filter((o) => o.account_id === account.id);
+  const meta = [
+    account.industry,
+    account.owner_name && `Owner: ${account.owner_name}`,
+  ].filter(Boolean);
   return (
-    <div className="page record-page">
-      <Highlights
-        type="account"
-        label="Account"
-        name={account.name}
-        fields={[
-          ["Industry", account.industry],
-          ["Phone", account.phone && <PhoneReveal value={account.phone} />],
-          ["Website", site(account.website)],
-          ["Account Owner", account.owner_name],
-        ]}
-      >
-        <button className="sf-button" onClick={() => openNew("contact", { account_id: account.id })}>
-          New Contact
-        </button>
-        {canCreateOpportunity(user) && (
-          <button className="sf-button" onClick={() => openNew("newOpportunity", { account_id: account.id })}>
-            New Opportunity
-          </button>
-        )}
-      </Highlights>
-      {/* main column: Details, then the account's Leads and Opportunities; Emails and Contacts on the right */}
-      <div className="record-columns account-columns">
-        <div className="account-main">
-          <section className="card record-main">
-            <div className="tabs">
-              <button className="on">Details</button>
-            </div>
-            <div className="detail-section">
-              <span className="section-toggle static">
-                <Icon name="down" size={12} /> Account Information
-              </span>
-              <FieldGrid
-                rows={[
-                  ["Account Name", account.name],
-                  ["Account Owner", account.owner_name],
-                  ["Industry", account.industry],
-                  ["Phone", account.phone && <PhoneReveal value={account.phone} />],
-                  ["Website", site(account.website)],
-                  ["LinkedIn", site(account.linkedin_url)],
-                  ["Address", account.address],
-                  ["Headcount", account.employees != null ? Number(account.employees).toLocaleString() : ""],
-                  ["Turnover", amount(account.annual_revenue, account.currency)],
-                  ["Created", dateTime(account.created_at)],
-                ]}
-              />
-            </div>
-          </section>
-          <AccountLeads accountId={account.id} />
-          <Card title={`Opportunities (${opps.length})`} icon="opportunity">
-            <ul className="related-records">
-              {opps.map((o) => (
-                <li key={o.id}>
-                  <a href={`#/opportunities/${o.id}`}>{o.name}</a>
-                  <dl>
-                    <dt>Stage:</dt>
-                    <dd>
-                      <StageBadge stage={o.stage} />
-                    </dd>
-                    <dt>Amount:</dt>
-                    <dd>{amount(o.value, o.currency)}</dd>
-                    <dt>Close Date:</dt>
-                    <dd>{shortDate(o.expected_close_date)}</dd>
-                  </dl>
-                </li>
-              ))}
-              {!opps.length && <p className="muted pad">No opportunities yet.</p>}
-            </ul>
-          </Card>
+    <div className="page record-page account-page">
+      <section className="card account-head">
+        <ObjectIcon type="account" size={40} />
+        <div className="account-title">
+          <small>Account</small>
+          <h1>{account.name}</h1>
+          <p>
+            {meta.join(" · ")}
+            {account.website && (
+              <>
+                {meta.length ? " · " : ""}
+                {site(account.website)}
+              </>
+            )}
+          </p>
         </div>
-        <aside className="record-side">
-          <Card title={`Emails (${emails.length})`} icon="event">
-            <EmailList emails={emails} />
-          </Card>
-          <Card
-            title={`Contacts (${contacts.length})`}
-            icon="contact"
-            actions={
-              <button className="sf-button small" onClick={() => openNew("contact", { account_id: account.id })}>
-                New
-              </button>
-            }
-          >
-            <ul className="related-records">
-              {contacts.map((c) => (
-                <li key={c.id}>
-                  <a href={`#/contacts/${c.id}`}>{c.full_name}</a>
-                  <dl>
-                    <dt>Title:</dt>
-                    <dd>{c.job_title}</dd>
-                    <dt>Email:</dt>
-                    <dd>{c.email}</dd>
-                    <dt>Phone:</dt>
-                    <dd><PhoneReveal value={c.phone} /></dd>
-                  </dl>
-                </li>
-              ))}
-              {!contacts.length && <p className="muted pad">No contacts yet.</p>}
-            </ul>
-          </Card>
-        </aside>
+        <div className="button-group">
+          <button className="sf-button" onClick={() => openNew("contact", { account_id: account.id })}>
+            New Contact
+          </button>
+          {canCreateOpportunity(user) && (
+            <button className="sf-button brand" onClick={() => openNew("newOpportunity", { account_id: account.id })}>
+              New Opportunity
+            </button>
+          )}
+        </div>
+      </section>
+
+      <section className="card account-info">
+        <h2>Account information</h2>
+        <dl className="account-fields">
+          {[
+            ["Account name", account.name],
+            ["Account owner", account.owner_name],
+            ["Industry", account.industry],
+            ["Phone", account.phone && <PhoneReveal value={account.phone} />],
+            ["Created", dateTime(account.created_at)],
+            ["Website", site(account.website)],
+            ["LinkedIn", site(account.linkedin_url)],
+            ["Address", account.address],
+            ["Headcount", account.employees != null ? Number(account.employees).toLocaleString() : ""],
+            ["Turnover", amount(account.annual_revenue, account.currency)],
+          ].map(([label, value]) => (
+            <div key={label}>
+              <dt>{label}</dt>
+              <dd className={value ? "" : "none"}>{value || "Not added"}</dd>
+            </div>
+          ))}
+        </dl>
+      </section>
+
+      <div className="account-pair">
+        <Card
+          title={`Contacts (${contacts.length})`}
+          icon="contact"
+          actions={
+            <button className="sf-button small" onClick={() => openNew("contact", { account_id: account.id })}>
+              New
+            </button>
+          }
+        >
+          {contacts.length ? (
+            <div className="account-table-wrap">
+              <table className="account-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Title</th>
+                    <th>Email</th>
+                    <th>Phone</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {contacts.map((c) => (
+                    <tr key={c.id}>
+                      <td>
+                        <a href={`#/contacts/${c.id}`}>{c.full_name}</a>
+                      </td>
+                      <td>{c.job_title || "—"}</td>
+                      <td>{c.email || "—"}</td>
+                      <td>{c.phone ? <PhoneReveal value={c.phone} /> : <span className="muted">Not added</span>}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="muted pad">No contacts yet.</p>
+          )}
+        </Card>
+        <AccountLeads accountId={account.id} />
       </div>
+
+      <Card
+        title={`Opportunities (${opps.length})`}
+        icon="opportunity"
+        actions={
+          canCreateOpportunity(user) && (
+            <button className="sf-button small" onClick={() => openNew("newOpportunity", { account_id: account.id })}>
+              New
+            </button>
+          )
+        }
+      >
+        {opps.length ? (
+          <div className="account-table-wrap">
+            <table className="account-table">
+              <thead>
+                <tr>
+                  <th>Opportunity</th>
+                  <th>Stage</th>
+                  <th>Client POC</th>
+                  <th className="num">Amount</th>
+                  <th>Close date</th>
+                  <th>Owner</th>
+                </tr>
+              </thead>
+              <tbody>
+                {opps.map((o) => (
+                  <tr key={o.id}>
+                    <td>
+                      <a href={`#/opportunities/${o.id}`}>{o.name}</a>
+                    </td>
+                    <td>
+                      <StageBadge stage={o.stage} />
+                    </td>
+                    <td>{o.lead_name || "—"}</td>
+                    <td className="num">{amount(o.value, o.currency) || "—"}</td>
+                    <td>{shortDate(o.expected_close_date) || "—"}</td>
+                    <td>{o.owner || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="muted pad">No opportunities yet.</p>
+        )}
+      </Card>
+
+      <Card title={`Emails (${emails.length})`} icon="event">
+        <EmailList emails={emails} />
+      </Card>
     </div>
   );
 }
