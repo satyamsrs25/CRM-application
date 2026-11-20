@@ -367,6 +367,16 @@ def handover_lines(db: Session, *, stage: str, tasks: list[Task], lead_id: int |
     return lines
 
 
+def lead_details(lead: Lead) -> list[str]:
+    """The lead's details for an email, one per line (shown as a table in the email)."""
+    lines = [f"Lead: {lead.name}", f"Company: {lead.company or 'No company'}"]
+    if lead.email:
+        lines.append(f"Email: {lead.email}")
+    if lead.phone:
+        lines.append(f"Phone: {lead.phone}")
+    return lines
+
+
 def task_line(label: str, task: Task | None) -> list[str]:
     return [f"{label}: {task.title}, due {task.due_date:%d %b %Y %I:%M %p}."] if task is not None else []
 
@@ -579,11 +589,13 @@ def notify(db: Session, user_id: int, title: str, message: str, *, task_id: int 
     user = db.get(User, user_id)
     category = category or ("reminder" if kind == "reminder" else "stage")
     if user and user.email and getattr(user, EMAIL_SETTING[category], True):
+        first = user.full_name.split()[0]
         mailer.queue(
             db,
             user.email,
             f"[SalesTrack] {title}",
-            f"Hi {user.full_name.split()[0]},\n\n{message}\n\nOpen in SalesTrack: {mailer.app_link(link)}\n\n{why}",
+            f"Hi {first},\n\n{message}\n\nOpen in SalesTrack: {mailer.app_link(link)}\n\n{why}",
+            html=mailer.notification_html(first, message, mailer.app_link(link), why),
         )
 
 
@@ -615,9 +627,7 @@ def lead_created_notices(db: Session, lead: Lead, *, actor_id: int | None, task:
     actor = db.get(User, actor_id) if actor_id is not None else None
     assigned = actor_id is not None and actor_id != lead.owner_id
     owner_name = owner.full_name if owner else "another user"
-    details = [f"Lead: {lead.name}", f"Company: {lead.company}", f"Source: {lead_source_text(lead)}"]
-    if lead.email:
-        details.append(f"Email: {lead.email}")
+    details = [*lead_details(lead), f"Source: {lead_source_text(lead)}"]
     created_by = f"Created by: {actor.full_name}" if actor else None
     link = record_link(lead_id=lead.id)
     notify(db, lead.owner_id, "Lead assigned to you" if assigned else "Lead created",

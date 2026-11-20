@@ -51,11 +51,15 @@ export function leadBoardColumns(view, stageFilter, ownerFilter, { poolContacts 
             ? "Hidden by the Owner filter"
             : "",
   };
+  // an open-leads view still shows the closed columns (Unqualified, Converted, Lost) with the same owner rule, so a
+  // lead dragged there is seen in its new column: their cards come from All Leads / My Leads
+  const closedFrom = { all_open: "all", my_open: "my" }[view];
   const stages = LEAD_STAGES.map((stage) => ({
     stage,
     closed: LEAD_CLOSED_STAGES.includes(stage),
+    ...(closedFrom && LEAD_CLOSED_STAGES.includes(stage) ? { view: closedFrom } : {}),
     excluded:
-      view === "unassigned" || !viewStages.includes(stage)
+      view === "unassigned" || (!viewStages.includes(stage) && !(closedFrom && LEAD_CLOSED_STAGES.includes(stage)))
         ? "Not in this list view"
         : stageFilter && stageFilter !== stage
           ? "Hidden by the Lead Status filter"
@@ -75,6 +79,26 @@ export function leadStageAction(lead, stage, { canEdit, canConvert }) {
   if (stage === "Unqualified") return { type: "unqualified", record: lead };
   if (LEAD_OPEN_STAGES.includes(stage)) return { type: "stage", collection: "leads", record: lead, stage };
   return null;
+}
+// A card's initials badge: "Lucas Clark" -> "LC", "acme" -> "A"
+export const initials = (name = "") =>
+  name
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0].toUpperCase())
+    .join("") || "?";
+
+// Sign in: what is missing or wrong, per field, before anything is sent (shown under each field, not the browser's
+// generic "Please fill out this field.")
+export function signInProblems({ email = "", password = "" }) {
+  const problems = {};
+  const address = email.trim();
+  if (!address) problems.email = "Enter your email address.";
+  else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) problems.email = "Enter a valid email address, like you@company.com.";
+  if (!password) problems.password = "Enter your password.";
+  return problems;
 }
 // Opportunity path: Opportunity -> Discovery -> Proposal -> Won, or Lost from any open stage
 export const OPPORTUNITY_STAGES = ["Opportunity", "Discovery", "Proposal", "Won", "Lost"];

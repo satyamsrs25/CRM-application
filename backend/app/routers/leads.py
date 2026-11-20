@@ -31,6 +31,7 @@ from app.services import (
     confirm_skipped,
     create_auto_task,
     email_website_problem,
+    lead_details,
     demo_input,
     demo_text,
     future_demo,
@@ -364,8 +365,9 @@ def transfer_lead(db: Session, lead: Lead, to_user_id: int, note: str | None, ac
         return record
     actor = db.get(User, actor_id)
     if target.id != actor_id:
-        lines = [f'{actor.full_name if actor else "Someone"} transferred lead "{lead.name}" ({lead.company or "no company"}) '
-                 f'to you{f" from {previous.full_name}" if previous else ""}.',
+        lines = [f'{actor.full_name if actor else "Someone"} transferred a lead to you'
+                 f'{f" from {previous.full_name}" if previous else ""}.', *lead_details(lead),
+                 f'Assigned by: {actor.full_name if actor else "Someone"}', "",
                  *handover_lines(db, stage=lead.stage, tasks=tasks, lead_id=lead.id)]
         if record.note:
             lines.append(f"Transfer note: {record.note}")
@@ -544,9 +546,10 @@ def assign_from_pool(db: Session, lead: Lead, target: User, actor_id: int, note:
                    f'Your request for lead "{lead.name}" was closed: it was assigned to {target.full_name}.',
                    link="/transfer-requests", category="assignment")
     if target.id != actor_id:
-        how = "approved your request for the lead" if request else "assigned you the lead"
-        lines = [f'{actor.full_name if actor else "Someone"} {how} "{lead.name}" ({lead.company or "no company"}) '
-                 "from the Unassigned Pool.", *handover_lines(db, stage=lead.stage, tasks=tasks, lead_id=lead.id)]
+        how = "approved your request for a lead" if request else "assigned you a lead"
+        lines = [f'{actor.full_name if actor else "Someone"} {how} from the Unassigned Pool.', *lead_details(lead),
+                 f'Assigned by: {actor.full_name if actor else "Someone"}', "",
+                 *handover_lines(db, stage=lead.stage, tasks=tasks, lead_id=lead.id)]
         if record.note:
             lines.append(f"Note: {record.note}")
         notify(db, target.id, "Lead assigned to you", "\n".join(lines), link=f"/leads/{lead.id}",

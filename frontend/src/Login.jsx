@@ -1,6 +1,7 @@
 import srsLogo from "./assets/srs-logo.png";
 import React, { useState } from "react";
 import { api } from "./api";
+import { signInProblems } from "./domain";
 import "./login.css";
 
 export function BrandMark({ size = 40 }) {
@@ -19,14 +20,24 @@ export function BrandMark({ size = 40 }) {
 export default function Login({ onLogin, sessionExpired = false }) {
   const [values, setValues] = useState({ email: "", password: "" });
   const [error, setError] = useState("");
+  const [problems, setProblems] = useState({}); // per field: "Enter your email address."
   const [busy, setBusy] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [passwordHelp, setPasswordHelp] = useState(false);
-  const set = (name) => (e) => setValues((v) => ({ ...v, [name]: e.target.value }));
+  const set = (name) => (e) => {
+    setValues((v) => ({ ...v, [name]: e.target.value }));
+    setProblems((p) => ({ ...p, [name]: undefined })); // typing clears that field's message
+  };
 
   const submit = async (event) => {
     event.preventDefault();
     setError("");
+    const found = signInProblems(values);
+    setProblems(found);
+    if (found.email || found.password) {
+      document.getElementById(found.email ? "signin-email" : "signin-password")?.focus();
+      return;
+    }
     setBusy(true);
     try {
       const { user, token } = await api.login(values.email, values.password);
@@ -77,15 +88,17 @@ export default function Login({ onLogin, sessionExpired = false }) {
           <div className="signin-card">
             <h2 id="signin-title">Sign in</h2>
             <p className="signin-intro">Enter your credentials to access the portal</p>
-            <form className="signin-form" onSubmit={submit} aria-busy={busy}>
+            <form className="signin-form" onSubmit={submit} aria-busy={busy} noValidate>
               {(error || sessionExpired) && <div id="signin-error" className="signin-error" role="alert">{error || "Your session expired. Please sign in again."}</div>}
               <div className="signin-control">
                 <label htmlFor="signin-email">Email address</label>
-                <div className="signin-field"><LoginIcon name="mail"/><input id="signin-email" name="email" type="email" placeholder="you@company.com" autoComplete="username" value={values.email} onChange={set("email")} required disabled={busy} aria-describedby={error ? "signin-error" : undefined}/></div>
+                <div className={`signin-field${problems.email ? " invalid" : ""}`}><LoginIcon name="mail"/><input id="signin-email" name="email" type="email" placeholder="you@company.com" autoComplete="username" value={values.email} onChange={set("email")} required disabled={busy} aria-invalid={problems.email ? true : undefined} aria-describedby={[problems.email && "signin-email-problem", error && "signin-error"].filter(Boolean).join(" ") || undefined}/></div>
+                {problems.email && <p id="signin-email-problem" className="signin-field-problem">{problems.email}</p>}
               </div>
               <div className="signin-control">
                 <div className="signin-label-row"><label htmlFor="signin-password">Password</label><button type="button" className="signin-forgot" onClick={() => setPasswordHelp(v => !v)} aria-expanded={passwordHelp} aria-controls="signin-password-help">Forgot password?</button></div>
-                <div className="signin-field"><LoginIcon name="lock"/><input id="signin-password" name="password" type={showPassword ? "text" : "password"} placeholder="Enter your password" autoComplete="current-password" value={values.password} onChange={set("password")} required disabled={busy} aria-describedby={[error && "signin-error", passwordHelp && "signin-password-help"].filter(Boolean).join(" ") || undefined}/><button className="signin-visibility" type="button" aria-label={showPassword ? "Hide password" : "Show password"} aria-pressed={showPassword} onClick={() => setShowPassword(v => !v)}><LoginIcon name={showPassword ? "eye" : "eyeOff"}/></button></div>
+                <div className={`signin-field${problems.password ? " invalid" : ""}`}><LoginIcon name="lock"/><input id="signin-password" name="password" type={showPassword ? "text" : "password"} placeholder="Enter your password" autoComplete="current-password" value={values.password} onChange={set("password")} required disabled={busy} aria-invalid={problems.password ? true : undefined} aria-describedby={[problems.password && "signin-password-problem", error && "signin-error", passwordHelp && "signin-password-help"].filter(Boolean).join(" ") || undefined}/><button className="signin-visibility" type="button" aria-label={showPassword ? "Hide password" : "Show password"} aria-pressed={showPassword} onClick={() => setShowPassword(v => !v)}><LoginIcon name={showPassword ? "eye" : "eyeOff"}/></button></div>
+                {problems.password && <p id="signin-password-problem" className="signin-field-problem">{problems.password}</p>}
                 {passwordHelp && <p id="signin-password-help" className="signin-password-help" role="status">Contact your SalesTrack administrator to reset your password.</p>}
               </div>
               <button className="signin-submit" type="submit" disabled={busy}>{busy ? "Signing in…" : "Sign in"}</button>

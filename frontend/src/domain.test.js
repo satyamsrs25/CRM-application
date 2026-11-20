@@ -36,6 +36,7 @@ import {
   stageNoteMessage,
   leadBoardColumns,
   leadStageAction,
+  signInProblems,
   isPooledLead,
   POOL_CANT_CONVERT,
   TASK_SUBJECT_REQUIRED,
@@ -355,8 +356,12 @@ test("the Leads board has seven columns in order; Converted, Unqualified and Los
   assert.ok(all.every((c) => c.excluded === ""));
   const excluded = (view, stage, owner) => leadBoardColumns(view, stage, owner).filter((c) => c.excluded).map((c) => c.stage);
   const open = ["New", "Nurturing", "Revisit", "Demo"];
-  assert.deepEqual(excluded("all_open"), ["Unqualified", "Converted", "Lost"]);
-  assert.deepEqual(excluded("my_open"), ["Unassigned", "Unqualified", "Converted", "Lost"]); // only my own leads
+  // an open-leads view still shows the closed columns, from All Leads / My Leads, so a lead dragged there stays in sight
+  assert.deepEqual(excluded("all_open"), []);
+  assert.deepEqual(excluded("my_open"), ["Unassigned"]); // only my own leads
+  assert.deepEqual(leadBoardColumns("my_open", null).filter((c) => c.view).map((c) => [c.stage, c.view]),
+    [["Unqualified", "my"], ["Converted", "my"], ["Lost", "my"]]);
+  assert.deepEqual(leadBoardColumns("all_open", null).filter((c) => c.view).map((c) => c.view), ["all", "all", "all"]);
   assert.deepEqual(excluded("converted"), ["Unassigned", "Unqualified", ...open, "Lost"]);
   assert.deepEqual(excluded("lost"), ["Unassigned", "Unqualified", ...open, "Converted"]);
   assert.deepEqual(excluded("unqualified"), ["Unassigned", ...open, "Converted", "Lost"]);
@@ -371,7 +376,14 @@ test("the Leads board has seven columns in order; Converted, Unqualified and Los
   assert.deepEqual(excluded("all", null, "12"), ["Unassigned"]);
   assert.equal(leadBoardColumns("all", null, "12")[0].excluded, "Hidden by the Owner filter");
   assert.equal(leadBoardColumns("all_open", "Demo").find((c) => c.stage === "New").excluded, "Hidden by the Lead Status filter");
-  assert.equal(leadBoardColumns("all_open", null).find((c) => c.stage === "Lost").excluded, "Not in this list view");
+  assert.equal(leadBoardColumns("revisit_due", null).find((c) => c.stage === "Lost").excluded, "Not in this list view");
+});
+test("Sign in: a message under each field instead of the browser's \"Please fill out this field.\"", () => {
+  assert.deepEqual(signInProblems({ email: "", password: "" }), { email: "Enter your email address.", password: "Enter your password." });
+  assert.deepEqual(signInProblems({ email: "ravi", password: "x" }), { email: "Enter a valid email address, like you@company.com." });
+  assert.deepEqual(signInProblems({ email: " ravi@company.com ", password: "secret" }), {});
+  const login = readFileSync(new URL("./Login.jsx", import.meta.url), "utf8");
+  assert.match(login, /noValidate/);
 });
 test("stage order: skipped stages must be confirmed, Revisit is optional, going back skips nothing", () => {
   assert.deepEqual(skippedStages(LEAD_FLOW, "New", "Demo", LEAD_OPTIONAL_STAGES), ["Nurturing"]);
@@ -419,20 +431,21 @@ test("Salesperson pool visibility (original issue 47): the Kanban leaves the poo
   assert.match(table, /request: \(\) => setPoolRequest\(\{ ids: pooledIds, others: selected\.size - pooledIds\.length \}\)/);
   assert.match(table, /leadBoardColumns\(view, stage \|\| filters\.stage, filters\.owner, \{ poolContacts: seesPoolContacts\(user\) \}\)/);
 });
-test("Account page (issue 49): Details, Leads and Opportunities in the main column; Emails and Contacts beside it", () => {
+test("Account page: header, information, Contacts | Leads, then Opportunities and Emails (no count or revenue cards)", () => {
   const related = source("./RelatedPages.jsx");
   const page = related.slice(related.indexOf("export function AccountPage"), related.indexOf("export function ContactPage"));
   const at = (text) => page.indexOf(text);
-  const order = ['<div className="account-main">', "Account Information", "<AccountLeads accountId={account.id} />",
-    "title={`Opportunities (${opps.length})`}", '<aside className="record-side">', "title={`Emails (${emails.length})`}",
-    "title={`Contacts (${contacts.length})`}"];
+  const order = ['<section className="card account-head">', '<section className="card account-info">',
+    '<div className="account-pair">', "title={`Contacts (${contacts.length})`}", "<AccountLeads accountId={account.id} />",
+    "title={`Opportunities (${opps.length})`}", "title={`Emails (${emails.length})`}"];
   order.forEach((text) => assert.ok(at(text) > 0, text));
   for (let i = 1; i < order.length; i++) assert.ok(at(order[i - 1]) < at(order[i]), `${order[i - 1]} before ${order[i]}`);
+  // no count cards for contacts, leads and opportunities: their sections show the counts
+  assert.doesNotMatch(page, /account-kpi|Contacts<\/small>/);
+  assert.doesNotMatch(page, /account-revenue|Won revenue/);
   // the other record pages keep their layout: the new styles are the Account page's own classes
-  const css = source("./styles.css");
-  assert.match(css, /\.account-main \{\s*display: grid;\s*gap: 12px;\s*min-width: 0;\s*\}/);
-  assert.doesNotMatch(source("./RecordPage.jsx"), /account-main|account-columns/);
-  assert.doesNotMatch(related.slice(related.indexOf("export function ContactPage")), /account-main|account-columns/);
+  assert.doesNotMatch(source("./RecordPage.jsx"), /account-head|account-pair/);
+  assert.doesNotMatch(related.slice(related.indexOf("export function ContactPage")), /account-head|account-pair/);
 });
 test("merge of qa_main (homepage-enhancements): no conflict markers; Transfer Requests and Analytics both open", () => {
   // 4c48632 committed an unresolved conflict in App.jsx, which stopped the production build
@@ -1715,7 +1728,7 @@ test("Leads Kanban: every column pages through the server query, with the List p
   assert.doesNotMatch(table, /BOARD_CARDS|limit: 100/); // no fixed first 100 cards
   assert.match(table, /load\(\{ \.\.\.columnQuery\(col\), offset: at \* cardSize, limit: cardSize \}\)/);
   // the Unassigned column asks for the pool; the stage columns then leave pooled leads out (each lead shown once)
-  assert.match(table, /column\.pool \? \{ owner: POOL_OWNER \} : \{ stage: column\.stage, \.\.\.\(poolShown \? \{ assigned: "true" \} : \{\}\) \}/);
+  assert.match(table, /: \{ stage: column\.stage, \.\.\.\(column\.view \? \{ view: column\.view \} : \{\}\), \.\.\.\(poolShown \? \{ assigned: "true" \} : \{\}\) \}/);
   assert.match(table, /if \(!requests\.current\.isLatest\(column, id\)\) return;/);
   assert.match(table, /const fixed = clampPage\(at, r\.total, cardSize\);/);
   assert.match(table, /\{defs\.map\(\(def\) => \(\s+<FilterButton key=\{def\.key\} def=\{def\} values=\{filters\} onChange=\{onFilter\} \/>/);
@@ -1728,10 +1741,14 @@ test("Leads Kanban: every column pages through the server query, with the List p
   assert.match(board, /aria-label=\{`Previous page of \$\{stage\}`\}/);
   assert.match(board, /aria-label=\{`Next page of \$\{stage\}`\}/);
   assert.match(board, /<b>\{range\.range\}<\/b>/);
-  assert.match(board, /\{excluded \? stage : `\$\{stage\} \(\$\{column \? column\.total\.toLocaleString\(\) : "…"\}\)`\}/);
+  // the count pill (an excluded column has none)
+  assert.match(board, /\{!excluded && \(\s+<span className="kanban-count"/);
+  assert.match(board, /\{column \? column\.total\.toLocaleString\(\) : "…"\}/);
   // drag and drop and the Change Status menu still open the usual popups (nothing moves until it's saved)
-  assert.match(board, /draggable=\{options\.length > 0\}/);
-  assert.match(board, /label="Change Status"/);
+  // a stage changes by dragging only (no Change Status menu on the cards); a column outside the view takes no drops
+  assert.match(board, /draggable=\{canMove\}/);
+  assert.doesNotMatch(board, /Change Status/);
+  assert.match(board, /if \(pool \|\| excluded\) return;/);
   const filters = source("./Filters.jsx");
   assert.match(filters, /export const FilterButton = \(props\) => <HeaderFilter \{\.\.\.props\} pill \/>;/);
 });
@@ -1984,7 +2001,7 @@ test("Opportunities table: Client POC is a label only; Account Name stays Accoun
   // the Accounts and Contacts tables and the board's cards keep "Account Name" too
   assert.match(list, /\["Account Name", \(r\) => r\.name, \(r\) => link\(r, r\.name\)\]/);
   assert.equal((list.match(/\["Account Name", \(r\) => r\.account_name \|\| "", account\]/g) || []).length, 2); // Opportunities, Contacts
-  assert.match(list, /<dt>Account Name<\/dt>/); // the opportunity board's cards
+  assert.match(list, /title="Account Name"/); // the opportunity board's cards
 });
 
 // ---------- issues 2, 3 and 7: New Account, New Contact and New Opportunity > New contact ----------

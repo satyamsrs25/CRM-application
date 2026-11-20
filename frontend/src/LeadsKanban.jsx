@@ -1,19 +1,18 @@
 // Leads Kanban: the same list view, filters and search as the Leads table (LeadsTable.jsx loads one page per column).
 // Each column shows its exact total and one page of cards, with Previous / Next and the range ("16–30 of 549"), so
 // every lead can be reached however many there are. Cards per page is chosen above the board (as on the List page).
-// Dropping a card on a column, or choosing it in the card's Change Status menu, opens the popup the lead page uses
-// (Change Stage with its required note, Convert, Mark as Lost). Nothing moves until that popup is saved; the board
-// is then loaded again. Converted and Lost are closed: their cards don't move.
+// Dragging a card to a column opens the popup the lead page uses (Change Stage with its required note, Convert, Mark as
+// Lost, Mark as Unqualified). Nothing moves until that popup is saved; the board is then loaded again. Converted, Lost
+// and Unqualified are closed: their cards don't move. A column that isn't part of the list view takes no drops.
 // The Unassigned column (first, before Unqualified) holds the leads in the Unassigned Pool, which are in no stage
 // column too. Its cards never move and nothing can be dropped on it: dragging is not a way to claim or assign a lead.
 // The Admin or a Manager assigns it, and a Salesperson requests it, from the lead's page.
 import React, { useState } from "react";
-import { isPooledLead, leadStageAction, POOL_LABEL } from "./domain";
+import { initials, isPooledLead, leadStageAction, POOL_LABEL } from "./domain";
 import { columnRange } from "./listHelpers";
 import { can, canCreateSales } from "./permissions";
-import { ActionMenu, Icon } from "./ui";
+import { Icon } from "./ui";
 
-const MENU_LABEL = { Converted: "Convert", Lost: "Mark as Lost" };
 // why a column has no cards on this board, and what brings it back
 const EXCLUDED_HELP = {
   "Not in this list view": "Choose All Leads (or the matching list view) to see these leads.",
@@ -28,10 +27,7 @@ export default function LeadsKanban({ columns, board, user, setModal, size, page
     const canEdit = lead.owner_id === user?.id || can(user, "edit_team_records");
     return { canEdit, canConvert: canEdit && canCreateSales(user) };
   };
-  const moves = (lead) =>
-    columns
-      .map(({ stage }) => ({ stage, action: leadStageAction(lead, stage, rights(lead)) }))
-      .filter(({ action }) => action);
+  const movable = (lead) => columns.some(({ stage, excluded }) => !excluded && leadStageAction(lead, stage, rights(lead)));
   // Previous / Next: that column's page; if its top is above the screen (a long page of cards), it comes back into view
   const turn = (event, stage, page) => {
     onPage(stage, page);
@@ -55,7 +51,7 @@ export default function LeadsKanban({ columns, board, user, setModal, size, page
         return (
           <section
             key={stage}
-            className={`kanban-col ${closed ? "closed" : ""} ${pool ? "pool" : ""} ${excluded ? "excluded" : ""} ${over === stage ? "drag-over" : ""}`}
+            className={`kanban-col stage-${stage.toLowerCase()} ${closed ? "closed" : ""} ${pool ? "pool" : ""} ${excluded ? "excluded" : ""} ${over === stage ? "drag-over" : ""}`}
             aria-label={
               excluded
                 ? `${stage}: ${excluded}`
@@ -63,7 +59,7 @@ export default function LeadsKanban({ columns, board, user, setModal, size, page
             }
             aria-busy={loading || undefined}
             onDragOver={(e) => {
-              if (pool) return; // nothing is dropped on the Unassigned column
+              if (pool || excluded) return; // nothing is dropped on the Unassigned column or a column outside the view
               e.preventDefault();
               setOver(stage);
             }}
@@ -74,70 +70,60 @@ export default function LeadsKanban({ columns, board, user, setModal, size, page
             }}
           >
             <header>
-              <h3 className={`kanban-stage k-${stage.toLowerCase()}`}>
-                {/* an excluded column has no count: its leads aren't part of this board */}
-                {excluded ? stage : `${stage} (${column ? column.total.toLocaleString() : "…"})`}
-              </h3>
-              <p>
-                {excluded || (pool ? "No owner yet" : closed ? "Closed" : "Open")}
-                {range && range.pages > 1 && ` • ${range.range.split(" of ")[0]}`}
-              </p>
+              <div>
+                <h3 className={`kanban-stage k-${stage.toLowerCase()}`}>{stage}</h3>
+                <p>
+                  {excluded || (pool ? "No owner yet" : closed ? "Closed" : "Open")}
+                  {range && range.pages > 1 && ` • ${range.range.split(" of ")[0]}`}
+                </p>
+              </div>
+              {/* an excluded column has no count: its leads aren't part of this board */}
+              {!excluded && (
+                <span className="kanban-count" aria-label={`${column ? column.total : 0} leads`}>
+                  {column ? column.total.toLocaleString() : "…"}
+                </span>
+              )}
             </header>
             <div className={`kanban-cards ${loading && column ? "is-loading" : ""}`}>
               {items.map((lead) => {
-                const options = moves(lead);
+                const canMove = movable(lead);
                 return (
                   <article
                     key={lead.id}
                     className="kanban-card"
                     aria-labelledby={`lead-card-${lead.id}`}
-                    draggable={options.length > 0}
+                    draggable={canMove}
+                    title={canMove ? "Drag to another column to change its stage" : undefined}
                     onDragStart={(e) => {
                       e.dataTransfer.setData("text/plain", String(lead.id));
                       e.dataTransfer.effectAllowed = "move";
                     }}
                     onDragEnd={() => setOver(null)}
                   >
-                    <a id={`lead-card-${lead.id}`} href={`#/leads/${lead.id}`}>
-                      {lead.name}
-                    </a>
-                    <dl>
-                      <dt>Company</dt>
-                      <dd>{lead.company || "—"}</dd>
-                      {lead.title && (
-                        <>
-                          <dt>Title</dt>
-                          <dd>{lead.title}</dd>
-                        </>
-                      )}
-                    </dl>
-                    <div className="lead-card-foot">
-                      <small>{lead.owner_name || (isPooledLead(lead) ? POOL_LABEL : "")}</small>
-                      {options.length > 0 && (
-                        <ActionMenu
-                          label="Change Status"
-                          items={options.map(({ stage: to, action }) => ({
-                            label: MENU_LABEL[to] || `Move to ${to}`,
-                            onClick: () => setModal(action),
-                          }))}
-                        />
-                      )}
+                    <div className="kanban-card-head">
+                      <span className="kanban-initials" aria-hidden="true">{initials(lead.name)}</span>
+                      <a id={`lead-card-${lead.id}`} href={`#/leads/${lead.id}`}>
+                        {lead.name}
+                      </a>
+                    </div>
+                    <p className={`kanban-line${lead.company ? "" : " none"}`} title="Company">
+                      <Icon name="building" size={13} /> <span>{lead.company || "No company"}</span>
+                    </p>
+                    <p className={`kanban-line${lead.title ? "" : " none"}`} title="Title">
+                      <Icon name="briefcase" size={13} /> <span>{lead.title || "No title"}</span>
+                    </p>
+                    <div className="kanban-card-foot">
+                      <span className={`kanban-owner${isPooledLead(lead) ? " pool" : ""}`}>
+                        {lead.owner_name || (isPooledLead(lead) ? POOL_LABEL : "No owner")}
+                      </span>
+                      {lead.source && <small>{lead.source}{pool ? " (locked)" : ""}</small>}
                     </div>
                   </article>
                 );
               })}
-              {!items.length && (
-                <p className="kanban-empty">
-                  {excluded ? (
-                    EXCLUDED_HELP[excluded] || excluded
-                  ) : column ? (
-                    pool ? "No leads waiting to be assigned" : "No leads"
-                  ) : loading ? (
-                    "Loading…"
-                  ) : (
-                    "Not loaded"
-                  )}
-                </p>
+              {/* an empty column stays blank (its count shows 0); one outside the view says why */}
+              {!items.length && (excluded || !column) && (
+                <p className="kanban-empty">{excluded ? EXCLUDED_HELP[excluded] || excluded : loading ? "Loading…" : "Not loaded"}</p>
               )}
             </div>
             {range && column.total > 0 && (

@@ -189,8 +189,14 @@ def test_assignment_notifies_new_owner(client, outbox):
     outbox.clear()
     login_as(client, 3).put(f"/api/leads/{lead['id']}", json={"owner_id": 2})  # the Admin gives it back to Ravi
     bell = login_as(client, 2).get("/api/notifications").json()
-    assert bell[0]["title"] == "Lead assigned to you" and "Asha Rao transferred lead" in bell[0]["message"]
-    assert any(m["to"] == ["ravi@crm.test"] for m in outbox)
+    assert bell[0]["title"] == "Lead assigned to you" and "Asha Rao transferred a lead to you" in bell[0]["message"]
+    # the lead's details one per line (the email shows them as a table, so Outlook doesn't run them together)
+    lines = bell[0]["message"].splitlines()
+    assert f"Lead: {lead['name']}" in lines and f"Company: {lead['company']}" in lines and "Assigned by: Asha Rao" in lines
+    assert f"Email: {lead['email']}" in lines
+    mail = next(m for m in outbox if m["to"] == ["ravi@crm.test"])
+    assert "<table" in mail["html"] and f"{lead['email']}</td>" in mail["html"] and "Open in SalesTrack</a>" in mail["html"]
+    assert "Lead: " in mail["body"]  # the plain-text version is still there
     # setting the owner it already has sends nothing
     before = len(client.get("/api/notifications", params={"user_id": 2, "unread_only": False}).json())
     client.put(f"/api/leads/{lead['id']}", json={"owner_id": 2, "title": "CEO"})
