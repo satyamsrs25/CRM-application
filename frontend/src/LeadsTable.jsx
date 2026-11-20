@@ -10,8 +10,9 @@ import { CellPreview, markCutCells, PreviewCell } from "./CellPreview";
 import { leadBoardColumns, leadConvertChoice, POOL_LABEL, POOL_OWNER } from "./domain";
 import LeadsKanban from "./LeadsKanban";
 import { NewCampaign, queuedMessage, watchCampaign } from "./CampaignsPage";
-import { can, canCreateSales, canRequestPool, seesPoolContacts } from "./permissions";
-import { BulkRequestDialog } from "./TransferRequests";
+import { can, canAssignPool, canCreateSales, canRequestPool, seesPoolContacts } from "./permissions";
+import { regionName } from "./phone";
+import { BulkAssignDialog, BulkRequestDialog } from "./TransferRequests";
 import { DateCell, Icon, PAGE_SIZES, Pagination, PhoneReveal, StageBadge } from "./ui";
 import { dateTime } from "./format";
 import { FilterButton, rangeBounds, Th } from "./Filters";
@@ -38,6 +39,9 @@ const COLUMNS = [
   ["Title", "title", 136],
   ["Email", "email", 196],
   ["Phone", "phone", 172], // wide enough for a shown international number beside the eye button
+  // Region: the country chosen beside the phone, by name (empty when none was chosen; never guessed). Not sortable;
+  // its header arrow filters by it, like Status (All Regions, Not specified, every country, searchable)
+  ["Region", "region", 132, false],
   ["Status", "stage", 124],
   ["Source", "source", 104],
   ["Owner", "owner", 144], // "Unassigned" for a lead in the Unassigned Pool
@@ -242,6 +246,7 @@ export default function LeadsTable({
   const [bulk, setBulk] = useState(null); // { type: "transfer" | "delete", ids }
   const [campaignFor, setCampaignFor] = useState(null); // lead ids for "Email" (a campaign to the selected leads)
   const [poolRequest, setPoolRequest] = useState(null); // lead ids for Request Assignment (Unassigned Pool)
+  const [assignFor, setAssignFor] = useState(null); // { pooled, owned }: Assign for the ticked pooled leads
   // a short explanation with OK: "one lead at a time" when Convert is chosen with several ticked, or why an action is off
   const [notice, setNotice] = useState(null); // { title, message }
   // long values end in "…"; their full value opens in this preview (CellPreview.jsx), which replaces "Wrap text"
@@ -269,6 +274,7 @@ export default function LeadsTable({
     if (createdTo) params.set("created_to", createdTo);
     if (filters.source) params.set("source", filters.source);
     if (filters.owner) params.set("owner", filters.owner);
+    if (filters.region) params.set("region", filters.region); // filtered on the server, before paging (List and Kanban)
     for (const key of ["created", "modified"]) {
       if (!filters[key]) continue;
       const [from, to] = rangeBounds(filters[key], filters[`${key}_from`], filters[`${key}_to`]);
@@ -412,7 +418,12 @@ export default function LeadsTable({
   const asksForPool = canRequestPool(user);
   const pooledIds = asksForPool ? [...selected].filter((id) => seen.current.get(id)?.in_pool) : [];
   const pooledTicked = pooledIds.length > 0;
-  // the actions for the ticked leads (listHelpers.js): Request Assignment, Convert, Email Campaign, Transfer, Delete
+  // Assign (the Admin, or a Manager with Reassign owner): the ticked leads still in the Unassigned Pool get one owner;
+  // owned leads ticked beside them are listed as left out, never reassigned
+  const canAssign = canAssignPool(user);
+  const assignable = canAssign ? [...selected].filter((id) => seen.current.get(id)?.in_pool) : [];
+  // the actions for the ticked leads (listHelpers.js): Request Assignment, Convert, Assign, Email Campaign, Transfer,
+  // Delete
   const actions = leadSelectionActions({
     count: selected.size,
     convertChoice,
@@ -420,6 +431,8 @@ export default function LeadsTable({
     canTransfer: canTransferAny,
     canRequest: pooledTicked,
     poolOnly: asksForPool && (view === "unassigned" || pooledTicked),
+    canAssign,
+    pooled: assignable.length,
   });
   const run = {
     // opens the usual Convert popup for the one ticked lead (nothing is converted until it's saved);
@@ -431,6 +444,13 @@ export default function LeadsTable({
     transfer: () => setBulk({ type: "transfer", ids: [...selected] }),
     delete: () => setBulk({ type: "delete", ids: [...selected] }),
     request: () => setPoolRequest({ ids: pooledIds, others: selected.size - pooledIds.length }),
+    assign: () => {
+      const row = (id) => seen.current.get(id) || { id, name: `Lead ${id}` };
+      setAssignFor({
+        pooled: assignable.map((id) => ({ id, name: row(id).name })),
+        owned: [...selected].filter((id) => !assignable.includes(id)).map((id) => ({ id, name: row(id).name, note: row(id).owner_name ? `owner ${row(id).owner_name}` : "" })),
+      });
+    },
   };
   const finish = (res) => {
     const transfer = bulk.type === "transfer";
@@ -568,6 +588,7 @@ export default function LeadsTable({
           <div className="board-bar" role="group" aria-label="Kanban filters, sorting and cards per column">
             <div className="board-filters">
               <span className="board-bar-label">Filter</span>
+              {/* Region included: the same searchable menu as its column header in the List */}
               {defs.map((def) => (
                 <FilterButton key={def.key} def={def} values={filters} onChange={onFilter} />
               ))}
@@ -583,7 +604,7 @@ export default function LeadsTable({
               <label className="board-select">
                 <span>Sort by</span>
                 <select value={sort.col} onChange={(e) => setSort({ col: e.target.value, dir: defaultSortDirection(e.target.value) })}>
-                  {COLUMNS.map(([label, col]) => (
+                  {COLUMNS.filter(([, , , sortable]) => sortable !== false).map(([label, col]) => (
                     <option key={col} value={col}>
                       {label}
                     </option>
@@ -650,14 +671,14 @@ export default function LeadsTable({
                       />
                     </th>
                     <th className="rownum sticky-col" aria-label="Row number" />
-                    {COLUMNS.map(([label, col]) => (
+                    {COLUMNS.map(([label, col, , sortable]) => (
                       <Th
                         key={col}
                         label={label}
                         className={col === "name" ? "col-name sticky-col" : ""}
                         sorted={sort.col === col}
                         flip={sort.dir === "asc"}
-                        onSort={() => sortBy(col)}
+                        onSort={sortable === false ? undefined : () => sortBy(col)}
                         filter={defs.find((f) => f.key === col)}
                         values={filters}
                         onChange={onFilter}
@@ -698,6 +719,11 @@ export default function LeadsTable({
                       />
                       <Cell className="phone">
                         <PhoneReveal value={l.phone} />
+                      </Cell>
+                      {/* the country by the same name as the Region filter's menu (the phone's country list); shown on
+                          pooled leads too, whose email, phone and LinkedIn alone stay hidden */}
+                      <Cell className="region" title={regionName(l.phone_country) || l.region || "Not specified"}>
+                        {regionName(l.phone_country) || l.region || ""}
                       </Cell>
                       <td className="cell">
                         <StageBadge stage={l.stage} />
@@ -788,6 +814,23 @@ export default function LeadsTable({
           me={user}
           onClose={() => setBulk(null)}
           onDone={finish}
+        />
+      )}
+      {assignFor && (
+        <BulkAssignDialog
+          pooled={assignFor.pooled}
+          owned={assignFor.owned}
+          user={user}
+          users={users}
+          onClose={(changed) => {
+            setAssignFor(null);
+            if (changed) {
+              // the assigned leads leave the pool: start again with nothing ticked, and refresh the list and counts
+              setSelected(new Set());
+              setAgain((n) => n + 1);
+              reload().catch(() => {});
+            }
+          }}
         />
       )}
       {poolRequest && (

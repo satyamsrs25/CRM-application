@@ -4,11 +4,23 @@
 //   lead in the Unassigned Pool it is "Request Assignment" (a Salesperson; the Admin or their Manager approves)
 // - AssignLeadDialog: "Assign" on a pooled lead's page (the Admin, or a Manager to their own Salespeople)
 // - TransferRequestsPage (#/transfer-requests): To Approve, My Requests and All
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { dateTime } from "./format";
 import { Dialog } from "./LeadFiles";
 import { poolAssignees } from "./permissions";
+import {
+  REQUEST_PAGE_SIZE,
+  canBulkDecide,
+  decisionSummary,
+  keepSelection,
+  requestCount,
+  requestRange,
+  tickableIds,
+  toggleAllOnPage,
+  toggleOne,
+} from "./transferRequestRules";
+import { Pagination } from "./ui";
 
 const POOL_NAME = "Unassigned Pool";
 // the Owner column: a request made from the pool shows the pool until the lead is assigned
@@ -151,8 +163,30 @@ function DecideDialog({ request, decision, onClose, onDone }) {
   );
 }
 
-// The requests as a table, with Approve / Reject / Cancel on the ones you can act on
-export function TransferRequestTable({ rows, onChange, showLead = true, focus = null }) {
+// The header's "select all on this page" box: checked, unchecked, or partly (some of this page's requests ticked)
+function TickAll({ rows, selected, onToggleAll }) {
+  const box = useRef(null);
+  const ids = tickableIds(rows);
+  const ticked = ids.filter((id) => selected.has(id)).length;
+  useEffect(() => {
+    if (box.current) box.current.indeterminate = ticked > 0 && ticked < ids.length;
+  }, [ticked, ids.length]);
+  return (
+    <input
+      ref={box}
+      type="checkbox"
+      checked={ids.length > 0 && ticked === ids.length}
+      disabled={!ids.length}
+      onChange={onToggleAll}
+      aria-label="Select all requests on this page that you can decide (this page only)"
+      title="Selects the requests on this page only"
+    />
+  );
+}
+
+// The requests as a table, with Approve / Reject / Cancel on the ones you can act on. selectable (To Approve, the Admin
+// or a Manager): a tick box on each request you may decide, and one in the header for this page's requests.
+export function TransferRequestTable({ rows, onChange, showLead = true, focus = null, selectable = false, selected = new Set(), onToggle, onToggleAll }) {
   const [deciding, setDeciding] = useState(null); // { request, decision }
   const [error, setError] = useState("");
   // a request opened from a notification: highlighted and brought into view
@@ -178,6 +212,11 @@ export function TransferRequestTable({ rows, onChange, showLead = true, focus = 
         <table className="sf-table transfer-requests">
           <thead>
             <tr>
+              {selectable && (
+                <th className="select-col">
+                  <TickAll rows={rows} selected={selected} onToggleAll={onToggleAll} />
+                </th>
+              )}
               {showLead && <th>Lead</th>}
               <th>Owner</th>
               <th>Requested By</th>
@@ -190,7 +229,23 @@ export function TransferRequestTable({ rows, onChange, showLead = true, focus = 
           </thead>
           <tbody>
             {rows.map((r) => (
-              <tr key={r.id} id={`transfer-request-${r.id}`} className={String(r.id) === String(focus) ? "row-focus" : undefined}>
+              <tr
+                key={r.id}
+                id={`transfer-request-${r.id}`}
+                className={[String(r.id) === String(focus) ? "row-focus" : "", selected.has(r.id) ? "row-selected" : ""].join(" ").trim() || undefined}
+              >
+                {selectable && (
+                  <td className="select-col">
+                    {r.can_decide && r.status === "Pending" && (
+                      <input
+                        type="checkbox"
+                        checked={selected.has(r.id)}
+                        onChange={() => onToggle(r.id)}
+                        aria-label={`Select the request for ${r.lead_name} from ${r.requested_by_name}`}
+                      />
+                    )}
+                  </td>
+                )}
                 {showLead && (
                   <td>
                     {r.can_open_lead ? <a href={`#/leads/${r.lead_id}`}>{r.lead_name}</a> : r.lead_name}
@@ -419,6 +474,155 @@ export function AssignLeadDialog({ lead, user, users, onClose, onDone }) {
   );
 }
 
+// Assign for the leads ticked in the Leads list (the Admin, or a Manager with Reassign owner): the ticked pooled leads
+// go to one Salesperson, each through the single Assign's rules on the server (still in the pool when its turn comes,
+// locked, Transfer History, pending requests closed). Owned leads ticked beside them are listed as left out, never
+// reassigned. Afterwards it says what happened to each lead: assigned, assigned meanwhile by someone else (kept),
+// skipped (why) or failed. Salespeople don't get this: they request pooled leads.
+const leadsText = (n) => `${n.toLocaleString("en-US")} lead${n === 1 ? "" : "s"}`;
+function LeadNames({ rows, more = 8 }) {
+  return (
+    <ul className="request-results">
+      {rows.slice(0, more).map((r) => (
+        <li key={r.id}>
+          <b>{r.name}</b>
+          {r.note && <span className="muted"> ({r.note})</span>}
+          {r.reason && `: ${r.reason}`}
+        </li>
+      ))}
+      {rows.length > more && <li>and {(rows.length - more).toLocaleString("en-US")} more</li>}
+    </ul>
+  );
+}
+export function BulkAssignDialog({ pooled, owned = [], user, users, onClose }) {
+  const people = poolAssignees(user, users);
+  const [to, setTo] = useState("");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState(null);
+  const sending = useRef(false);
+  const submit = async (e) => {
+    e.preventDefault();
+    if (sending.current) return; // a second click or Enter while it runs sends nothing
+    sending.current = true;
+    setBusy(true);
+    setError("");
+    try {
+      setResult(await api.bulkAssignLeads(pooled.map((l) => l.id), Number(to), note.trim()));
+    } catch (err) {
+      setError(err.message);
+    }
+    sending.current = false;
+    setBusy(false);
+  };
+  if (result) {
+    const { assigned, to: name, conflicts, skipped, failed } = result;
+    return (
+      <Dialog
+        title="Assign Leads"
+        onClose={() => onClose(true)}
+        footer={
+          <button className="sf-button brand" onClick={() => onClose(true)} autoFocus>
+            Done
+          </button>
+        }
+      >
+        <div className="transfer-form" role="status">
+          <p>
+            <b>{assigned ? `${leadsText(assigned)} assigned to ${name}.` : "No leads were assigned."}</b>
+          </p>
+          {conflicts.length > 0 && (
+            <>
+              <p className="muted">{leadsText(conflicts.length)} not assigned: someone else assigned {conflicts.length === 1 ? "it" : "them"} meanwhile (the new owner was kept):</p>
+              <LeadNames rows={conflicts} />
+            </>
+          )}
+          {skipped.length > 0 && (
+            <>
+              <p className="muted">{leadsText(skipped.length)} skipped:</p>
+              <LeadNames rows={skipped} />
+            </>
+          )}
+          {failed.length > 0 && (
+            <>
+              <p className="muted">{leadsText(failed.length)} failed (nothing was saved for {failed.length === 1 ? "it" : "them"}):</p>
+              <LeadNames rows={failed} />
+            </>
+          )}
+        </div>
+      </Dialog>
+    );
+  }
+  return (
+    <Dialog
+      title={`Assign ${leadsText(pooled.length)}`}
+      onClose={() => onClose(false)}
+      busy={busy}
+      footer={
+        <>
+          <button className="sf-button" onClick={() => onClose(false)} disabled={busy}>
+            Cancel
+          </button>
+          <button className="sf-button brand" form="bulk-assign" disabled={busy || !to} aria-busy={busy}>
+            {busy ? "Assigning…" : `Assign ${leadsText(pooled.length)}`}
+          </button>
+        </>
+      }
+    >
+      <form id="bulk-assign" className="transfer-form" onSubmit={submit}>
+        <p className="muted">
+          The {leadsText(pooled.length)} from the Unassigned Pool you selected {pooled.length === 1 ? "goes" : "go"} to one Salesperson. Only
+          {pooled.length === 1 ? " its" : " their"} owner changes: stage, Created By and Created Date stay; pending requests for
+          {pooled.length === 1 ? " it" : " them"} are closed.
+          {user?.role === "Admin" ? "" : " You can assign them to the Salespeople who report to you."}
+        </p>
+        <p className="field-hint">Will be assigned ({pooled.length}):</p>
+        <LeadNames rows={pooled} />
+        {owned.length > 0 && (
+          <>
+            <p className="field-hint" role="note">
+              Left out ({owned.length}): {owned.length === 1 ? "it already has" : "they already have"} an owner, so {owned.length === 1 ? "it isn't" : "they aren't"} reassigned (use Transfer Leads for that):
+            </p>
+            <LeadNames rows={owned} />
+          </>
+        )}
+        <label className="field">
+          <span>
+            <abbr title="required">*</abbr> Assign to
+          </span>
+          <select value={to} required onChange={(e) => setTo(e.target.value)} autoFocus>
+            <option value="" disabled>
+              {people.length ? "Select a Salesperson…" : "No active Salespeople to assign to"}
+            </option>
+            {people.map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.full_name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Note</span>
+          <textarea value={note} maxLength={300} rows={3} onChange={(e) => setNote(e.target.value)} />
+        </label>
+        {!people.length && (
+          <p className="field-hint" role="note">
+            {user?.role === "Admin"
+              ? "There are no active Salespeople."
+              : "No active Salespeople report to you. Set Reports To in Manage Access > People, or ask the Admin to assign these leads."}
+          </p>
+        )}
+        {error && (
+          <p className="form-error" role="alert">
+            {error}
+          </p>
+        )}
+      </form>
+    </Dialog>
+  );
+}
+
 // The lead page: its requests in a short list (the lead's owner, their Manager and the Admin see all of them)
 export function TransferRequestList({ rows, onChange }) {
   const [deciding, setDeciding] = useState(null);
@@ -487,6 +691,112 @@ export function TransferRequestList({ rows, onChange }) {
   );
 }
 
+// Approve Selected / Reject Selected: says how many and which, takes one note (required to reject, as for one
+// request), then shows what happened to each: decided, changed by someone else meanwhile, or not possible. The server
+// checks every request again on its own; nothing is sent twice (the button is off while it runs).
+function BulkDecisionDialog({ decision, rows, onClose }) {
+  const approve = decision === "approve";
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState(null);
+  const sending = useRef(false);
+  const count = rows.length;
+  const pool = rows.filter((r) => r.pool).length;
+  const submit = async (e) => {
+    e.preventDefault();
+    if (sending.current) return; // a second click or Enter while it runs sends nothing
+    sending.current = true;
+    setBusy(true);
+    setError("");
+    try {
+      setResult(await api.decideTransferRequests(decision, rows.map((r) => r.id), note.trim()));
+    } catch (err) {
+      setError(err.message);
+    }
+    sending.current = false;
+    setBusy(false);
+  };
+  if (result) {
+    const notDone = [...result.conflicts.map((r) => ({ ...r, conflict: true })), ...result.skipped];
+    return (
+      <Dialog
+        title={approve ? "Approve Selected" : "Reject Selected"}
+        onClose={() => onClose(true)}
+        footer={
+          <button className="sf-button brand" onClick={() => onClose(true)} autoFocus>
+            Done
+          </button>
+        }
+      >
+        <div className="transfer-form" role="status">
+          <p>
+            <b>{decisionSummary(result)}</b>
+          </p>
+          {notDone.length > 0 && (
+            <ul className="request-results">
+              {notDone.slice(0, 20).map((r) => (
+                <li key={r.id}>
+                  <b>{r.lead_name}</b>
+                  {r.requested_by_name && ` (asked by ${r.requested_by_name})`}: {r.reason}
+                </li>
+              ))}
+              {notDone.length > 20 && <li>and {(notDone.length - 20).toLocaleString("en-US")} more</li>}
+            </ul>
+          )}
+        </div>
+      </Dialog>
+    );
+  }
+  return (
+    <Dialog
+      title={`${approve ? "Approve" : "Reject"} ${requestCount(count)}`}
+      onClose={() => onClose(false)}
+      busy={busy}
+      footer={
+        <>
+          <button className="sf-button" onClick={() => onClose(false)} disabled={busy}>
+            Cancel
+          </button>
+          <button className={`sf-button ${approve ? "brand" : "danger"}`} form="bulk-decision" disabled={busy || (!approve && !note.trim())} aria-busy={busy}>
+            {busy ? "Saving…" : `${approve ? "Approve" : "Reject"} ${requestCount(count)}`}
+          </button>
+        </>
+      }
+    >
+      <form id="bulk-decision" className="transfer-form" onSubmit={submit}>
+        <p className="muted">
+          {approve
+            ? `Each lead goes to the person who asked for it${pool ? " (leads from the Unassigned Pool are assigned to them)" : ", with its open follow-ups"}. `
+            : "The leads stay where they are; each person who asked is told why. "}
+          Only the {requestCount(count)} you selected on this page {count === 1 ? "is" : "are"} decided, each on its own: one that someone
+          else has decided or changed meanwhile is left as it is and listed.
+        </p>
+        <ul className="request-results">
+          {rows.slice(0, 10).map((r) => (
+            <li key={r.id}>
+              <b>{r.lead_name}</b> for {r.requested_by_name}
+              {r.reason && <span className="muted"> “{r.reason}”</span>}
+            </li>
+          ))}
+          {count > 10 && <li>and {(count - 10).toLocaleString("en-US")} more</li>}
+        </ul>
+        <label className="field">
+          <span>
+            {!approve && <abbr title="required">*</abbr>} {approve ? "Note for all (optional)" : `Reason for all ${requestCount(count)}`}
+          </span>
+          <textarea value={note} maxLength={300} rows={3} required={!approve} autoFocus onChange={(e) => setNote(e.target.value)} />
+        </label>
+        {error && (
+          <p className="form-error" role="alert">
+            {error}
+          </p>
+        )}
+      </form>
+    </Dialog>
+  );
+}
+
 const TABS = [
   ["to_approve", "To Approve"],
   ["mine", "My Requests"],
@@ -494,28 +804,57 @@ const TABS = [
 ];
 
 // From a notification: ?request=<id> opens All (it shows the request whether it is still pending or someone has
-// decided it already) with that request highlighted; ?box=to_approve opens To Approve.
+// decided it already) with that request highlighted, on the page that holds it; ?box=to_approve opens To Approve.
 const queryValue = (query, key) => new URLSearchParams(query || "").get(key);
 
 export default function TransferRequestsPage({ user, reload, query = "" }) {
   const focus = queryValue(query, "request");
   const askedBox = queryValue(query, "box");
-  const [box, setBox] = useState(
-    focus ? "all" : TABS.some(([key]) => key === askedBox) ? askedBox : user.role === "Admin" ? "to_approve" : "mine",
-  );
-  const [rows, setRows] = useState(null);
+  // what is shown: the tab, the Requested By filter (To Approve), the page; focus only for the first load
+  const [view, setView] = useState({
+    box: focus ? "all" : TABS.some(([key]) => key === askedBox) ? askedBox : user.role === "Admin" ? "to_approve" : "mine",
+    requestedBy: "",
+    offset: 0,
+    size: REQUEST_PAGE_SIZE,
+    focus: focus || "",
+  });
+  const [page, setPage] = useState(null); // { items, total, box_total, offset, requesters }
   const [error, setError] = useState("");
-  const load = () =>
-    api
-      .transferRequests(box)
-      .then(setRows)
-      .catch((err) => setError(err.message));
+  const [selected, setSelected] = useState(() => new Set()); // ticked request ids, on the page shown only
+  const [bulk, setBulk] = useState(null); // "approve" | "reject": the confirmation dialog
+  const [version, setVersion] = useState(0); // a decision was made: load the page again
   useEffect(() => {
-    setRows(null);
+    let live = true;
     setError("");
-    load();
-  }, [box]); // eslint-disable-line react-hooks/exhaustive-deps
-  const empty = { to_approve: "Nothing is waiting for your approval.", mine: "You haven't asked for any leads.", all: "No transfer requests yet." }[box];
+    api
+      .transferRequestsPage({ box: view.box, requestedBy: view.requestedBy, offset: view.offset, limit: view.size, focus: view.focus })
+      .then((res) => {
+        if (!live) return;
+        setPage(res);
+        setSelected((ticked) => keepSelection(ticked, res.items)); // decided or gone since: unticked
+      })
+      .catch((err) => live && setError(err.message));
+    return () => {
+      live = false;
+    };
+  }, [view, version]);
+  // a new tab, filter or page starts with nothing ticked: no request that isn't shown can be decided by accident
+  const show = (change) => {
+    setSelected(new Set());
+    setView((v) => ({ ...v, focus: "", ...change }));
+  };
+  const changed = () => {
+    setVersion((n) => n + 1);
+    reload?.();
+  };
+  const bulkOn = canBulkDecide(user, view.box);
+  const items = page?.box === view.box ? page.items : null; // a tab's rows only once they are loaded
+  const requesters = page?.requesters || [];
+  const filterName = requesters.find((p) => String(p.id) === String(view.requestedBy))?.name || "";
+  const empty = view.requestedBy
+    ? "No requests from this person here."
+    : { to_approve: "Nothing is waiting for your approval.", mine: "You haven't asked for any leads.", all: "No transfer requests yet." }[view.box];
+  const offset = page?.offset ?? view.offset;
   return (
     <div className="page">
       <section className="card transfer-requests-page">
@@ -529,29 +868,116 @@ export default function TransferRequestsPage({ user, reload, query = "" }) {
         </header>
         <div className="tabs" role="tablist">
           {TABS.map(([key, label]) => (
-            <button key={key} role="tab" aria-selected={box === key} className={box === key ? "on" : ""} onClick={() => setBox(key)}>
+            <button
+              key={key}
+              role="tab"
+              aria-selected={view.box === key}
+              className={view.box === key ? "on" : ""}
+              onClick={() => view.box !== key && show({ box: key, requestedBy: "", offset: 0 })}
+            >
               {label}
             </button>
           ))}
         </div>
+        {view.box === "to_approve" && (
+          <div className="request-filters">
+            <label className="field request-filter">
+              <span>Requested By</span>
+              <select value={view.requestedBy} onChange={(e) => show({ requestedBy: e.target.value, offset: 0 })}>
+                <option value="">Everyone{page?.box === "to_approve" ? ` (${page.box_total.toLocaleString("en-US")})` : ""}</option>
+                {requesters.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.count.toLocaleString("en-US")})
+                  </option>
+                ))}
+                {view.requestedBy && !filterName && <option value={view.requestedBy}>(no requests now)</option>}
+              </select>
+            </label>
+            {view.requestedBy && (
+              <button type="button" className="link" onClick={() => show({ requestedBy: "", offset: 0 })}>
+                Clear filter
+              </button>
+            )}
+            {/* the filtered count beside the filter (the page bar below always says the range) */}
+            {items && view.requestedBy && (
+              <span className="request-range" aria-live="polite">
+                {requestRange({ offset, count: items.length, total: page.total, requester: filterName })}
+              </span>
+            )}
+          </div>
+        )}
+        {bulkOn && selected.size > 0 ? (
+          <div className="selection-bar" role="region" aria-label="Selected requests">
+            <p className="selection-summary">
+              <b aria-live="polite">{requestCount(selected.size)} selected</b>
+              <span>on this page</span>
+            </p>
+            <button type="button" className="link selection-clear" onClick={() => setSelected(new Set())}>
+              Clear selection
+            </button>
+            <div className="selection-actions">
+              <button type="button" className="sf-button brand" onClick={() => setBulk("approve")}>
+                Approve Selected
+              </button>
+              <button type="button" className="sf-button" onClick={() => setBulk("reject")}>
+                Reject Selected
+              </button>
+            </div>
+          </div>
+        ) : (
+          bulkOn &&
+          items?.length > 0 && (
+            <p className="field-hint request-select-hint">
+              Tick requests to approve or reject them together. The box in the header ticks the requests on this page only,
+              never the whole list; changing the filter or the page clears the ticks.
+            </p>
+          )
+        )}
         {error && (
           <p className="form-error" role="alert">
             {error}
           </p>
         )}
-        {rows === null && !error && <p className="table-empty">Loading…</p>}
-        {rows && rows.length > 0 && (
+        {!items && !error && <p className="table-empty">Loading…</p>}
+        {items && items.length > 0 && (
           <TransferRequestTable
-            rows={rows}
+            rows={items}
             focus={focus}
-            onChange={() => {
-              load();
-              reload?.();
-            }}
+            onChange={changed}
+            selectable={bulkOn}
+            selected={selected}
+            onToggle={(id) => setSelected((ticked) => toggleOne(ticked, id))}
+            onToggleAll={() => setSelected((ticked) => toggleAllOnPage(ticked, items))}
           />
         )}
-        {rows && !rows.length && <p className="table-empty">{empty}</p>}
+        {items && !items.length && <p className="table-empty">{empty}</p>}
+        {items && page.total > 0 && (
+          <Pagination
+            page={Math.floor(offset / view.size) + 1}
+            pages={Math.max(1, Math.ceil(page.total / view.size))}
+            size={view.size}
+            total={page.total}
+            start={offset}
+            noun="request"
+            label="Request pages"
+            setPage={(p) => show({ offset: (p - 1) * view.size })}
+            setSize={(size) => show({ size, offset: 0 })}
+          />
+        )}
       </section>
+      {bulk && (
+        <BulkDecisionDialog
+          decision={bulk}
+          rows={items.filter((r) => selected.has(r.id))}
+          onClose={(decided) => {
+            setBulk(null);
+            if (decided) {
+              setSelected(new Set());
+              changed();
+            }
+          }}
+        />
+      )}
     </div>
   );
 }

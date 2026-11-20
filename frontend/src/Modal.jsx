@@ -649,7 +649,7 @@ export default function Modal({ modal, close, data, run, notify, user }) {
           ? `${record.email} is marked valid.`
           : `${record.name} will get campaign emails again.`;
     if (type === "account") return `Account "${saved.name}" was created.`;
-    if (type === "contact") return `Contact "${saved.full_name || v.last_name}" was created.`;
+    if (type === "contact") return `Contact "${saved.full_name || [v.first_name, v.last_name].map((x) => (x || "").trim()).filter(Boolean).join(" ")}" was created.`;
     return "Your changes were saved.";
   };
   const submit = async (event) => {
@@ -982,7 +982,7 @@ export default function Modal({ modal, close, data, run, notify, user }) {
                 toForm={(values) => contactAnswerFields(values, CONTACT_FORM)}
                 company={data.accounts.find((a) => String(a.id) === contactAccount)?.name || ""}
                 phone={{ field: CONTACT_FORM.phone, country: CONTACT_FORM.phone_country }}
-                needed={[CONTACT_FORM.first_name, CONTACT_FORM.last_name, CONTACT_FORM.email]}
+                needed={[CONTACT_FORM.first_name, CONTACT_FORM.email]}
                 noun="contact"
                 compact
                 error={fieldError("linkedin_url")}
@@ -991,7 +991,7 @@ export default function Modal({ modal, close, data, run, notify, user }) {
               <div className="form-grid" onBlur={checkDupes}>
                 {select("Salutation", "salutation", SALUTATIONS, "")}
                 {field("First Name", "first_name", "text", true, "")}
-                {field("Last Name", "last_name", "text", true, "")}
+                {field("Last Name", "last_name", "text", false, "")}
                 {select(
                   "Account Name",
                   "account_id",
@@ -1023,24 +1023,23 @@ export default function Modal({ modal, close, data, run, notify, user }) {
             <div className="form-grid">
               {select("Salutation", "salutation", SALUTATIONS)}
               {field("First Name", "first_name", "text", leadNeeds.first_name)}
-              {field("Last Name", "last_name", "text", true)}
+              {field("Last Name", "last_name", "text", false)}
               {field("Company", "company", "text", true)}
               {companyBox()}
               {field("Title", "title")}
               {field("Industry", "industry")}
               {/* required on a new lead, and on an older lead that has an email */}
               {field("Email", "email", "email", leadNeeds.email)}
-              {/* New Lead: a valid Phone is required, with its country (as on New Contact); editing keeps the plain
-                  optional field, so an older lead without a phone still saves */}
-              {record ? (
-                field("Phone", "phone", "tel")
-              ) : (
-                <PhoneField
-                  required
-                  error={fieldError("phone")}
-                  onInput={fieldError("phone") ? (event) => fixError(event, "phone") : undefined}
-                />
-              )}
+              {/* Phone (optional) with its country, and the Region that country gives, on New Lead and Edit Lead alike.
+                  Editing starts from the lead's saved number and Region (an older lead without a Region gets none
+                  until a country is chosen or a new number is entered) */}
+              <PhoneField
+                key={record?.id ?? "new"}
+                defaultValue={record?.phone ?? ""}
+                defaultCountry={record?.phone_country ?? ""}
+                error={fieldError("phone")}
+                onInput={fieldError("phone") ? (event) => fixError(event, "phone") : undefined}
+              />
               {field("Location", "location")}
               {select(
                 "Lead Source",

@@ -9,10 +9,12 @@ from typing import Annotated, Literal
 import re
 from urllib.parse import quote, unquote, urlsplit
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_serializer, field_validator, model_validator
+from pydantic import (BaseModel, BeforeValidator, ConfigDict, Field, computed_field, field_serializer, field_validator,
+                      model_validator)
 from pydantic_core import PydanticCustomError
 
 from app.constants import LEAD_SOURCE_DETAIL_MAX
+from app.regions import country_name, phone_region_problem, region_code
 from app.text_rules import checked, company_characters_problem, person_name_problem, text_problem
 
 LeadSource = Literal["Website", "LinkedIn", "Referral", "Phone", "Email", "Event", "Social Media", "Other", "Upload"]
@@ -342,27 +344,44 @@ def company_name(value) -> str:
 
 
 CompanyName = Annotated[str, BeforeValidator(company_name)]
+
+
+def optional_last_name(value) -> str:
+    """Last Name is optional on leads and contacts (the first name is enough). Missing, null or only spaces -> ""
+    (the column stays NOT NULL and the database builds the full name without it: "Asha", never "Asha None");
+    a given one must be a valid name (app/text_rules.py)."""
+    if value is None:
+        return ""
+    return checked(person_name_problem, "last name", keep_empty=True)(value)
+
+
+# A lead or contact needs a first or last name (never a nameless record). The forms, the API and the AI Assistant
+# still require First Name on a new lead or contact; this is for edits of older records and for imports.
+NAME_REQUIRED = "Enter a first name or last name."
 # the characters each text field accepts (app/text_rules.py)
 LeadFirstName = Annotated[str | None, BeforeValidator(checked(person_name_problem, "first name"))]
-LeadLastName = Annotated[str, BeforeValidator(checked(person_name_problem, "last name", keep_empty=True))]
+LeadLastName = Annotated[str, BeforeValidator(optional_last_name)]
+# Region: the phone's country as chosen (app/regions.py); None when none was chosen
+Region = Annotated[str | None, BeforeValidator(region_code)]
 Title = Annotated[str | None, BeforeValidator(checked(text_problem, "title"))]
 Industry = Annotated[str | None, BeforeValidator(checked(text_problem, "industry"))]
 SourceDetail = Annotated[str | None, BeforeValidator(checked(text_problem, "lead source", letter=False))]
 
 
 class LeadCreate(LeadLinks):
-    """Like the Salesforce "New Lead" form: First Name, Last Name and Company are required. Lead Source LinkedIn needs
-    the LinkedIn Profile URL; Other needs source_detail (what the source is)."""
+    """Like the Salesforce "New Lead" form: First Name and Company are required; Last Name and Phone are optional.
+    Lead Source LinkedIn needs the LinkedIn Profile URL; Other needs source_detail (what the source is)."""
 
     salutation: Salutation | None = None
     first_name: LeadFirstName = Field(None, max_length=50)  # required: checked below
-    last_name: LeadLastName = Field(..., min_length=1, max_length=50)
+    last_name: LeadLastName = Field("", max_length=50)  # optional: "" when not given
     company: CompanyName = Field(..., max_length=200)  # at least one letter or digit
     title: Title = Field(None, max_length=100)
     industry: Industry = Field(None, max_length=100)
     email: str | None = Field(None, max_length=255)
-    phone: str | None = Field(None, max_length=30)  # required (and checked) on the New Lead form: routers/leads.py
-    phone_country: str | None = Field(None, max_length=2)  # not saved: the phone's country on the form (default India)
+    phone: str | None = Field(None, max_length=30)  # optional; a given one is checked: routers/leads.py lead_phone
+    # Region (saved): the country chosen beside the phone. The number is checked for it (India when none is given)
+    phone_country: Region = None
     source: LeadSource = "Other"
     source_detail: SourceDetail = Field(None, max_length=SOURCE_DETAIL_MAX)
     currency: Currency = "USD"  # of the turnover
@@ -406,12 +425,16 @@ class LeadUpdate(LeadLinks):
 
     salutation: Salutation | None = None
     first_name: Annotated[str | None, BeforeValidator(trimmed)] = Field(None, max_length=50)
-    last_name: str | None = Field(None, min_length=1, max_length=50)
+    # optional: null, "" or spaces clear it ("" is saved); the lead must keep a first or last name (routers/leads.py)
+    last_name: Annotated[str, BeforeValidator(lambda v: "" if v is None else (v.strip() if isinstance(v, str) else v))] \
+        = Field(None, max_length=50)
     company: str | None = Field(None, min_length=1, max_length=200)
     title: str | None = Field(None, max_length=100)
     industry: str | None = Field(None, max_length=100)
     email: str | None = Field(None, max_length=255)
-    phone: str | None = Field(None, max_length=30)
+    phone: str | None = Field(None, max_length=30)  # null or "" clears it; a new number is checked (routers/leads.py)
+    # Region: sent only to set or change it (null clears it); clearing the phone keeps it
+    phone_country: Region = None
     source: LeadSource | None = None
     source_detail: Annotated[str | None, BeforeValidator(trimmed)] = Field(None, max_length=SOURCE_DETAIL_MAX)
     currency: Currency | None = None
@@ -426,13 +449,14 @@ class LeadOut(Out):
     id: int
     salutation: str | None
     first_name: str | None
-    last_name: str
+    last_name: str  # "" when the lead has no last name
     name: str  # first + last name, filled automatically
     company: str | None
     title: str | None
     industry: str | None
     email: str | None
     phone: str | None
+    phone_country: str | None = None  # Region's code (IN, US, CA...); None when none was chosen
     linkedin_url: str | None = None
     company_website: str | None = None
     company_linkedin_url: str | None = None
@@ -472,6 +496,12 @@ class LeadOut(Out):
     email_invalid_at: datetime | None = None
     email_invalid_reason: str | None = None
     unsubscribed_at: datetime | None = None
+
+    @computed_field
+    @property
+    def region(self) -> str | None:
+        """Region by name ("India"), from phone_country."""
+        return country_name(self.phone_country)
 
     @field_serializer("annual_revenue")
     def _revenue(self, value):
@@ -538,11 +568,28 @@ class TransferRequestDecision(BaseModel):
     note: str | None = Field(None, max_length=300)  # required to reject
 
 
+BULK_DECISION_MAX = 100  # requests decided at once (the To Approve page shows up to 100, so "this page" always fits)
+
+
+class TransferRequestBulkDecision(BaseModel):
+    """Approve or reject the requests ticked in To Approve (the Admin, or a Manager), with one note for all: optional to
+    approve, required to reject (the same check as one rejection). Only these ids are decided, each on its own."""
+    decision: Literal["approve", "reject"]
+    request_ids: list[int] = Field(..., min_length=1, max_length=BULK_DECISION_MAX)
+    note: str | None = Field(None, max_length=300)
+
+
 class BulkLeads(BaseModel):
     lead_ids: list[int] = Field(..., min_length=1, max_length=500)
 
 
 class BulkTransfer(BulkLeads):
+    to_user_id: int
+    note: str | None = Field(None, max_length=300)
+
+
+class BulkAssign(BulkLeads):
+    """Assign the ticked pooled leads (up to 500, the selection limit) to one Salesperson (routers/leads.py)."""
     to_user_id: int
     note: str | None = Field(None, max_length=300)
 
@@ -741,7 +788,6 @@ class AccountOut(Out):
 ACCOUNT_NAME_REQUIRED = "Enter the account name."
 ACCOUNT_INDUSTRY_REQUIRED = "Enter the account's industry."
 CONTACT_FIRST_NAME_REQUIRED = "Enter the contact's first name."
-CONTACT_LAST_NAME_REQUIRED = "Enter the contact's last name."
 CONTACT_EMAIL_REQUIRED = "Enter the contact's email address."
 CONTACT_EMAIL_INVALID = "Enter a valid email address, like name@company.com."
 # The contact's phone is optional; a given one is checked against the numbering rules of its country (Google's
@@ -868,8 +914,6 @@ AccountIndustry = Annotated[str, BeforeValidator(
     lambda v: checked(text_problem, "industry")(required_text(v, ACCOUNT_INDUSTRY_REQUIRED)))]
 ContactFirstName = Annotated[str, BeforeValidator(
     lambda v: required_person_name(v, CONTACT_FIRST_NAME_REQUIRED, "first name"))]
-ContactLastName = Annotated[str, BeforeValidator(
-    lambda v: required_person_name(v, CONTACT_LAST_NAME_REQUIRED, "last name"))]
 Address = Annotated[str | None, BeforeValidator(checked(text_problem, "address", letter=False, multiline=True))]
 ContactEmail = Annotated[str, BeforeValidator(contact_email)]
 ContactLinkedIn = Annotated[str | None, BeforeValidator(contact_linkedin)]
@@ -902,11 +946,12 @@ class ContactOut(Out):
     id: int
     salutation: str | None
     first_name: str | None
-    last_name: str
+    last_name: str  # "" when the contact has no last name
     full_name: str  # first + last name, filled automatically
     job_title: str | None
     email: str | None
     phone: str | None
+    phone_country: str | None = None  # Region's code; None when none was chosen
     linkedin_url: str | None = None
     account_id: int
     account_name: str | None = None
@@ -915,17 +960,34 @@ class ContactOut(Out):
     created_at: datetime | None
     updated_at: datetime | None = None
 
+    @computed_field
+    @property
+    def region(self) -> str | None:
+        """Region by name ("India"), from phone_country."""
+        return country_name(self.phone_country)
+
+
+def phone_for_region(value, region: str | None) -> str | None:
+    """A phone checked for its Region (India when none was chosen) and in international format ("" -> None). With a
+    Region chosen, a number given with its own +code must have that Region's calling code (app/regions.py)."""
+    number = international_phone(value, region)
+    problem = phone_region_problem(number, region)
+    if problem:
+        raise PydanticCustomError("phone_region", problem)
+    return number
+
 
 class ContactCreate(BaseModel):
-    """New Contact: First Name, Last Name, Email and the account are required. Phone is optional and checked for the
-    chosen country (phone_country, default India); the LinkedIn Profile URL is optional (a person's profile)."""
+    """New Contact: First Name, Email and the account are required; Last Name is optional. Phone is optional and
+    checked for the chosen country; that country is saved as the contact's Region (phone_country: none chosen -> the
+    number is checked for India and no Region is saved). The LinkedIn Profile URL is optional (a person's profile)."""
 
     salutation: Salutation | None = None
     first_name: ContactFirstName = Field(..., max_length=50)
-    last_name: ContactLastName = Field(..., max_length=50)
+    last_name: LeadLastName = Field("", max_length=50)  # optional: "" when not given
     job_title: Title = Field(None, max_length=100)
     email: ContactEmail = Field(..., max_length=255)
-    phone_country: str = Field(DEFAULT_PHONE_COUNTRY, min_length=2, max_length=2)  # not saved: the number says it
+    phone_country: Region = None  # Region (saved)
     phone: str | None = Field(None, max_length=30)
     linkedin_url: ContactLinkedIn = Field(None, max_length=300)
     account_id: int
@@ -934,24 +996,15 @@ class ContactCreate(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _required_left_out(cls, data):
-        """A request without a name or email gets their own messages too (not just "Field required")."""
-        return {"first_name": None, "last_name": None, "email": None, **data} if isinstance(data, dict) else data
-
-    @field_validator("phone_country")
-    @classmethod
-    def _country(cls, value):
-        import phonenumbers
-
-        if value.upper() not in phonenumbers.SUPPORTED_REGIONS:
-            raise PydanticCustomError("phone_country", "Choose the phone number's country.")
-        return value.upper()
+        """A request without a first name or email gets their own messages too (not just "Field required")."""
+        return {"first_name": None, "email": None, **data} if isinstance(data, dict) else data
 
     @field_validator("phone")
     @classmethod
     def _phone(cls, value, info):
         if "phone_country" not in info.data and (value or "").strip():  # an invalid country: never assume India
             raise PydanticCustomError("phone_country", "Choose the phone number's country.")
-        return international_phone(value, info.data.get("phone_country"))
+        return phone_for_region(value, info.data.get("phone_country"))
 
 
 # ---------- Opportunities ----------
@@ -1035,7 +1088,7 @@ class OpportunityCreate(NeedsTask):
     contact_last_name: str | None = Field(None, max_length=50)
     contact_email: str | None = Field(None, max_length=255)
     contact_title: str | None = Field(None, max_length=100)
-    contact_phone_country: str = Field(DEFAULT_PHONE_COUNTRY, min_length=2, max_length=2)  # not saved
+    contact_phone_country: Region = None  # the new contact's Region (saved; none chosen -> India for the check only)
     contact_phone: str | None = Field(None, max_length=30)
     contact_linkedin_url: str | None = Field(None, max_length=300)
 
@@ -1050,11 +1103,11 @@ class OpportunityCreate(NeedsTask):
         if self.primary_contact_id is not None:
             return self  # an existing contact is reused as it is: no new contact fields are needed or checked
         self.contact_first_name = required_person_name(self.contact_first_name, CONTACT_FIRST_NAME_REQUIRED, "first name")
-        self.contact_last_name = required_person_name(self.contact_last_name, CONTACT_LAST_NAME_REQUIRED, "last name")
+        self.contact_last_name = optional_last_name(self.contact_last_name)  # optional, like New Contact
         if problem := text_problem(self.contact_title, "title"):
             raise ValueError(problem)
         self.contact_email = contact_email(self.contact_email)
-        self.contact_phone = international_phone(self.contact_phone, self.contact_phone_country)
+        self.contact_phone = phone_for_region(self.contact_phone, self.contact_phone_country)
         self.contact_linkedin_url = contact_linkedin(self.contact_linkedin_url)
         return self
 

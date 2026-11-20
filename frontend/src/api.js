@@ -1,4 +1,5 @@
 import { fromBusinessInput } from "./businessTime.js";
+import { transferRequestQuery } from "./transferRequestRules.js";
 // The React dev server proxies /api to the locally configured backend.
 const BASE = (import.meta.env?.VITE_API_BASE_URL || "/api").replace(/\/$/, "");
 
@@ -59,7 +60,7 @@ export function leadPayload(values, editing = false) {
   const payload = {
     salutation: optional(values.salutation),
     first_name: optional(values.first_name?.trim()),
-    last_name: values.last_name.trim(),
+    last_name: (values.last_name || "").trim(), // optional: "" = no last name
     company: values.company.trim(),
     title: optional(values.title),
     industry: optional(values.industry),
@@ -78,8 +79,10 @@ export function leadPayload(values, editing = false) {
     owner_id: numeric(values.owner_id),
   };
   if (editing) payload.demo_date = fromBusinessInput(optional(values.demo_date)); // typed in IST, sent with its offset
-  // New Lead: the phone's country from the selector beside it (the server checks the number for it; not saved)
-  else if (values.phone_country) payload.phone_country = values.phone_country;
+  // Region (PhoneField's hidden input): the country chosen beside the phone, saved with the lead; the number is checked
+  // for it. Sent only once chosen (or a number was entered for it): an untouched default never becomes a Region, and an
+  // edit that leaves it alone keeps the saved one.
+  if (values.region) payload.phone_country = values.region;
   if (values.confirm_email_domain === "1") payload.confirm_email_domain = true; // checked: email domain differs from website
   if (values.confirm_shared_phone === "1") payload.confirm_shared_phone = true; // the phone is shared with other records
   return payload;
@@ -277,12 +280,20 @@ export const api = {
     apiRequest(`/leads/${id}/transfer`, { method: "POST", body: values }),
   // the Unassigned Pool: give one pooled lead to a Salesperson (the Admin, or a Manager: their own team)
   assignLead: (id, values) => apiRequest(`/leads/${id}/assign`, { method: "POST", body: values }),
+  // Assign for the ticked pooled leads (the Admin, or a Manager with Reassign owner): only these ids, each on its own
+  bulkAssignLeads: (lead_ids, to_user_id, note) =>
+    apiRequest("/leads/bulk-assign", { method: "POST", body: { lead_ids, to_user_id, note: note || null } }),
   // ask for someone else's lead (the owner, their Manager or the Admin approves)
   requestLeadTransfer: (id, reason) => apiRequest(`/leads/${id}/transfer-requests`, { method: "POST", body: { reason } }),
   leadTransferRequests: (id) => apiRequest(`/leads/${id}/transfer-requests`),
   // the Unassigned Pool: ask for the ticked leads at once (one request each; nothing is assigned)
   requestPoolLeads: (lead_ids, reason) => apiRequest("/transfer-requests/bulk", { method: "POST", body: { lead_ids, reason } }),
   transferRequests: (box = "all") => apiRequest(`/transfer-requests?box=${box}`),
+  // the Transfer Requests page: one page of a box, filtered by Requested By on the server before paging
+  transferRequestsPage: (params) => apiRequest(`/transfer-requests/page?${transferRequestQuery(params)}`),
+  // Approve / Reject Selected (To Approve, the Admin or a Manager): only these ids, each decided on its own
+  decideTransferRequests: (decision, requestIds, note) =>
+    apiRequest("/transfer-requests/bulk-decision", { method: "POST", body: { decision, request_ids: requestIds, note: note || null } }),
   // Home > Analytics: each user's own charts, seen by their Manager and the Admin, and the reports sent up the line
   analyticsOptions: () => apiRequest("/analytics/options"),
   analyticsPeople: () => apiRequest("/analytics/people"),
@@ -344,11 +355,11 @@ export const api = {
       body: {
         salutation: optional(v.salutation),
         first_name: optional(v.first_name?.trim()),
-        last_name: v.last_name.trim(),
+        last_name: (v.last_name || "").trim(), // optional
         job_title: optional(v.job_title),
         email: optional(v.email),
         phone: optional(v.phone?.trim()), // optional; checked for its country, saved in international format
-        phone_country: v.phone_country || "IN",
+        phone_country: v.region || null, // the Region chosen beside the phone (none: the number is checked for India)
         linkedin_url: optional(v.linkedin_url?.trim()), // the person's LinkedIn profile, optional
         account_id: Number(v.account_id),
         owner_id: numeric(v.owner_id),

@@ -2,7 +2,7 @@ import "./analyticsCharts.test.js"; // Home > Analytics
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { canCreateOpportunity, canCreateSales, canEditRecord, seesPoolContacts } from "./permissions.js";
+import { canAssignPool, canCreateOpportunity, canCreateSales, canEditRecord, seesPoolContacts } from "./permissions.js";
 import {
   api,
   apiRequest,
@@ -91,6 +91,7 @@ import {
 import { BUSINESS_TIMEZONE, BUSINESS_TZ_LABEL, businessNow, formatBusiness, formatBusinessTime, fromBusinessInput, toBusinessInput } from "./businessTime.js";
 import { attachedSummary, dateTime, fileSize, formatPhone, maskPhone, shortDate, sourceMaskedPhone, time } from "./format.js";
 import {
+  ASSIGN_NONE_POOLED,
   BULK_LIMIT,
   chipText,
   clampPage,
@@ -117,13 +118,24 @@ import {
 } from "./listHelpers.js";
 import { demoEvent, foldIcsLine, googleCalendarUrl, icsContent, icsText, outlookCalendarUrl } from "./calendarLinks.js";
 import { addressProblem, draftForCopy, mailtoUri, OUTLOOK_COMPOSE_URL, OUTLOOK_URL_LIMIT, outlookComposeUrl, outlookHandoff, readComposeUrl, splitAddresses } from "./outlookDraft.js";
-import { DEFAULT_PHONE_COUNTRY, PHONE_COUNTRIES, PHONE_RECHECK_EVENT, PHONE_WITH_CODE_INVALID, phoneCountryLabel, phoneCountryOf, phoneFieldError, phoneProblem } from "./phone.js";
+import { DEFAULT_PHONE_COUNTRY, PHONE_COUNTRIES, PHONE_RECHECK_EVENT, PHONE_WITH_CODE_INVALID, chosenRegion, phoneCountryLabel, phoneCountryOf, phoneFieldError, phoneProblem, regionName, regionProblem, validInCountry } from "./phone.js";
+import { parsePhoneNumberFromString } from "libphonenumber-js/max";
+import {
+  BULK_DECISION_MAX,
+  canBulkDecide,
+  decisionSummary,
+  keepSelection,
+  requestRange,
+  tickableIds,
+  toggleAllOnPage,
+  toggleOne,
+  transferRequestQuery,
+} from "./transferRequestRules.js";
 import {
   LEAD_COMPANY_REQUIRED,
   LEAD_EMAIL_INVALID,
   LEAD_EMAIL_REQUIRED,
-  LEAD_LAST_NAME_REQUIRED,
-  LEAD_PHONE_REQUIRED,
+  LEAD_NAME_REQUIRED,
   ACCOUNT_NAME_INVALID,
   CAMPAIGN_AI_UNAVAILABLE,
   CAMPAIGN_SUCCESS_CLOSE_MS,
@@ -950,13 +962,15 @@ test("New Account needs Account Name and Industry; no Phone; Website and Company
   assert.equal(newRecordProblems("account", { ...ok, linkedin_url: "https://harbor.example/about" }).linkedin_url,
     "Enter a LinkedIn address (linkedin.com/...)");
 });
-test("New Contact needs First Name, Last Name, Email and the account; Phone and LinkedIn are optional but checked", () => {
+test("New Contact needs First Name, Email and the account; Last Name, Phone and LinkedIn are optional but checked", () => {
   const ok = { first_name: "Ana", last_name: "Okafor", account_id: "4", email: "ana.okafor@harbor.example" };
   assert.deepEqual(newRecordProblems("contact", ok), {}); // no phone: fine
   assert.deepEqual(newRecordProblems("contact", { ...ok, phone: "   ", phone_country: "IN" }), {});
-  assert.deepEqual(Object.keys(newRecordProblems("contact", { account_id: "4" })), ["first_name", "last_name", "email"]);
+  assert.deepEqual(newRecordProblems("contact", { ...ok, last_name: "" }), {}); // Last Name is optional (Vinay)
+  assert.deepEqual(Object.keys(newRecordProblems("contact", { account_id: "4" })), ["first_name", "email"]);
   assert.deepEqual(Object.keys(newRecordProblems("contact", { ...ok, first_name: " ", last_name: "\t", email: " " })),
-    ["first_name", "last_name", "email"]);
+    ["first_name", "email"]);
+  assert.match(newRecordProblems("contact", { ...ok, last_name: "@@" }).last_name, /Enter a valid last name/); // checked when given
   assert.equal(newRecordProblems("contact", { ...ok, first_name: "" }).first_name, "Enter the contact's first name.");
   assert.equal(newRecordProblems("contact", { ...ok, email: "" }).email, "Enter the contact's email address.");
   for (const email of ["ana.okafor", "ana@harbor", "@harbor.example", "ana okafor@harbor.example", "a@b.example, c@d.example"])
@@ -1731,6 +1745,7 @@ test("Leads Kanban: every column pages through the server query, with the List p
   assert.match(table, /: \{ stage: column\.stage, \.\.\.\(column\.view \? \{ view: column\.view \} : \{\}\), \.\.\.\(poolShown \? \{ assigned: "true" \} : \{\}\) \}/);
   assert.match(table, /if \(!requests\.current\.isLatest\(column, id\)\) return;/);
   assert.match(table, /const fixed = clampPage\(at, r\.total, cardSize\);/);
+  // every filter as a button (Region too: the same searchable menu as its column header)
   assert.match(table, /\{defs\.map\(\(def\) => \(\s+<FilterButton key=\{def\.key\} def=\{def\} values=\{filters\} onChange=\{onFilter\} \/>/);
   assert.match(table, /\{PAGE_SIZES\.map\(\(n\) => \(/);
   assert.match(table, /<span>Cards per column<\/span>/);
@@ -1802,7 +1817,7 @@ test("Leads: a saved date filter the page no longer offers is not applied (no in
   // the List headers and the Kanban buttons use the same menu: Any time, the choices, then Custom range
   const filters = source("./Filters.jsx");
   assert.match(filters, /def\.type === "date" \? def\.ranges \|\| \(def\.future \? FUTURE : PAST\)/);
-  assert.match(filters, /\{def\.type === "date" \? "Any time" : "All"\}/);
+  assert.match(filters, /\{def\.allLabel \|\| \(def\.type === "date" \? "Any time" : "All"\)\}/); // Region: "All Regions"
   assert.match(filters, /<p className="th-menu-label">Custom range<\/p>/);
   assert.match(filters, /max=\{custom\.to \|\| undefined\}/); // From can't be after To
   assert.match(filters, /min=\{custom\.from \|\| undefined\}/);
@@ -1910,9 +1925,10 @@ test("New Lead: First Name, Specify lead source (Other), LinkedIn Profile URL (L
   assert.deepEqual(leadFormProblems({ ...ok, source: "LinkedIn", linkedin_url: "https://www.linkedin.com/in/ana-okafor" }), {});
   // the LinkedIn Profile URL is optional for every other source; a description typed for Other doesn't matter elsewhere
   assert.deepEqual(leadFormProblems({ ...ok, source: "Referral", linkedin_url: "", source_detail: "" }), {});
-  assert.deepEqual(leadFieldsRequired("Website"), { first_name: true, email: true, phone: true, source_detail: false, linkedin_url: false });
-  assert.deepEqual(leadFieldsRequired("Other"), { first_name: true, email: true, phone: true, source_detail: true, linkedin_url: false });
-  assert.deepEqual(leadFieldsRequired("LinkedIn"), { first_name: true, email: true, phone: true, source_detail: false, linkedin_url: true });
+  // Phone and Last Name are no longer required (Vinay's improvements)
+  assert.deepEqual(leadFieldsRequired("Website"), { first_name: true, email: true, source_detail: false, linkedin_url: false });
+  assert.deepEqual(leadFieldsRequired("Other"), { first_name: true, email: true, source_detail: true, linkedin_url: false });
+  assert.deepEqual(leadFieldsRequired("LinkedIn"), { first_name: true, email: true, source_detail: false, linkedin_url: true });
 });
 
 test("Lead form: Company Website and Company LinkedIn URL are optional, but checked when given", () => {
@@ -1935,7 +1951,10 @@ test("Edit Lead: an older lead's missing First Name, Other description or Linked
   const legacy = { id: 9, first_name: null, last_name: "Okafor", source: "Other", source_detail: null, linkedin_url: null };
   const form = { first_name: "", last_name: "Okafor", company: "Harbor", email: "ana@harbor.example", source: "Other", source_detail: "" };
   assert.deepEqual(leadFormProblems(form, legacy), {}); // e.g. only the phone changed
-  assert.deepEqual(leadFieldsRequired("Other", legacy), { first_name: false, email: false, phone: false, source_detail: false, linkedin_url: false });
+  assert.deepEqual(leadFieldsRequired("Other", legacy), { first_name: false, email: false, source_detail: false, linkedin_url: false });
+  // an older lead with only a last name keeps a name: clearing it too is refused (a first name would do)
+  assert.equal(leadFormProblems({ ...form, last_name: " " }, legacy).last_name, LEAD_NAME_REQUIRED);
+  assert.deepEqual(leadFormProblems({ ...form, first_name: "Ana", last_name: "" }, legacy), {});
   // ...but a value the lead has can't be removed, and changing the source asks for what that source needs
   const named = { ...legacy, first_name: "Ana", source_detail: "Trade fair" };
   assert.equal(leadFormProblems({ ...form, source_detail: "Trade fair" }, named).first_name, LEAD_FIRST_NAME_REQUIRED);
@@ -2046,7 +2065,8 @@ test("New Opportunity > New contact: the same rules as New Contact, on the form'
   const F = OPPORTUNITY_CONTACT_FORM;
   const ok = { contact_first_name: "Ana", contact_last_name: "Okafor", contact_email: "ana@harbor.example" };
   assert.deepEqual(contactProblems(ok, F), {});
-  assert.deepEqual(Object.keys(contactProblems({}, F)), ["contact_first_name", "contact_last_name", "contact_email"]);
+  assert.deepEqual(Object.keys(contactProblems({}, F)), ["contact_first_name", "contact_email"]); // Last Name is optional
+  assert.deepEqual(contactProblems({ ...ok, contact_last_name: "" }, F), {});
   assert.equal(contactProblems({ ...ok, contact_email: "ana@harbor" }, F).contact_email, CONTACT_EMAIL_INVALID);
   assert.deepEqual(contactProblems({ ...ok, contact_phone: "" }, F), {});
   assert.equal(contactProblems({ ...ok, contact_phone: "555 0142", contact_phone_country: "US" }, F).contact_phone,
@@ -2089,7 +2109,7 @@ test("Contact autofill wiring: lookup keyed by profile and account, late answers
   assert.doesNotMatch(field.slice(field.indexOf("const apply")), /account_id|setAccount/); // never picks an account
   const modal = source("./Modal.jsx");
   assert.match(modal, /lookup=\{\(url, company\) => api\.enrichContact\(url, company\)\}/);
-  assert.match(modal, /needed=\{\[CONTACT_FORM\.first_name, CONTACT_FORM\.last_name, CONTACT_FORM\.email\]\}/);
+  assert.match(modal, /needed=\{\[CONTACT_FORM\.first_name, CONTACT_FORM\.email\]\}/); // Last Name is optional
   assert.match(source("./api.js"), /enrichContact: \(linkedinUrl, company\) => lookupProfile\(linkedinUrl, "\/contacts\/enrichment", \{ company: company \|\| null \}\)/);
 });
 
@@ -2103,7 +2123,7 @@ test("New Account and New Contact forms: the agreed fields", () => {
     /\{owner\(\)\}/])
     assert.match(account, f);
   const contact = modal.slice(modal.indexOf('{type === "contact" && ('), modal.indexOf('{type === "lead" && ('));
-  for (const f of [/field\("First Name", "first_name", "text", true, ""\)/, /field\("Last Name", "last_name", "text", true, ""\)/,
+  for (const f of [/field\("First Name", "first_name", "text", true, ""\)/, /field\("Last Name", "last_name", "text", false, ""\)/,
     /field\("Email", "email", "email", true, ""\)/, /<PhoneField /, /<LinkedInField/, /"Account Name",\s*"account_id"/])
     assert.match(contact, f);
   const api = source("./api.js");
@@ -2111,10 +2131,12 @@ test("New Account and New Contact forms: the agreed fields", () => {
   assert.doesNotMatch(saveAccount, /phone/);
   assert.match(saveAccount, /linkedin_url: optional\(v\.linkedin_url\?\.trim\(\)\)/);
   const saveContact = api.slice(api.indexOf("saveContact:"), api.indexOf("login:"));
-  assert.match(saveContact, /phone_country: v\.phone_country \|\| "IN"/);
+  assert.match(saveContact, /phone_country: v\.region \|\| null/); // the Region, only once chosen
+  assert.match(saveContact, /last_name: \(v\.last_name \|\| ""\)\.trim\(\)/); // optional
   assert.match(saveContact, /linkedin_url: optional\(v\.linkedin_url\?\.trim\(\)\)/);
   const phoneField = source("./PhoneField.jsx");
-  assert.match(phoneField, /defaultValue=\{DEFAULT_PHONE_COUNTRY\}/);
+  assert.match(phoneField, /country: defaultCountry \|\| DEFAULT_PHONE_COUNTRY/); // India (+91) first shown
+  assert.match(phoneField, /<select name=\{countryName\} defaultValue=\{now\.country\}/);
   assert.match(phoneField, /\{country\.name\} \(\{country\.dial\}\)/);
 });
 
@@ -2124,9 +2146,9 @@ test("New Opportunity > New contact: shown only for a new contact; existing cont
   assert.match(opp, /\{showNewContact && \(\s*<fieldset className="stage-task" ref=\{contactBox\}>/);
   assert.match(opp, /<LinkedInField[\s\S]*?company=\{company\}[\s\S]*?write=\{writeContact\}|<LinkedInField[\s\S]*?write=\{writeContact\}[\s\S]*?company=\{company\}/);
   assert.match(opp, /required: true, maxLength: 50, error: errors\[F\.first_name\]/);
-  assert.match(opp, /required: true, maxLength: 50, error: errors\[F\.last_name\]/);
+  assert.match(opp, /required: false, maxLength: 50, error: errors\[F\.last_name\]/); // Last Name is optional
   assert.match(opp, /type: "email", required: true, maxLength: 255, error: errors\[F\.email\]/);
-  assert.match(opp, /<PhoneField name=\{F\.phone\} countryName=\{F\.phone_country\}/);
+  assert.match(opp, /<PhoneField name=\{F\.phone\} countryName=\{F\.phone_country\} regionName=\{F\.region\}/);
   // the account comes from the user's choice (or the company typed), never from Apollo
   assert.match(opp, /const company = existingAccount \? data\.accounts\.find\(\(a\) => a\.id === existingAccount\)\?\.name \|\| "" : accountName\.trim\(\);/);
   // the payload: an existing contact sends no new contact fields
@@ -2139,8 +2161,11 @@ test("New Opportunity > New contact: shown only for a new contact; existing cont
   assert.equal("contact_phone_country" in chosen, false);
   const fresh = fromForm({ name: "Deal", account_id: "4", primary_contact_id: "new", contact_first_name: "Ana",
     contact_last_name: "Okafor", contact_email: "ana@harbor.example", contact_phone: " 98765 43210 ", contact_phone_country: "IN",
-    contact_linkedin_url: " linkedin.com/in/ana " });
+    contact_region: "IN", contact_linkedin_url: " linkedin.com/in/ana " });
   assert.deepEqual([fresh.contact_phone, fresh.contact_phone_country, fresh.contact_linkedin_url], ["98765 43210", "IN", "linkedin.com/in/ana"]);
+  // no Region chosen (no number, the list untouched): none is sent, so none is saved
+  assert.equal(fromForm({ name: "Deal", primary_contact_id: "new", contact_first_name: "Ana", contact_phone_country: "IN", contact_region: "" })
+    .contact_phone_country, null);
   const modal = source("./Modal.jsx");
   // a new contact's fields are checked only for a new contact (the new company's name is checked too: issue 44)
   assert.match(modal, /\.\.\.\(newContact \? contactProblems\(values, OPPORTUNITY_CONTACT_FORM\) : \{\}\)/);
@@ -2205,13 +2230,14 @@ test("Phone field wiring: blur, number and country changes, aria-invalid and the
   assert.match(source("./styles.css"), /\.field input\[aria-invalid="true"\],\s*\.field select\[aria-invalid="true"\] \{\s*border-color: #c23934;/);
   // both contact forms use it; Save is still blocked and the first invalid field is focused
   assert.match(source("./Modal.jsx"), /<PhoneField error=\{fieldError\("phone"\)\}/);
-  assert.match(source("./NewOpportunity.jsx"), /<PhoneField name=\{F\.phone\} countryName=\{F\.phone_country\} error=\{errors\[F\.phone\] \|\| ""\}/);
+  assert.match(source("./NewOpportunity.jsx"), /<PhoneField name=\{F\.phone\} countryName=\{F\.phone_country\} regionName=\{F\.region\} error=\{errors\[F\.phone\] \|\| ""\}/);
   const modal = source("./Modal.jsx");
   assert.match(modal, /\.\.\.\(newContact \? contactProblems\(values, OPPORTUNITY_CONTACT_FORM\) : \{\}\) \};[\s\S]*?event\.target\.elements\[Object\.keys\(problems\)\[0\]\]\?\.focus\(\);/);
   assert.equal(contactProblems({ first_name: "A", last_name: "B", email: "a@b.example", phone: "uiadcna" }).phone,
     "Enter a valid phone number for India (+91).");
-  // New Lead uses it too, required (Manimohan issue 35); editing a lead keeps the plain optional field
-  assert.match(modal, /\{record \? \(\s*field\("Phone", "phone", "tel"\)\s*\) : \(\s*<PhoneField\s+required/);
+  // New Lead and Edit Lead use it too, optional (Vinay's improvements), editing from the lead's saved number and Region
+  assert.match(modal, /<PhoneField\s+key=\{record\?\.id \?\? "new"\}\s+defaultValue=\{record\?\.phone \?\? ""\}\s+defaultCountry=\{record\?\.phone_country \?\? ""\}/);
+  assert.doesNotMatch(modal, /<PhoneField\s+required/);
 });
 
 test("Contact LinkedIn: no standing helper text or success narration; loading, errors and warnings stay", () => {
@@ -2269,7 +2295,7 @@ test("Contact forms: no browser autofill of the phone; a lookup re-checks the ph
   assert.match(phone, /autoComplete="off"/);
   assert.doesNotMatch(phone, /autoComplete="tel"/);
   assert.match(phone, /element\?\.addEventListener\(PHONE_RECHECK_EVENT, recheck\);/);
-  assert.match(phone, /if \(value\.trim\(\)\) setTouched\(true\);/); // an empty phone stays quiet (it's optional)
+  assert.match(phone, /if \(value\.trim\(\)\) \{\s*setTouched\(true\);\s*setTyped\(true\);/); // an empty phone stays quiet (it's optional)
   const field = source("./LeadAutofill.jsx");
   const apply = field.slice(field.indexOf("const apply = "), field.indexOf("const clearUnlessSame"));
   assert.match(apply, /if \(phone\) inputs\[phone\.field\]\?\.dispatchEvent\(new Event\(PHONE_RECHECK_EVENT, \{ bubbles: true \}\)\);/);
@@ -2282,7 +2308,8 @@ test("New Opportunity: switching to an existing contact drops the new-contact dr
   assert.match(opp, /useEffect\(\(\) => \{\s*if \(!showNewContact\) setPerson\(\{ first: "", last: "", email: "" \}\);\s*\}, \[showNewContact\]\);/);
   // the phone, title, country and LinkedIn inputs aren't kept in state: they start blank whenever the fields appear
   assert.match(opp, /<input name=\{F\.job_title\} maxLength=\{100\} \/>/);
-  assert.match(source("./PhoneField.jsx"), /const \[now, setNow\] = useState\(\{ value: "", country: DEFAULT_PHONE_COUNTRY \}\);/);
+  // a new record starts blank, an edited one from its saved number and Region (nothing carried over from another form)
+  assert.match(source("./PhoneField.jsx"), /const \[now, setNow\] = useState\(\{ value: defaultValue \|\| "", country: defaultCountry \|\| DEFAULT_PHONE_COUNTRY \}\);/);
   assert.doesNotMatch(source("./PhoneField.jsx"), /defaultValue=\{value|localStorage|sessionStorage/);
   // the dialog itself is removed when closed and created again when opened (no draft carried over)
   assert.match(source("./App.jsx"), /\{modal && <Modal modal=\{modal\} close=\{\(\) => setModal\(null\)\}/);
@@ -2290,11 +2317,10 @@ test("New Opportunity: switching to an existing contact drops the new-contact dr
 
 // ---------- Lead form: each required field's message under it, no browser popups ----------
 
-test("Lead form: Last Name, Company, Email and Lead Source have their own messages; email is checked as typed", () => {
+test("Lead form: Company, Email and Lead Source have their own messages; Last Name is optional; email is checked as typed", () => {
   const ok = { first_name: "Ana", last_name: "Okafor", company: "Harbor", email: "ana@harbor.example", source: "Website", phone: "98765 43210", phone_country: "IN" };
   assert.deepEqual(leadFormProblems(ok), {});
   assert.deepEqual(leadFormProblems({ ...ok, last_name: "  ", company: "", email: "", source: "" }), {
-    last_name: LEAD_LAST_NAME_REQUIRED,
     company: LEAD_COMPANY_REQUIRED,
     email: LEAD_EMAIL_REQUIRED,
     source: LEAD_SOURCE_REQUIRED,
@@ -2303,7 +2329,7 @@ test("Lead form: Last Name, Company, Email and Lead Source have their own messag
     assert.equal(leadFormProblems({ ...ok, email }).email, LEAD_EMAIL_INVALID, email);
   assert.deepEqual(leadFormProblems({ ...ok, email: "  Ana.Okafor@Harbor.example  " }), {}); // spaces around are fine
   // the messages are field-specific, not "Please fill out this field"
-  for (const message of [LEAD_LAST_NAME_REQUIRED, LEAD_COMPANY_REQUIRED, LEAD_EMAIL_REQUIRED, LEAD_SOURCE_REQUIRED])
+  for (const message of [LEAD_NAME_REQUIRED, LEAD_COMPANY_REQUIRED, LEAD_EMAIL_REQUIRED, LEAD_SOURCE_REQUIRED])
     assert.doesNotMatch(message, /fill out this field/i);
   // optional company links stay optional
   assert.deepEqual(leadFormProblems({ ...ok, company_website: "", company_linkedin_url: "", location: "" }), {});
@@ -2311,7 +2337,7 @@ test("Lead form: Last Name, Company, Email and Lead Source have their own messag
 
 test("Edit Lead: an older lead without an email, or with an older saved email, still saves an unrelated edit", () => {
   const legacy = { id: 7, first_name: "Ana", last_name: "Okafor", company: "Harbor", email: null, source: "Website" };
-  const form = { first_name: "Ana", last_name: "Okafor", company: "Harbor", email: "", source: "Website", phone: "+1 555" };
+  const form = { first_name: "Ana", last_name: "Okafor", company: "Harbor", email: "", source: "Website", phone: "+1 212 555 0142" };
   assert.deepEqual(leadFormProblems(form, legacy), {}); // never had an email: not asked for now
   assert.equal(leadFieldsRequired("Website", legacy).email, false);
   // a lead that has an email keeps one, and a new or changed email is checked
@@ -2328,15 +2354,17 @@ test("Lead form: the server's refusals are shown under the field they are about"
   // 422 field errors (pydantic): loc names the field; an empty required value gets the form's own message
   assert.deepEqual(
     leadServerProblems({
-      message: "last_name: String should have at least 1 character",
+      message: "company: String should have at least 1 character",
       details: [
-        { loc: ["body", "last_name"], type: "string_too_short", msg: "String should have at least 1 character" },
+        { loc: ["body", "company"], type: "string_too_short", msg: "String should have at least 1 character" },
         { loc: ["body", "company_website"], type: "value_error", msg: "Value error, Enter a valid web address" },
         { loc: ["body", "employees"], type: "less_than_equal", msg: "Input should be less than or equal to 10000000" },
       ],
     }),
-    { last_name: LEAD_LAST_NAME_REQUIRED, company_website: "Enter a valid web address", employees: "Input should be less than or equal to 10000000" },
+    { company: LEAD_COMPANY_REQUIRED, company_website: "Enter a valid web address", employees: "Input should be less than or equal to 10000000" },
   );
+  // an edit that would leave no name (an older lead with only a last name): under Last Name
+  assert.deepEqual(leadServerProblems({ message: "Enter a first name or last name." }), { last_name: LEAD_NAME_REQUIRED });
   // the New Lead rules (model-level, loc ["body"]) and the edit rules (400 with a message)
   assert.deepEqual(
     leadServerProblems({ message: ": Value error, Enter the lead's first name.", details: [{ loc: ["body"], type: "value_error", msg: "Value error, Enter the lead's first name." }] }),
@@ -2489,10 +2517,9 @@ test("Leads table preview: placed under the cell, above it when needed, and alwa
 
 // ---------- New Lead: a valid Phone with its country (Manimohan issue 35) ----------
 
-test("New Lead needs a valid phone for the chosen country; editing an older lead doesn't", () => {
+test("Lead Phone is optional (Vinay's improvements); a given number is still checked for the chosen country", () => {
   const ok = { first_name: "Ana", last_name: "Okafor", company: "Harbor", email: "ana@harbor.example", source: "Website" };
-  for (const phone of [undefined, "", "   "])
-    assert.equal(leadFormProblems({ ...ok, phone, phone_country: "IN" }).phone, LEAD_PHONE_REQUIRED, String(phone));
+  for (const phone of [undefined, "", "   "]) assert.deepEqual(leadFormProblems({ ...ok, phone, phone_country: "IN" }), {}, String(phone));
   const india = "Enter a valid phone number for India (+91).";
   assert.equal(leadFormProblems({ ...ok, phone: "uiadcna", phone_country: "IN" }).phone, india); // letters
   assert.equal(leadFormProblems({ ...ok, phone: "98765 432", phone_country: "IN" }).phone, india); // too short
@@ -2500,39 +2527,73 @@ test("New Lead needs a valid phone for the chosen country; editing an older lead
   assert.deepEqual(leadFormProblems({ ...ok, phone: "6123 4567", phone_country: "SG" }), {});
   assert.deepEqual(leadFormProblems({ ...ok, phone: "98765 43210", phone_country: "IN" }), {}); // mobile
   assert.deepEqual(leadFormProblems({ ...ok, phone: "011 2345 6789", phone_country: "IN" }), {}); // business landline
-  assert.deepEqual(leadFormProblems({ ...ok, phone: "+44 20 7946 0958", phone_country: "IN" }), {}); // its own +code
+  assert.deepEqual(leadFormProblems({ ...ok, phone: "+44 20 7946 0958", phone_country: "IN" }), {}); // its own +code (no Region chosen)
   assert.deepEqual(leadFormProblems({ ...ok, phone: "98765 43210" }), {}); // no country chosen: India, the default
   assert.equal(leadFormProblems({ ...ok, phone: "+1 555", phone_country: "IN" }).phone, PHONE_WITH_CODE_INVALID);
-  // editing keeps the earlier rule (optional, as typed): an older lead without a phone still saves
-  const legacy = { id: 3, first_name: "Ana", last_name: "Okafor", company: "Harbor", email: "ana@harbor.example", source: "Website", phone: null };
-  assert.deepEqual(leadFormProblems({ ...ok, phone: "" }, legacy), {});
+  // with a Region chosen, a +code must be that Region's (+1 can't be saved as India); shared codes stay apart
+  assert.equal(leadFormProblems({ ...ok, phone: "+1 212 555 0142", phone_country: "IN", region: "IN" }).phone,
+    "This number's country code is +1, but the Region is India (+91). Choose the number's country.");
+  assert.deepEqual(leadFormProblems({ ...ok, phone: "+1 212 555 0142", phone_country: "US", region: "US" }), {});
+  assert.deepEqual(leadFormProblems({ ...ok, phone: "+1 416 555 0142", phone_country: "CA", region: "CA" }), {});
+  // editing: a new or changed number is checked; an older saved number is left alone; clearing it is fine
+  const legacy = { id: 3, first_name: "Ana", last_name: "Okafor", company: "Harbor", email: "ana@harbor.example", source: "Website", phone: "Ext. 204" };
   assert.deepEqual(leadFormProblems({ ...ok, phone: "Ext. 204" }, legacy), {});
-  assert.equal(leadFieldsRequired("Website", legacy).phone, false);
+  assert.deepEqual(leadFormProblems({ ...ok, phone: "" }, legacy), {});
+  assert.equal(leadFormProblems({ ...ok, phone: "Ext. 205" }, legacy).phone, india);
   // the server's phone messages go under Phone
-  assert.deepEqual(leadServerProblems({ message: "Enter the lead's phone number." }), { phone: LEAD_PHONE_REQUIRED });
   assert.deepEqual(leadServerProblems({ message: india }), { phone: india });
   assert.deepEqual(leadServerProblems({ message: "Choose the phone number's country." }), { phone: "Choose the phone number's country." });
+  const mismatch = "This number's country code is +44, but the Region is India (+91). Choose the number's country.";
+  assert.deepEqual(leadServerProblems({ message: mismatch }), { phone: mismatch });
   assert.deepEqual(
     leadServerProblems({ details: [{ loc: ["body", "phone_country"], type: "string_too_long", msg: "String should have at most 2 characters" }] }),
     { phone: "String should have at most 2 characters" },
   );
 });
 
-test("New Lead form wiring: Phone with its country beside it, required star; the country goes with the new lead only", () => {
-  const modal = source("./Modal.jsx");
-  assert.match(modal, /<PhoneField\s+required\s+error=\{fieldError\("phone"\)\}/);
-  assert.match(modal, /onInput=\{fieldError\("phone"\) \? \(event\) => fixError\(event, "phone"\) : undefined\}/);
-  assert.match(modal, /\{record \? \(\s*field\("Phone", "phone", "tel"\)/); // editing: the plain optional field
-  assert.match(modal, /phone=\{record \? undefined : \{ field: "phone", country: "phone_country" \}\}/); // autofill sets the country
-  const field = source("./PhoneField.jsx");
-  assert.match(field, /\{required && <i> \*<\/i>\}/);
-  assert.match(field, /aria-required=\{required \|\| undefined\}/);
-  assert.match(field, /defaultValue=\{DEFAULT_PHONE_COUNTRY\}/); // India (+91) first chosen
-  const values = { last_name: "Okafor", company: "Harbor", source: "Website", phone: "98765 43210", phone_country: "IN" };
+test("Region: the country chosen beside the phone, by name; saved only once chosen; never guessed from digits", () => {
+  // chosen (or the record had one), or a number entered for the listed country; the untouched default alone isn't
+  assert.equal(chosenRegion({ country: "IN" }), "");
+  assert.equal(chosenRegion({ country: "IN", phone: "98765 43210" }), "IN");
+  assert.equal(chosenRegion({ country: "CA", chosen: true }), "CA"); // no phone needed
+  assert.equal(chosenRegion({ country: "US", chosen: true, phone: "" }), "US"); // clearing the number keeps it
+  assert.deepEqual(["IN", "US", "CA", "JM"].map(regionName), ["India", "United States", "Canada", "Jamaica"]);
+  assert.equal(regionName(""), "");
+  // every +1 country is its own entry in the list (the list names one country: the Region is that one)
+  const plusOne = PHONE_COUNTRIES.filter((c) => c.dial === "+1").map((c) => c.code);
+  assert.ok(plusOne.length > 20 && ["US", "CA", "JM", "PR"].every((code) => plusOne.includes(code)));
+  // the same calling code isn't enough: a New York number isn't a Canadian one (the Region's own numbering plan)
+  assert.equal(regionProblem("+1 212 555 0142", "CA"), "This number isn't valid for the Region, Canada (+1). Choose the number's country.");
+  assert.equal(regionProblem("+1 212 555 0142", "US"), "");
+  assert.equal(regionProblem("98765 43210", "US"), ""); // no +: the format check reports it
+  assert.equal(regionProblem("+1", "IN"), ""); // incomplete: never decided from a partial number
+  // the form: PhoneField's hidden Region input, sent as phone_country only when set (create and edit alike)
+  const values = { last_name: "Okafor", company: "Harbor", source: "Website", phone: "98765 43210", phone_country: "IN", region: "IN" };
   assert.equal(leadPayload(values).phone_country, "IN");
-  assert.equal("phone_country" in leadPayload(values, true), false); // edits don't send it
+  assert.equal(leadPayload(values, true).phone_country, "IN");
+  assert.equal("phone_country" in leadPayload({ ...values, phone: "", region: "" }), false); // nothing chosen: nothing sent
+  assert.equal(leadPayload({ ...values, last_name: "" }).last_name, ""); // Last Name optional
+});
+
+test("Lead form wiring: Phone with its country and Region on New and Edit Lead; no required star", () => {
+  const modal = source("./Modal.jsx");
+  assert.match(modal, /<PhoneField\s+key=\{record\?\.id \?\? "new"\}\s+defaultValue=\{record\?\.phone \?\? ""\}\s+defaultCountry=\{record\?\.phone_country \?\? ""\}\s+error=\{fieldError\("phone"\)\}/);
+  assert.match(modal, /onInput=\{fieldError\("phone"\) \? \(event\) => fixError\(event, "phone"\) : undefined\}/);
+  assert.doesNotMatch(modal, /field\("Phone", "phone", "tel"\)/); // the plain edit field is gone
+  assert.match(modal, /phone=\{record \? undefined : \{ field: "phone", country: "phone_country" \}\}/); // autofill sets the country
+  assert.match(modal, /field\("Last Name", "last_name", "text", false\)/);
+  const field = source("./PhoneField.jsx");
+  assert.match(field, /<input type="hidden" name=\{regionName\} value=\{region\} \/>/);
+  assert.match(field, /<span>Region<\/span>/);
+  assert.match(field, /const region = chosenRegion\(\{ country: now\.country, chosen, phone: typed \? now\.value : "" \}\);/);
+  assert.match(field, /if \(event\.target\.tagName === "SELECT"\) setChosen\(true\);/);
+  // the record pages show it
+  assert.match(source("./RecordPage.jsx"), /<Field label="Region" onEdit=\{editField\}>\{regionName\(item\.phone_country\) \|\| item\.region\}<\/Field>/);
+  assert.match(source("./RelatedPages.jsx"), /\["Region", regionName\(contact\.phone_country\) \|\| contact\.region\]/);
   // Contact Phone stays optional
   assert.equal(contactProblems({ first_name: "Mia", last_name: "Noph", email: "mia@phone-optional.example", phone: "" }).phone, undefined);
+  assert.equal(contactProblems({ first_name: "Mia", email: "m@x.example", phone: "+44 20 7946 0958", phone_country: "IN", region: "IN" }).phone,
+    "This number's country code is +44, but the Region is India (+91). Choose the number's country.");
 });
 
 test("Bulk email: a progress pop-up with Sent / Queued / Failed opens when a campaign is sent", () => {
@@ -2741,4 +2802,232 @@ test("Help me write with AI unavailable: no standing message; Generate / Polish 
   assert.match(css, /\.email-ai-refine button:disabled, \.email-ai-refine button\[aria-disabled="true"\] \{ opacity: \.55;/);
   // campaigns: the short explanation, no provider details, and still OpenAI only on the server
   assert.equal(campaignDraftAvailability({ draft_mode: "ollama", ai_drafting_enabled: true }).message, CAMPAIGN_AI_UNAVAILABLE);
+});
+
+// ---------- Vinay's improvements: To Approve's Approve / Reject Selected and the Requested By filter ----------
+
+test("To Approve: ticks only for the Admin and Managers, only on requests they may decide, on this page only", () => {
+  assert.equal(canBulkDecide({ role: "Admin" }, "to_approve"), true);
+  assert.equal(canBulkDecide({ role: "Manager" }, "to_approve"), true);
+  assert.equal(canBulkDecide({ role: "Salesperson" }, "to_approve"), false); // decides each request on its own
+  assert.equal(canBulkDecide({ role: "Admin" }, "all"), false); // To Approve only
+  const rows = [
+    { id: 5, status: "Pending", can_decide: true },
+    { id: 4, status: "Pending", can_decide: false }, // another Manager's team: never ticked
+    { id: 3, status: "Approved", can_decide: false },
+    { id: 2, status: "Pending", can_decide: true },
+  ];
+  assert.deepEqual(tickableIds(rows), [5, 2]);
+  // the header box ticks this page's requests you may decide (never a whole filter), or none when all are ticked
+  assert.deepEqual([...toggleAllOnPage(new Set(), rows)], [5, 2]);
+  assert.deepEqual([...toggleAllOnPage(new Set([5, 2]), rows)], []);
+  assert.deepEqual([...toggleAllOnPage(new Set([5]), rows)], [5, 2]);
+  assert.deepEqual([...toggleOne(new Set([5]), 2)], [5, 2]);
+  assert.deepEqual([...toggleOne(new Set([5, 2]), 5)], [2]);
+  // after a reload: ticks of requests decided or gone since are dropped
+  assert.deepEqual([...keepSelection(new Set([5, 2, 9]), [{ id: 5, status: "Pending", can_decide: true }, { id: 2, status: "Rejected", can_decide: false }])], [5]);
+});
+
+test("Requested By and paging go to the server; a page never holds more than one bulk decision may take", () => {
+  assert.equal(BULK_DECISION_MAX, 100);
+  assert.equal(transferRequestQuery({ box: "to_approve", requestedBy: "7", offset: 50, limit: 50 }),
+    "box=to_approve&offset=50&limit=50&requested_by_id=7");
+  assert.equal(transferRequestQuery({ box: "all", focus: "12" }), "box=all&offset=0&limit=50&focus=12");
+  assert.equal(transferRequestQuery({ limit: 500 }), "box=all&offset=0&limit=100");
+  assert.equal(requestRange({ offset: 50, count: 20, total: 70, requester: "Ravi Kumar" }), "Showing 51–70 of 70 requests from Ravi Kumar");
+  assert.equal(requestRange({ total: 0, requester: "Ravi Kumar" }), "No requests from Ravi Kumar");
+  assert.equal(requestRange({ offset: 0, count: 1, total: 1 }), "Showing 1–1 of 1 request");
+  assert.match(source("./api.js"), /transferRequestsPage: \(params\) => apiRequest\(`\/transfer-requests\/page\?\$\{transferRequestQuery\(params\)\}`\)/);
+  assert.match(source("./api.js"), /decideTransferRequests: \(decision, requestIds, note\) =>\s*apiRequest\("\/transfer-requests\/bulk-decision", \{ method: "POST", body: \{ decision, request_ids: requestIds, note: note \|\| null \} \}\)/);
+});
+
+test("Bulk decision results: decided, changed meanwhile and not possible are each said plainly", () => {
+  const result = { decision: "approve", done: [{ id: 1 }, { id: 2 }, { id: 3 }], conflicts: [{ id: 4 }], skipped: [] };
+  assert.equal(decisionSummary(result),
+    "3 requests approved. 1 request not approved: decided or changed by someone else meanwhile (nothing was overwritten).");
+  assert.equal(decisionSummary({ decision: "reject", done: [], conflicts: [], skipped: [{ id: 9 }, { id: 8 }] }),
+    "No requests were rejected. 2 requests not rejected: not possible now, or not yours to decide.");
+});
+
+test("Transfer Requests page wiring: filter and page changes clear the ticks; one note; no double send", () => {
+  const page = source("./TransferRequests.jsx");
+  // a new tab, filter or page starts with nothing ticked
+  assert.match(page, /const show = \(change\) => \{\s*setSelected\(new Set\(\)\);\s*setView\(\(v\) => \(\{ \.\.\.v, focus: "", \.\.\.change \}\)\);/);
+  assert.match(page, /onChange=\{\(e\) => show\(\{ requestedBy: e\.target\.value, offset: 0 \}\)\}/);
+  assert.match(page, /setPage=\{\(p\) => show\(\{ offset: \(p - 1\) \* view\.size \}\)\}/);
+  assert.match(page, /Clear filter/);
+  assert.match(page, /The box in the header ticks the requests on this page only,\s*never the whole list/);
+  assert.match(page, /aria-label="Select all requests on this page that you can decide \(this page only\)"/);
+  // the Requested By choices come from the server (only people with requests the approver may see)
+  assert.match(page, /\{requesters\.map\(\(p\) => \(\s*<option key=\{p\.id\} value=\{p\.id\}>/);
+  // only the ticked requests of the page shown are sent; a reason is required to reject; one send at a time
+  assert.match(page, /rows=\{items\.filter\(\(r\) => selected\.has\(r\.id\)\)\}/);
+  assert.match(page, /disabled=\{busy \|\| \(!approve && !note\.trim\(\)\)\}/);
+  assert.match(page, /if \(sending\.current\) return; \/\/ a second click or Enter while it runs sends nothing/);
+  assert.match(page, /\{approve \? "Approve" : "Reject"\} \$\{requestCount\(count\)\}/);
+  // single Approve / Reject stay on every row
+  assert.match(page, /onClick=\{\(\) => setDeciding\(\{ request: r, decision: "approve" \}\)\}/);
+});
+
+// ---------- US, Canada and Jamaica share +1: each number is checked against the chosen country's own plan ----------
+
+test("Shared +1: a number is valid for the country whose own numbering plan has it; shared toll-free numbers for each", () => {
+  // the same results as the server's phonenumbers.is_valid_number_for_region (backend tests: NANP)
+  const plans = [
+    ["(212) 555-0142", ["US"]], ["(416) 555-0142", ["CA"]], ["(876) 523-0123", ["JM"]], ["(876) 210-1234", ["JM"]],
+    ["(800) 234-5678", ["US", "CA", "JM"]], ["(888) 226-6362", ["US", "CA", "JM"]],
+  ];
+  const names = { US: "United States", CA: "Canada", JM: "Jamaica" };
+  for (const [number, home] of plans)
+    for (const country of ["US", "CA", "JM"]) {
+      const ok = home.includes(country);
+      // typed without +1: checked for the chosen country (a Canadian toll-free number used to be refused here, because
+      // libphonenumber-js names the United States for every +1 toll-free number)
+      assert.equal(phoneProblem(number, country), ok ? "" : `Enter a valid phone number for ${names[country]} (+1).`, `${number} ${country}`);
+      // typed with +1 and the Region chosen: the same per-country answer
+      assert.equal(regionProblem(`+1 ${number}`, country),
+        ok ? "" : `This number isn't valid for the Region, ${names[country]} (+1). Choose the number's country.`, `+1 ${number} ${country}`);
+    }
+  // no country is inferred from +1 alone, and a different calling code is still reported first
+  assert.equal(regionProblem("+44 20 7946 0958", "US"), "This number's country code is +44, but the Region is United States (+1). Choose the number's country.");
+  assert.equal(validInCountry(parsePhoneNumberFromString("+1 416 555 0142"), "IN"), false); // not even the same code
+});
+
+test("Edit Lead: an older lead's unchanged number is checked against its Region only when the Region changes", () => {
+  const ok = { first_name: "Ana", company: "Harbor", email: "ana@harbor.example", source: "Website" };
+  const legacy = { id: 4, ...ok, phone: "+1 416 555 0142", phone_country: "US" }; // saved before the per-country rule
+  assert.deepEqual(leadFormProblems({ ...ok, phone: "+1 416 555 0142", region: "US" }, legacy), {}); // an unrelated edit saves
+  assert.match(leadFormProblems({ ...ok, phone: "+1 416 555 0142", region: "JM" }, legacy).phone, /isn't valid for the Region, Jamaica/);
+  assert.deepEqual(leadFormProblems({ ...ok, phone: "+1 416 555 0142", region: "CA" }, legacy), {});
+  const field = source("./PhoneField.jsx");
+  assert.match(field, /\(touched && region && \(!unchanged \|\| region !== defaultCountry\) \? regionProblem\(now\.value, region\) : ""\)/);
+  // the form rechecks the phone once a change of country is drawn, so it reads the new Region (a message about the
+  // previous country doesn't stay after the user picked the right one)
+  assert.match(field, /if \(onInput\) setTimeout\(\(\) => onInput\(event\), 0\);/);
+});
+
+test("Uploads: the country Region has its own column, Region (Country); State or Region stays the state", () => {
+  const files = source("./LeadFiles.jsx");
+  assert.match(files, /# Employees,City,State,Country,Region \(Country\),Lead Source/);
+  assert.match(files, /Region \(Country\) is the country: a name, a code like IN, or \+91 \(State or Region stays the state\)/);
+  assert.match(files, /"Required: First Name or Last Name \(either is enough\), and Company"/);
+});
+
+// ---------- Leads: the Region column and filter, and Assign for the ticked pooled leads ----------
+
+test("Leads Region filter: the Region column's arrow, like Status; All Regions, Not specified, then every country by name", () => {
+  const list = source("./ListView.jsx");
+  assert.match(list, /key: "region",\s*label: "Region",\s*allLabel: "All Regions",\s*options: \[\[REGION_NONE, "Not specified"\], \.\.\.PHONE_COUNTRIES\.map\(\(c\) => \[c\.code, c\.name\]\)\],\s*search: \{ placeholder: "Search countries", none: "No country matches" \},/);
+  assert.doesNotMatch(list, /toolbar: true/);
+  // the phone's complete country list (not only the countries saved on leads), by name: never a calling code or a code
+  assert.ok(PHONE_COUNTRIES.length > 240);
+  for (const { code, name } of PHONE_COUNTRIES) {
+    assert.notEqual(name, code);
+    assert.doesNotMatch(name, /\+\d|^[A-Z]{2}$/, name);
+  }
+  const names = PHONE_COUNTRIES.map((c) => c.name);
+  assert.deepEqual(names, [...names].sort((a, b) => a.localeCompare(b, "en"))); // alphabetical
+  for (const name of ["United States", "Canada", "India", "Jamaica"]) assert.ok(names.includes(name), name);
+  // the column header's arrow (the same Th and menu as Status); no separate dropdown beside the search any more
+  const table = source("./LeadsTable.jsx");
+  assert.match(table, /filter=\{defs\.find\(\(f\) => f\.key === col\)\}/);
+  assert.doesNotMatch(table, /region-filter|leadRegions|regionChoices|def\.toolbar/);
+  assert.doesNotMatch(source("./api.js"), /leadRegions/);
+  // sent with every request of the list (List page and each Kanban column), so totals and pages are the server's
+  assert.match(table, /if \(filters\.region\) params\.set\("region", filters\.region\);/);
+  // a new Region is a new filter value: page 1 and nothing ticked (the same effects as every other filter)
+  assert.match(table, /useEffect\(\(\) => setPage\(0\), \[view, stage, filterKey\]\);/);
+  assert.match(table, /useEffect\(\(\) => setSelected\(new Set\(\)\), \[view, stage, filterKey, term, kanban\]\);/);
+});
+
+test("Region menu search: by country name, case and accents ignored, names that start with it first", async () => {
+  const { matchChoices, REGION_NONE } = await import("./listHelpers.js");
+  const all = [[REGION_NONE, "Not specified"], ...PHONE_COUNTRIES.map((c) => [c.code, c.name])];
+  const codes = (typed) => matchChoices(all, typed).map(([code]) => code);
+  assert.deepEqual(codes(""), all.map(([code]) => code)); // nothing typed: every choice, in order
+  assert.deepEqual(codes("ind"), ["IN", "ID", "IO"]); // India, Indonesia, then British Indian Ocean Territory
+  assert.deepEqual(codes("  UNITED states "), ["US"]);
+  assert.deepEqual(codes("united"), ["AE", "GB", "US"]);
+  assert.deepEqual(codes("canada"), ["CA"]);
+  assert.deepEqual(codes("cote"), ["CI"]); // Côte d’Ivoire
+  assert.deepEqual(codes("saint lucia"), ["LC"]); // St. Lucia
+  assert.deepEqual(codes("st lucia"), ["LC"]);
+  assert.deepEqual(codes("trinidad and"), ["TT"]); // Trinidad & Tobago
+  assert.deepEqual(codes("not spec"), [REGION_NONE]);
+  assert.deepEqual(codes("zzz"), []); // the menu then says "No country matches “zzz”"
+});
+
+test("Searchable filter menu: a search box above scrolling options; keyboard and phone friendly", () => {
+  const filters = source("./Filters.jsx");
+  assert.match(filters, /const shown = def\.search \? matchChoices\(choices, find\) : choices;/);
+  assert.match(filters, /\{def\.allLabel \|\| \(def\.type === "date" \? "Any time" : "All"\)\}/);
+  // a dialog with a labelled search box and a menu of options (valid roles), opening at the chosen one
+  assert.match(filters, /role=\{def\.search \? "dialog" : "menu"\}/);
+  assert.match(filters, /<div ref=\{list\} id=\{listId\} className="th-menu-list" role="menu" aria-label=\{`\$\{def\.label\} choices`\}>/);
+  assert.match(filters, /aria-label=\{def\.search\.placeholder\}\s*aria-controls=\{listId\}/);
+  assert.match(filters, /box\.scrollTop = Math\.max\(0, on\.offsetTop - \(box\.clientHeight - on\.offsetHeight\) \/ 2\)/);
+  // keyboard: arrows, Home and End between the options (from the search box too); Enter in the box picks the first match
+  assert.match(filters, /if \(!\["ArrowDown", "ArrowUp", "Home", "End"\]\.includes\(e\.key\)\) return;/);
+  assert.match(filters, /if \(searching && shown\.length\) choose\(shown\[0\]\[0\]\);/);
+  assert.match(filters, /\{def\.search\.none\} “\{find\.trim\(\)\}”/);
+  // a phone: the box isn't focused on opening, and its on-screen keyboard doesn't close the menu
+  assert.match(filters, /autoFocus=\{!touch\}/);
+  assert.match(filters, /const resize = \(\) => \(window\.innerWidth !== width \|\| !typing\(\)\) && setOpen\(false\);/);
+  // reopened afresh: never drawn first with the last search (which would scroll a one-item list, not the chosen one)
+  assert.match(filters, /if \(!open\) \{\s*setPos\(null\);/);
+  // phones: every header menu stays inside the list's card (the fixed side bar is drawn over anything further left)
+  assert.match(filters, /const leftEdge = \(\) => Math\.max\(8, button\.current\?\.closest\("\.card"\)\?\.getBoundingClientRect\(\)\.left \?\? 8\);/);
+  assert.match(filters, /maxWidth: window\.innerWidth - edge - 8/);
+  const css = source("./styles.css");
+  assert.match(css, /\.th-menu-list \{[^}]*overflow-y: auto;/);
+  assert.match(css, /\.th-search input \{\s*height: 38px;\s*font-size: 16px;/);
+  assert.doesNotMatch(css, /region-filter/);
+  // phones: the Name column's header cells scroll with it, so they never cover another header's filter arrow
+  assert.match(css, /\.sf-table\.leads-table thead th\.sticky-col \{\s*left: auto;\s*\}/);
+});
+
+test("Leads Region column: the country by the menu's name on every lead listed, pooled ones too", () => {
+  const table = source("./LeadsTable.jsx");
+  assert.match(table, /\["Region", "region", 132, false\],/); // after Phone; not sortable (filtered from its arrow)
+  assert.match(table, /onSort=\{sortable === false \? undefined : \(\) => sortBy\(col\)\}/);
+  assert.match(table, /\{regionName\(l\.phone_country\) \|\| l\.region \|\| ""\}/);
+  assert.doesNotMatch(table, /contact_hidden \? "" : l\.region/);
+  assert.match(table, /COLUMNS\.filter\(\(\[, , , sortable\]\) => sortable !== false\)/); // the Kanban's Sort by
+});
+
+test("Assign in the selection bar: beside Convert, for the Admin and Managers with Reassign owner only", () => {
+  const choice = { action: null, explain: "One lead at a time" };
+  const keys = (extra) => leadSelectionActions({ count: 3, convertChoice: choice, canCampaign: true, canTransfer: true, ...extra }).map((a) => a.key);
+  assert.deepEqual(keys({ canAssign: true, pooled: 2 }), ["convert", "assign", "campaign", "transfer", "delete"]);
+  assert.deepEqual(keys({}), ["convert", "campaign", "transfer", "delete"]); // not offered without the right
+  // a Salesperson with pooled leads ticked gets Request Assignment only, never Assign
+  assert.deepEqual(leadSelectionActions({ count: 2, convertChoice: choice, poolOnly: true, canRequest: true }).map((a) => a.key), ["request"]);
+  // no pooled lead ticked: Assign only says why; over the limit: off, as the other bulk actions
+  const [, none] = leadSelectionActions({ count: 2, convertChoice: choice, canAssign: true, pooled: 0 });
+  assert.deepEqual([none.key, none.disabled, none.reason], ["assign", true, ASSIGN_NONE_POOLED]);
+  const [, many] = leadSelectionActions({ count: BULK_LIMIT + 1, convertChoice: choice, canAssign: true, pooled: BULK_LIMIT + 1 });
+  assert.equal(many.disabled, true);
+  // who may: canAssignPool (the Admin; a Manager with Reassign owner), the same rule as the single Assign
+  assert.equal(canAssignPool({ role: "Admin", permissions: [] }), true);
+  assert.equal(canAssignPool({ role: "Manager", permissions: ["reassign_owner"] }), true);
+  assert.equal(canAssignPool({ role: "Manager", permissions: [] }), false);
+  assert.equal(canAssignPool({ role: "Salesperson", permissions: ["reassign_owner"] }), false);
+  const table = source("./LeadsTable.jsx");
+  assert.match(table, /const assignable = canAssign \? \[\.\.\.selected\]\.filter\(\(id\) => seen\.current\.get\(id\)\?\.in_pool\) : \[\];/);
+});
+
+test("Assign dialog: the pooled leads that will be assigned, the owned ones left out, one Salesperson, results per lead", () => {
+  const dialog = source("./TransferRequests.jsx").slice(source("./TransferRequests.jsx").indexOf("export function BulkAssignDialog"));
+  assert.match(dialog, /const people = poolAssignees\(user, users\);/); // the Admin: any active Salesperson; a Manager: their own
+  assert.match(dialog, /api\.bulkAssignLeads\(pooled\.map\(\(l\) => l\.id\), Number\(to\), note\.trim\(\)\)/); // only the ticked pooled ids
+  assert.match(dialog, /Will be assigned \(\{pooled\.length\}\)/);
+  assert.match(dialog, /Left out \(\{owned\.length\}\)/);
+  assert.match(dialog, /<select value=\{to\} required/);
+  assert.match(dialog, /disabled=\{busy \|\| !to\}/);
+  assert.match(dialog, /if \(sending\.current\) return; \/\/ a second click or Enter while it runs sends nothing/);
+  for (const part of ["conflicts.length > 0", "skipped.length > 0", "failed.length > 0"]) assert.ok(dialog.includes(part), part);
+  assert.match(source("./api.js"), /bulkAssignLeads: \(lead_ids, to_user_id, note\) =>\s*apiRequest\("\/leads\/bulk-assign"/);
+  // afterwards: nothing ticked, and the list and counts load again
+  const table = source("./LeadsTable.jsx");
+  assert.match(table, /<BulkAssignDialog[\s\S]*?setSelected\(new Set\(\)\);\s*setAgain\(\(n\) => n \+ 1\);\s*reload\(\)\.catch/);
 });

@@ -22,6 +22,7 @@ from app.constants import (CURRENCIES, DEFAULT_CURRENCY, LEAD_OPEN_STAGES, LEAD_
 from app.database import get_db
 from app.models import Account, ActivityLog, Contact, Lead, LeadTransfer, StageHistory, User
 from app.security import acting_user, can_view, require, sees_pool_contacts, team_ids, visible
+from app.regions import country_name, region_from_text, supported
 from app.serializers import lead_out
 from app.text_rules import has_letter, text_problem
 from app.services import (activity_condition, email_matches_website, is_personal_email, log_activity, notify,
@@ -55,8 +56,12 @@ COLUMNS = {
     "employees": ("employees", "noemployees", "employeecount", "noofemployees", "numberofemployees", "headcount", "companysize"),
     "location": ("location",),
     "city": ("city",),
-    "state": ("state", "region"),
+    "state": ("state", "region"),  # a state, province or territory: part of the Location (a "Region" column too)
     "country": ("country",),
+    # Region (Country): the country chosen beside the phone (app/regions.py). Its own heading, so it never takes over
+    # an older file's "Region" or "State" column (often a state, even a two-letter one like CA or IN): those stay part of
+    # the Location exactly as before. Downloads use this heading, so a downloaded file reads back the same.
+    "region_country": ("regioncountry", "phonecountry"),
     "source": ("leadsource", "source"),
     "source_detail": ("leadsourcedetails", "leadsourcedetail", "sourcedetails", "sourcedetail", "specifyleadsource"),
 }
@@ -155,15 +160,19 @@ def number(value: str) -> Decimal | None:
     return amount
 
 
+NAME_MISSING = "Name is missing (a first or last name)"
+
+
 def parse(header: list[str], rows: list[list]):
     """Turns the sheet into lead dicts. Returns (leads, errors, warnings, mapped headings, ignored headings).
-    Only Last Name and Company are required: a wrong email, link or number doesn't skip the row (like HubSpot and
-    Salesforce imports); that one value is left blank and listed as a warning so the salesperson can fill it in."""
+    Required: a name (First Name or Last Name: either is enough) and Company. A wrong email, link or number doesn't
+    skip the row (like HubSpot and Salesforce imports); that one value is left blank and listed as a warning so the
+    salesperson can fill it in. Phone is optional."""
     fields = [LOOKUP.get(key(h)) for h in header]
     mapped = sorted({h for h, f in zip(header, fields) if f})
     ignored = [h for h, f in zip(header, fields) if not f and h]
-    if "last_name" not in fields and "full_name" not in fields:
-        raise HTTPException(status_code=400, detail="The file needs a 'Last Name' (or 'Name') column.")
+    if not {"first_name", "last_name", "full_name"} & set(fields):
+        raise HTTPException(status_code=400, detail="The file needs a 'First Name', 'Last Name' or 'Name' column.")
     if "company" not in fields:
         raise HTTPException(status_code=400, detail="The file needs a 'Company' column.")
     leads, errors, warnings = [], [], []
@@ -176,21 +185,25 @@ def parse(header: list[str], rows: list[list]):
             parts = raw["full_name"].split(" ")
             raw["last_name"] = parts[-1]
             raw.setdefault("first_name", " ".join(parts[:-1]))
-        if not raw.get("last_name"):
-            errors.append({"row": number_in_file, "reason": "Last name is missing"})
+        first, last = raw.get("first_name") or "", raw.get("last_name") or ""
+        if not (first or last):
+            errors.append({"row": number_in_file, "reason": NAME_MISSING})
             continue
         if not raw.get("company"):
             errors.append({"row": number_in_file, "reason": "Company is missing"})
             continue
-        # a row with an unusable company or last name ("...", "@@") is skipped (app/text_rules.py); other characters
-        # are kept as the file has them, so a bulk upload of real-world data isn't thrown away
+        # a row with an unusable company or last name ("...", "@@") is skipped (app/text_rules.py), as before; other
+        # characters are kept as the file has them (the first name is never checked), so a bulk upload of real-world
+        # data isn't thrown away. Last Name is optional now: only a given one is checked.
         problem = schemas.company_name_problem(raw["company"])
-        if not problem and not has_letter(raw["last_name"]):
+        if not problem and last and not has_letter(last):
             problem = "Enter a last name with at least one letter."
         if problem:
             errors.append({"row": number_in_file, "reason": problem})
             continue
         lead = {f: raw[f][:limit] or None for f, limit in LIMITS.items() if raw.get(f)}
+        lead["first_name"] = lead.get("first_name") or None
+        lead["last_name"] = lead.get("last_name") or ""  # every row has the column ("" = no last name)
         blank = []  # values left out of this row because they aren't valid
         for field, label in (("title", "title"), ("industry", "industry")):
             if lead.get(field) and text_problem(lead[field], label):
@@ -211,6 +224,14 @@ def parse(header: list[str], rows: list[list]):
         # what an "Other" source is, when the file says (kept as given; nothing is made up when it doesn't)
         detail = " ".join((raw.get("source_detail") or "").split())
         lead["source_detail"] = (detail[:LEAD_SOURCE_DETAIL_MAX] or None) if lead["source"] == "Other" else None
+        # Region (Country) column: a cell naming one country (IN, India or +91) is saved as the Region; a code several
+        # countries share (+1), or a value that isn't a country, is left blank with a note (nothing is guessed). It is
+        # separate from the Location, which is built from Location / City, State (or Region) and Country as before.
+        region_text = raw.get("region_country") or ""
+        region, ambiguous = region_from_text(region_text)
+        lead["phone_country"] = region
+        if region_text and not region:
+            blank.append(f"Region (Country) '{region_text[:30]}': {ambiguous or 'not a country'}")
         location = raw.get("location") or ", ".join(x for x in (raw.get("city"), raw.get("state"), raw.get("country")) if x)
         lead["location"] = location[:200] or None
         if lead["location"] and text_problem(lead["location"], "location", letter=False):
@@ -434,6 +455,37 @@ def open_lead_counts(db: Session = Depends(get_db)):
     return {"counts": {str(owner_id): n for owner_id, n in db.execute(query).all()}}
 
 
+def list_query(me, view: str, owner: str | None):
+    """The leads a list view shows this user, before its other filters (the List page and every Kanban column use the
+    same rules)."""
+    pool_only = view == "unassigned" or owner == "unassigned"
+    pool_here = me.sees_team or view in POOL_VIEWS  # does this list include the Unassigned Pool for this user?
+    if pool_only:  # the Unassigned Pool: every user can list it; contact details only for those who may assign it
+        start = select(Lead).where(Lead.owner_id.is_(None))
+        return LIST_VIEWS[view](start if pool_here else start.where(false()), me)
+    if me.sees_team:
+        return LIST_VIEWS[view](visible(select(Lead), Lead), me)
+    # their own leads, and in the lists above the Unassigned Pool too (List and Kanban alike)
+    mine = Lead.owner_id == me.id
+    return LIST_VIEWS[view](select(Lead).where(or_(mine, Lead.owner_id.is_(None)) if pool_here else mine), me)
+
+
+REGION_NONE = "none"  # the Region filter's "Not specified": leads without a Region (older ones, or none chosen)
+
+
+def region_condition(region: str):
+    """The Region filter (the country beside the phone, leads.phone_country; separate from the Location and its
+    state): one country from the phone's country list, or Not specified (no Region saved: nothing is guessed for older
+    leads). A Region is visible on every lead a user may list, pooled ones included (only a pooled lead's email, phone
+    and LinkedIn stay hidden: serializers.POOL_CONTACT_FIELDS), so it filters them all alike."""
+    if region.strip().lower() == REGION_NONE:
+        return Lead.phone_country.is_(None)
+    code = region.strip().upper()
+    if not supported(code):
+        raise HTTPException(status_code=400, detail="Unknown Region")
+    return Lead.phone_country == code
+
+
 @router.get("/page")
 def leads_page(
     view: str = Query("all_open", description=", ".join(LIST_VIEWS)),
@@ -447,6 +499,8 @@ def leads_page(
     modified_from: datetime | None = Query(None, description="Last modified on or after (ISO date/time)"),
     modified_to: datetime | None = Query(None, description="Last modified before (ISO date/time)"),
     search: str | None = Query(None, description="Name, company, title, email, phone or location"),
+    region: str | None = Query(None, max_length=4, description="Region (the country beside the phone): a two-letter "
+                                                              "code, or 'none' for leads without one"),
     activity: str | None = Query(None, description="Home's pills: upcoming, past or none (services.activity_condition)"),
     created_days: int | None = Query(None, ge=1, le=3650, description="Created in the last N days (Home: 30)"),
     sort: str = Query("created", description=", ".join(SORTS)),
@@ -462,18 +516,11 @@ def leads_page(
         raise HTTPException(status_code=400, detail="Unknown list view")
     if sort not in SORTS:
         raise HTTPException(status_code=400, detail="Unknown sort column")
-    pool_only = view == "unassigned" or owner == "unassigned"
     # pooled leads in this list hide their contact details (and aren't searched or sorted on them) for this user
     limited = not sees_pool_contacts(me)
-    pool_here = me.sees_team or view in POOL_VIEWS  # does this list include the Unassigned Pool for this user?
-    if pool_only:  # the Unassigned Pool: every user can list it; contact details only for those who may assign it
-        start = select(Lead).where(Lead.owner_id.is_(None))
-        query = LIST_VIEWS[view](start if pool_here else start.where(false()), me)
-    elif me.sees_team:
-        query = LIST_VIEWS[view](visible(select(Lead), Lead), me)
-    else:  # their own leads, and in the lists above the Unassigned Pool too (List and Kanban alike)
-        mine = Lead.owner_id == me.id
-        query = LIST_VIEWS[view](select(Lead).where(or_(mine, Lead.owner_id.is_(None)) if pool_here else mine), me)
+    query = list_query(me, view, owner)
+    if region:  # before paging, so the total and every page are of the whole filtered list (List and Kanban alike)
+        query = query.where(region_condition(region))
     if assigned:
         query = query.where(Lead.owner_id.is_not(None))
     if stage:
@@ -640,7 +687,10 @@ def transfer_history(
 
 EXPORT_COLUMNS = (
     ("Salutation", "salutation"), ("First Name", "first_name"), ("Last Name", "last_name"), ("Title", "title"),
-    ("Company", "company"), ("Email", "email"), ("Phone", "phone"), ("LinkedIn URL", "linkedin_url"),
+    # Region (Country): the lead's Region by name; its own heading, so an upload reads it back as the Region, never as
+    # a state ("Region" alone is a state in uploads, as before)
+    ("Company", "company"), ("Email", "email"), ("Phone", "phone"), ("Region (Country)", "region"),
+    ("LinkedIn URL", "linkedin_url"),
     ("Company Website", "company_website"), ("Company LinkedIn URL", "company_linkedin_url"),
     ("Turnover", "annual_revenue"), ("Currency", "currency"), ("Headcount", "employees"), ("Location", "location"),
     ("Industry", "industry"), ("Lead Source", "source"), ("Lead Source Details", "source_detail"),
@@ -680,6 +730,8 @@ def export_leads(
         for _, attr in EXPORT_COLUMNS:
             if attr == "owner":  # a pooled lead has no owner yet
                 value = owners.get(lead.owner_id) if lead.owner_id is not None else "Unassigned"
+            elif attr == "region":  # the country by name (an upload reads it back); blank when none was chosen
+                value = country_name(lead.phone_country)
             else:
                 value = getattr(lead, attr)
             if isinstance(value, Decimal):

@@ -7996,6 +7996,168 @@ p.list-state {
   }
 }
 
+/* Transfer Requests > To Approve: the Requested By filter with the count, the tick boxes (the Admin and Managers) and
+   the bar for the ticked requests (Approve Selected / Reject Selected), page by page */
+.transfer-requests-page .request-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 16px;
+  margin: 0 16px 12px;
+}
+.request-filters .request-filter {
+  min-width: 220px;
+  margin: 0;
+}
+.request-filters .request-range {
+  padding-bottom: 8px;
+  color: var(--text-weak);
+  font-size: 13px;
+}
+.request-filters .link {
+  padding-bottom: 8px;
+}
+.transfer-requests-page .selection-bar,
+.transfer-requests-page .request-select-hint {
+  margin: 0 16px 12px;
+}
+.transfer-requests-page .pagination {
+  margin: 0 16px 16px;
+}
+.transfer-requests th.select-col,
+.transfer-requests td.select-col {
+  width: 36px;
+  text-align: center;
+}
+.transfer-requests tr.row-selected td {
+  background: #eef4ff;
+}
+/* Phone's Region: read-only, it follows the country beside the phone */
+.region-field input[readonly] {
+  color: var(--text);
+}
+@media (max-width: 760px) {
+  .request-filters .request-filter {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+}
+
+/* Leads Region filter: its column header's arrow (a Region button on the Kanban) opens a menu of every country with a
+   search box above the options, which scroll under it */
+.th-menu.searchable {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-bottom: 4px;
+}
+.th-menu.searchable > .th-menu-label {
+  flex: none;
+}
+.th-search {
+  position: relative;
+  flex: none;
+  margin: 0 10px 6px;
+}
+.th-search svg {
+  position: absolute;
+  top: 50%;
+  left: 9px;
+  color: var(--text-weak);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+.th-search input {
+  width: 100%;
+  height: 32px;
+  padding: 0 8px 0 28px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--white);
+  color: var(--text);
+  font: inherit;
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+}
+.th-search input:focus-visible {
+  border-color: var(--brand);
+  outline-offset: -1px;
+}
+.th-menu-list {
+  position: relative; /* options' offsetTop inside the list: the chosen and the focused one are scrolled into view */
+  flex: 1 1 auto;
+  min-height: 0;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* its options look like a plain menu's (.th-menu > button), in the header too (no header-button rules) */
+.th-menu-list > button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 14px;
+  color: var(--text);
+  line-height: 1.3;
+  text-align: left;
+}
+.th-menu-list > button svg {
+  flex: none;
+  visibility: hidden;
+  color: var(--brand);
+}
+.th-menu-list > button.on {
+  color: var(--brand-dark);
+  font-weight: 600;
+}
+.th-menu-list > button.on svg {
+  visibility: visible;
+}
+.th-menu-list > button:hover {
+  background: #f3f9ff;
+}
+.sf-table th .th-menu-list > button {
+  justify-content: flex-start;
+  gap: 8px;
+  width: 100%;
+  margin: 0;
+  padding: 6px 12px;
+  color: var(--text);
+}
+.sf-table th .th-menu-list > button.on {
+  color: var(--brand-dark);
+}
+/* inside the scrolling list a focus ring is drawn within the option, so it is never cut off */
+.th-menu-list > button:focus-visible,
+.th-menu > button:focus-visible {
+  outline-offset: -2px;
+  background: #f3f9ff;
+}
+.leads-table td.region {
+  white-space: nowrap;
+}
+@media (max-width: 760px) {
+  /* phones: the Name column doesn't stay at the left (.sticky-col is static), so neither do its header cells: they
+     scroll with the column below them and never cover another header's filter arrow (Region, Status...) */
+  .sf-table.leads-table thead th.sticky-col {
+    left: auto;
+  }
+  .th-menu.searchable {
+    width: min(300px, calc(100vw - 16px));
+  }
+  .th-search input {
+    height: 38px;
+    font-size: 16px; /* a phone doesn't zoom into a 16px box */
+  }
+  .th-menu-list > button {
+    padding-top: 9px;
+    padding-bottom: 9px;
+  }
+}
 /* ---------- Account page: header, information, Contacts | Leads, Opportunities, Emails ---------- */
 .account-page {
   display: grid;

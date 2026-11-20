@@ -2,7 +2,8 @@ import { DownloadLeads, TransferHistory, UploadLeads } from "./LeadFiles";
 import { can, canCreateOpportunity, canCreateSales } from "./permissions";
 import LeadsTable from "./LeadsTable";
 import { applyFilters, filterSummary, opts, ownerOptions, Th, useFilters } from "./Filters";
-import { dateFilterOffered, LEAD_DATE_RANGES } from "./listHelpers";
+import { dateFilterOffered, LEAD_DATE_RANGES, REGION_NONE } from "./listHelpers";
+import { PHONE_COUNTRIES } from "./phone";
 import {
   isPooledLead,
   LEAD_OPEN_STAGES,
@@ -169,11 +170,22 @@ function filterDefs(collection, data, user, viewName, fixedStage) {
             options: [...(team ? ownerOptions(data.users || [], user) : [[String(user.id), "Me"]]), [POOL_OWNER, POOL_LABEL]],
             get: (r) => (isPooledLead(r) ? POOL_OWNER : String(r.owner_id)),
           }];
+    // Region (the country chosen beside the phone; not the Location's state): the Region column's filter arrow, like
+    // Status (a Region button in the Kanban's filter bar), filtered on the server. All Regions, Not specified, then
+    // every country of the phone's country list by name (never a code or calling code), in a menu searchable by name.
+    const region = {
+      key: "region",
+      label: "Region",
+      allLabel: "All Regions",
+      options: [[REGION_NONE, "Not specified"], ...PHONE_COUNTRIES.map((c) => [c.code, c.name])],
+      search: { placeholder: "Search countries", none: "No country matches" },
+    };
     // Created and Last Modified: Any time, Today, Last week, Last month or a custom range (List and Kanban)
     return [
       ...(st ? [{ key: "stage", label: "Lead Status", options: opts(st) }] : []),
       { key: "source", label: "Lead Source", options: opts([...LEAD_SOURCES, UPLOAD_SOURCE]) },
       ...leadOwner,
+      region,
       { ...created, ranges: LEAD_DATE_RANGES },
       { ...modified, ranges: LEAD_DATE_RANGES },
     ];

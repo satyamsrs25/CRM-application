@@ -1,5 +1,5 @@
 import { businessNow } from "./businessTime.js";
-import { DEFAULT_PHONE_COUNTRY, phoneProblem } from "./phone.js";
+import { DEFAULT_PHONE_COUNTRY, phoneProblem, regionProblem } from "./phone.js";
 
 // Lead path (same as backend/app/constants.py): New -> Nurturing -> Revisit -> Demo -> Converted. New leads start at
 // New. Revisit is optional ("not now": the lead asked to be contacted on a later date), so it can be passed over;
@@ -130,12 +130,12 @@ export const UPLOAD_SOURCE = "Upload";
 // check_new_lead_rules): First Name; the LinkedIn Profile URL when Lead Source is LinkedIn; what the source is
 // ("Specify lead source") when it is Other. An older lead may lack these values: when editing, a rule applies only
 // if the lead already had that value or the edit changes the Lead Source to it, so an unrelated edit still saves.
-// Last Name, Company and Lead Source are always required (the API refuses them empty); Email on every new lead, and when
-// editing a lead that has one. Phone on a new lead (the New Lead form only; the server checks it the same way): a valid
-// number for the chosen country (India +91 by default), or with its own +country code. Editing keeps it as before
-// (optional, as typed), so an older lead without a phone still saves.
+// Company and Lead Source are always required (the API refuses them empty); Email on every new lead, and when editing a
+// lead that has one. Last Name is optional, but a lead always keeps a name (a first or last name: an older lead may have
+// only a last name). Phone is optional on New Lead and Edit Lead; a given (new or changed) number must be valid for the
+// chosen country (India +91 by default), or carry its own +country code, which must be the Region's when one is chosen.
 export const LEAD_FIRST_NAME_REQUIRED = "Enter the lead's first name.";
-export const LEAD_LAST_NAME_REQUIRED = "Enter the lead's last name.";
+export const LEAD_NAME_REQUIRED = "Enter a first name or last name."; // the server's schemas.NAME_REQUIRED
 export const LEAD_COMPANY_REQUIRED = "Enter the lead's company.";
 // A company or account name needs at least one letter or digit in any language ("Société Générale", "3M", "AT&T" are
 // fine; "  " and ".." are not), as the server checks (schemas.company_name_problem). An older record's unchanged name
@@ -199,7 +199,6 @@ export function phoneKey(value) {
 export const LEAD_EMAIL_REQUIRED = "Enter the lead's email address.";
 export const LEAD_EMAIL_INVALID = "Enter a valid email address, like name@company.com.";
 export const LEAD_SOURCE_REQUIRED = "Choose the lead source.";
-export const LEAD_PHONE_REQUIRED = "Enter the lead's phone number."; // the server's routers/leads.py LEAD_PHONE_REQUIRED
 export const SOURCE_DETAIL_REQUIRED = "Specify the lead source.";
 export const LINKEDIN_PROFILE_REQUIRED = "Enter the lead's LinkedIn Profile URL (required when Lead Source is LinkedIn).";
 export const SOURCE_DETAIL_MAX = 100; // leads.source_detail VARCHAR(100)
@@ -220,7 +219,6 @@ export function leadFieldsRequired(source, record = null) {
   return {
     first_name: !record || had("first_name"),
     email: !record || had("email"),
-    phone: !record, // New Lead only
     source_detail: source === "Other" && (!record || record.source !== "Other" || had("source_detail")),
     linkedin_url: source === "LinkedIn" && (!record || record.source !== "LinkedIn" || had("linkedin_url")),
   };
@@ -242,7 +240,7 @@ export function leadFormProblems(values, record = null) {
   const problems = {};
   const need = leadFieldsRequired(values.source, record);
   if (need.first_name && !filled(values.first_name)) problems.first_name = LEAD_FIRST_NAME_REQUIRED;
-  if (!filled(values.last_name)) problems.last_name = LEAD_LAST_NAME_REQUIRED;
+  else if (!filled(values.first_name) && !filled(values.last_name)) problems.last_name = LEAD_NAME_REQUIRED; // an older lead
   const company = String(values.company ?? "").trim();
   if (!company) problems.company = LEAD_COMPANY_REQUIRED;
   else if (!record || company !== String(record.company ?? "").trim()) {
@@ -259,8 +257,12 @@ export function leadFormProblems(values, record = null) {
     if (need.email) problems.email = LEAD_EMAIL_REQUIRED;
   } else if (!EMAIL_FORMAT.test(email) && email.toLowerCase() !== String(record?.email ?? "").trim().toLowerCase())
     problems.email = LEAD_EMAIL_INVALID;
-  if (need.phone) {
-    const problem = filled(values.phone) ? phoneProblem(values.phone, values.phone_country || DEFAULT_PHONE_COUNTRY) : LEAD_PHONE_REQUIRED;
+  // optional; a new or changed number is checked for the chosen country, and a +code against the Region when one is
+  // chosen (an older lead's unchanged number only when its Region changes, as the server checks it)
+  if (filled(values.phone)) {
+    const regionChanged = !!values.region && values.region !== (record?.phone_country || "");
+    const problem = (changed("phone") ? phoneProblem(values.phone, values.phone_country || DEFAULT_PHONE_COUNTRY) : "") ||
+      (values.region && (changed("phone") || regionChanged) ? regionProblem(values.phone, values.region) : "");
     if (problem) problems.phone = problem;
   }
   if (!filled(values.source)) problems.source = LEAD_SOURCE_REQUIRED;
@@ -279,20 +281,21 @@ export function leadFormProblems(values, record = null) {
 // API's field errors as `details` for a 422).
 const LEAD_FORM_FIELDS = new Set([
   "linkedin_url", "salutation", "first_name", "last_name", "company", "title", "industry", "email", "phone", "location",
+  "phone_country", "region",
   "source", "source_detail", "owner_id", "company_website", "company_linkedin_url", "annual_revenue", "employees", "demo_date",
 ]);
 const LEAD_REQUIRED = {
   first_name: LEAD_FIRST_NAME_REQUIRED,
-  last_name: LEAD_LAST_NAME_REQUIRED,
   company: LEAD_COMPANY_REQUIRED,
   source: LEAD_SOURCE_REQUIRED,
 };
 function leadMessageField(message) {
   const text = String(message ?? "").replace(/^Value error, /, "");
   if (text.startsWith(LEAD_FIRST_NAME_REQUIRED)) return ["first_name", LEAD_FIRST_NAME_REQUIRED];
+  if (text.startsWith(LEAD_NAME_REQUIRED)) return ["last_name", LEAD_NAME_REQUIRED];
   if (text.startsWith("Specify the lead source")) return ["source_detail", SOURCE_DETAIL_REQUIRED];
   if (text.startsWith("Enter the lead's LinkedIn Profile URL")) return ["linkedin_url", LINKEDIN_PROFILE_REQUIRED];
-  const empty = /^(last_name|company|source) can't be empty/.exec(text);
+  const empty = /^(company|source) can't be empty/.exec(text);
   if (empty) return [empty[1], LEAD_REQUIRED[empty[1]]];
   if (/^(Personal emails|Please check the email|This email is already in the CRM)/.test(text)) return ["email", text];
   if (text.startsWith(COMPANY_NAME_INVALID)) return ["company", COMPANY_NAME_INVALID];
@@ -301,7 +304,7 @@ function leadMessageField(message) {
   if (named) return [{ "first name": "first_name", "last name": "last_name", "lead source": "source_detail" }[named[1] || named[2] || named[3]] || named[2] || named[3], text];
   if (/^(This phone number is also on|This person is already)/.test(text)) return ["phone", text];
   if (text.startsWith(LEAD_COMPANY_REQUIRED)) return ["company", LEAD_COMPANY_REQUIRED];
-  if (/^(Enter the lead's phone number|Enter a valid phone number|Choose the phone number's country)/.test(text)) return ["phone", text];
+  if (/^(Enter a valid phone number|Choose the phone number's country|This number's country code is)/.test(text)) return ["phone", text];
   return null;
 }
 export function leadServerProblems(error) {
@@ -310,7 +313,7 @@ export function leadServerProblems(error) {
     const loc = (item?.loc || []).filter((part) => part !== "body");
     const message = String(item?.msg ?? "").replace(/^Value error, /, "");
     const [field, text] = loc.length
-      ? [loc[0] === "phone_country" ? "phone" : String(loc[0]), ["missing", "string_too_short"].includes(item?.type) && LEAD_REQUIRED[loc[0]] ? LEAD_REQUIRED[loc[0]] : message]
+      ? [["phone_country", "region"].includes(loc[0]) ? "phone" : String(loc[0]), ["missing", "string_too_short"].includes(item?.type) && LEAD_REQUIRED[loc[0]] ? LEAD_REQUIRED[loc[0]] : message]
       : leadMessageField(message) || [];
     if (field && LEAD_FORM_FIELDS.has(field) && text && !problems[field]) problems[field] = text;
   }
@@ -678,9 +681,9 @@ const NEW_RECORD_REQUIRED = {
   contact: [["account_id", "Choose the account."]],
 };
 // A new contact's fields, on New Contact and on New Opportunity > New contact (the same rules as the API's
-// schemas.ContactCreate and OpportunityCreate): First Name, Last Name and Email are required; Phone is optional and
-// checked for its country; the LinkedIn Profile URL is optional and must be a person's profile. form: the input
-// names on that form.
+// schemas.ContactCreate and OpportunityCreate): First Name and Email are required; Last Name is optional; Phone is
+// optional and checked for its country (a +code against the Region when one is chosen: PhoneField's hidden input
+// "region"); the LinkedIn Profile URL is optional and must be a person's profile. form: the input names on that form.
 export const CONTACT_FORM = {
   first_name: "first_name",
   last_name: "last_name",
@@ -688,6 +691,7 @@ export const CONTACT_FORM = {
   email: "email",
   phone: "phone",
   phone_country: "phone_country",
+  region: "region",
   linkedin_url: "linkedin_url",
 };
 export const OPPORTUNITY_CONTACT_FORM = {
@@ -697,10 +701,10 @@ export const OPPORTUNITY_CONTACT_FORM = {
   email: "contact_email",
   phone: "contact_phone",
   phone_country: "contact_phone_country",
+  region: "contact_region",
   linkedin_url: "contact_linkedin_url",
 };
 export const CONTACT_FIRST_NAME_REQUIRED = "Enter the contact's first name.";
-export const CONTACT_LAST_NAME_REQUIRED = "Enter the contact's last name.";
 export const CONTACT_EMAIL_REQUIRED = "Enter the contact's email address.";
 const CONTACT_AUTOFILL_LABELS = { first_name: "First Name", last_name: "Last Name", job_title: "Title", email: "Email", phone: "Phone" };
 // The contact fields Apollo can fill on that form ({ input name: label }), and Apollo's answer in that form's names
@@ -719,12 +723,12 @@ export function contactProblems(values, form = CONTACT_FORM) {
   const text = (field) => String(values[form[field]] ?? "").trim();
   if (!text("first_name")) problems[form.first_name] = CONTACT_FIRST_NAME_REQUIRED;
   else if (personNameProblem(text("first_name"), "first name")) problems[form.first_name] = personNameProblem(text("first_name"), "first name");
-  if (!text("last_name")) problems[form.last_name] = CONTACT_LAST_NAME_REQUIRED;
-  else if (personNameProblem(text("last_name"), "last name")) problems[form.last_name] = personNameProblem(text("last_name"), "last name");
+  if (personNameProblem(text("last_name"), "last name")) problems[form.last_name] = personNameProblem(text("last_name"), "last name"); // optional
   if (textProblem(text("job_title"), "title")) problems[form.job_title] = textProblem(text("job_title"), "title");
   if (!text("email")) problems[form.email] = CONTACT_EMAIL_REQUIRED;
   else if (!EMAIL_FORMAT.test(text("email"))) problems[form.email] = CONTACT_EMAIL_INVALID;
-  const phone = phoneProblem(values[form.phone], values[form.phone_country] || DEFAULT_PHONE_COUNTRY);
+  const phone = phoneProblem(values[form.phone], values[form.phone_country] || DEFAULT_PHONE_COUNTRY) ||
+    (text("region") ? regionProblem(values[form.phone], text("region")) : "");
   if (phone) problems[form.phone] = phone;
   if (text("linkedin_url")) {
     const { error } = linkedInProfileUrl(text("linkedin_url"));

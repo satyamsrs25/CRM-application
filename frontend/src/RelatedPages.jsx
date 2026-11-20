@@ -3,6 +3,7 @@ import { api } from "./api";
 import { EmailList, useEmails } from "./Email";
 import { canCreateOpportunity } from "./permissions";
 import { amount, dateTime, shortDate } from "./format";
+import { regionName } from "./phone";
 import { Card, Icon, ObjectIcon, PhoneReveal, StageBadge } from "./ui";
 
 function NotFound({ collection }) {
@@ -324,6 +325,7 @@ export function ContactPage({ id, data, openEmail, emailVersion }) {
                 ["Title", contact.job_title],
                 ["Email", contact.email],
                 ["Phone", contact.phone && <PhoneReveal value={contact.phone} />],
+                ["Region", regionName(contact.phone_country) || contact.region], // the country chosen beside the phone (empty when none was chosen)
                 ["LinkedIn", site(contact.linkedin_url)],
                 ["Created", dateTime(contact.created_at)],
                 ["Last Modified", dateTime(contact.updated_at)],

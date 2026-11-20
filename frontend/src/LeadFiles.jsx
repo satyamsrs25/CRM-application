@@ -9,8 +9,10 @@ import { amount } from "./format";
 import { Icon } from "./ui";
 
 const SAMPLE_LEADS = [
-  "First Name,Last Name,Title,Company,Email,Phone,Person Linkedin Url,Website,Company Linkedin Url,Annual Revenue,# Employees,City,State,Country,Lead Source",
-  "Priya,Menon,Head of Operations,Brightline Logistics,priya.menon@brightline.example,+1 512 555 0100,https://www.linkedin.com/in/priya-menon,https://brightline.example,https://www.linkedin.com/company/brightline,12500000,250,Austin,Texas,United States,Website",
+  "First Name,Last Name,Title,Company,Email,Phone,Person Linkedin Url,Website,Company Linkedin Url,Annual Revenue,# Employees,City,State,Country,Region (Country),Lead Source",
+  "Priya,Menon,Head of Operations,Brightline Logistics,priya.menon@brightline.example,+1 512 555 0100,https://www.linkedin.com/in/priya-menon,https://brightline.example,https://www.linkedin.com/company/brightline,12500000,250,Austin,Texas,United States,United States,Website",
+  // a first name is enough (Last Name is optional), and Phone is optional
+  "Arjun,,Procurement Lead,Kestrel Foods,arjun@kestrel.example,,,https://kestrel.example,,,,Pune,Maharashtra,India,India,Referral",
 ].join("\n");
 // Every uploaded lead starts with no owner, whoever uploads it: the uploader is its Created By. A Lead Owner column in
 // the file isn't used (the server ignores any owner sent with an upload too).
@@ -28,7 +30,13 @@ const OBJECTS = {
     one: "lead",
     sample: SAMPLE_LEADS,
     intro: "Import leads from an Excel (.xlsx) or CSV file.",
-    rules: ["Required: Last Name, Company", "Email must match the company website", "Emails already in the CRM are skipped", "Leads start at New, in the Unassigned Pool"],
+    rules: [
+      "Required: First Name or Last Name (either is enough), and Company",
+      "Phone is optional; Region (Country) is the country: a name, a code like IN, or +91 (State or Region stays the state)",
+      "Email must match the company website",
+      "Emails already in the CRM are skipped",
+      "Leads start at New, in the Unassigned Pool",
+    ],
     columns: [
       ["Name", (l) => [l.first_name, l.last_name].filter(Boolean).join(" ")],
       ["Title", (l) => l.title],

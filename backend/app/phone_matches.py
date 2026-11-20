@@ -8,8 +8,8 @@ Agreed behaviour (New Lead and Edit Lead, when the phone is new or changed):
   warning names the records (only the owner for records the user can't open), and says when they are at the same
   company, the usual shared-number case.
 Numbers are compared by their digits, ignoring spaces, brackets, the + and the country code / trunk 0 (the last 10
-digits), so "+91 98765 43210", "098765 43210" and "9876543210" are the same number. Uploads and the AI Assistant
-don't stop for this.
+digits), so "+91 98765 43210", "098765 43210" and "9876543210" are the same number. The AI Assistant's new and
+edited leads follow it too; uploads don't stop for this. A lead without a phone is never compared.
 """
 import re
 
