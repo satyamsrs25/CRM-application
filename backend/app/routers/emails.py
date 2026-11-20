@@ -150,14 +150,15 @@ async def draft_email(data: ai_email.DraftRequest, request: Request, db: Session
     record, label = draft_record(db, data.record_field, data.record_id)
     # Minimum customer-facing context; no notes, lost reasons, amounts, or email history.
     context = {"record_type": label, "name": getattr(record, "name", None), "current_stage": getattr(record, "stage", None)}
+    # a missing last name is stored as "": sent as None, like a missing first name (the draft greets by first name only)
     if isinstance(record, Lead):
-        context.update(first_name=record.first_name, last_name=record.last_name, company=record.company)
+        context.update(first_name=record.first_name, last_name=record.last_name or None, company=record.company)
     elif isinstance(record, Contact):
-        context.update(first_name=record.first_name, last_name=record.last_name)
+        context.update(first_name=record.first_name, last_name=record.last_name or None)
     elif isinstance(record, Opportunity) and record.primary_contact_id:
         contact = db.get(Contact, record.primary_contact_id)
         if contact is not None and (contact.owner_id == me.id or me.sees_team):
-            context.update(first_name=contact.first_name, last_name=contact.last_name)
+            context.update(first_name=contact.first_name, last_name=contact.last_name or None)
     if not data.recipient_is_record_contact:  # To was changed: don't greet the record's contact by name
         context = {key: value for key, value in context.items() if key not in ("first_name", "last_name")}
         context["recipient_is_record_contact"] = False

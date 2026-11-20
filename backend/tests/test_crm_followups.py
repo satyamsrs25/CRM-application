@@ -211,10 +211,10 @@ def test_first_name_is_required_on_new_leads(client, first):
         body.pop("first_name")
     res = client.post("/api/leads", json=body)
     assert res.status_code == 422 and schemas.FIRST_NAME_REQUIRED in detail(res)
-    # Last Name keeps its requirement
+    # Last Name is optional now (Vinay's improvements): the first name is enough
     no_last = lead_body()
     no_last.pop("last_name")
-    assert client.post("/api/leads", json=no_last).status_code == 422
+    assert client.post("/api/leads", json=no_last).status_code == 201
     assert new_lead(client, first_name="  Nia ")["first_name"] == "Nia"
 
 
@@ -250,10 +250,11 @@ def test_older_leads_without_the_new_values_stay_viewable_and_editable(client):
     assert lead["first_name"] is None and lead["source"] == "Other" and lead["source_detail"] is None
     assert lead_id in {r["id"] for r in client.get("/api/leads").json()}
     # an unrelated edit through the whole form saves; nothing is filled in or changed for the missing values
-    res = client.put(url, json=full_form(lead, phone="+1 555 0100", first_name="", source_detail=""))
+    # (a new phone is checked now, so a valid one: test_new_lead_phone.py)
+    res = client.put(url, json=full_form(lead, phone="+1 212 555 0100", first_name="", source_detail=""))
     assert res.status_code == 200, res.text
     after = res.json()
-    assert (after["phone"], after["first_name"], after["source"], after["source_detail"]) == ("+1 555 0100", None, "Other", None)
+    assert (after["phone"], after["first_name"], after["source"], after["source_detail"]) == ("+1 212-555-0100", None, "Other", None)
     # ...and the values can be added later
     assert client.put(url, json={"first_name": "Lea", "source_detail": "Old CRM import"}).status_code == 200
     # once a lead has a first name, an edit can't remove it
@@ -276,7 +277,7 @@ def test_changing_the_source_asks_for_what_the_new_source_needs(client):
     assert removed.status_code == 400 and removed.json()["detail"] == schemas.LINKEDIN_PROFILE_REQUIRED
     # an uploaded LinkedIn lead without a profile: other edits still save
     uploaded = legacy_lead(source="LinkedIn", first_name="Uma")
-    assert client.put(f"/api/leads/{uploaded}", json={"phone": "+1 555 0101", "linkedin_url": None}).status_code == 200
+    assert client.put(f"/api/leads/{uploaded}", json={"phone": "+1 212 555 0101", "linkedin_url": None}).status_code == 200
 
 
 def test_existing_source_values_are_never_rewritten(client):
@@ -355,7 +356,7 @@ def test_assistant_create_lead_asks_for_what_the_new_lead_needs(client, ai):
     tool = next(t["function"] for t in assistant.TOOLS if t["function"]["name"] == "create_lead")
     assert tool["parameters"]["properties"]["source"]["enum"] == SOURCES
     assert "source_detail" in tool["parameters"]["properties"]
-    assert set(tool["parameters"]["required"]) == {"first_name", "last_name", "company", "email", "source"}
+    assert set(tool["parameters"]["required"]) == {"first_name", "company", "email", "source"}  # Last Name optional
 
 
 # ---------- the database: new installs (schema.sql) and the startup upgrade (existing databases) ----------

@@ -174,7 +174,8 @@ export function NewOpportunityFields({ data, defaults, owner, onBlocked, errors 
     last_name: newContact ? person.last.trim() : "",
     name: name.trim(),
   };
-  const ready = !!(existingAccount || params.company.length >= 2) && !!(chosenContact || params.last_name || params.email);
+  // a person to look for: a chosen contact, or a new one's name (first or last: Last Name is optional) or email
+  const ready = !!(existingAccount || params.company.length >= 2) && !!(chosenContact || params.first_name || params.last_name || params.email);
   const result = useDuplicateCheck(params, ready);
   const blocked = ready && !!result?.duplicate;
   useEffect(() => onBlocked(blocked), [blocked]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -259,7 +260,7 @@ export function NewOpportunityFields({ data, defaults, owner, onBlocked, errors 
             write={writeContact}
             company={company}
             phone={{ field: F.phone, country: F.phone_country }}
-            needed={[F.first_name, F.last_name, F.email]}
+            needed={[F.first_name, F.email]}
             noun="contact"
             compact
             error={errors[F.linkedin_url] || ""}
@@ -280,14 +281,14 @@ export function NewOpportunityFields({ data, defaults, owner, onBlocked, errors 
             {input("First Name", F.first_name, person.first, setP("first", F.first_name), {
               required: true, maxLength: 50, error: errors[F.first_name] })}
             {input("Last Name", F.last_name, person.last, setP("last", F.last_name), {
-              required: true, maxLength: 50, error: errors[F.last_name] })}
+              required: false, maxLength: 50, error: errors[F.last_name] })}
             {input("Email", F.email, person.email, setP("email", F.email), {
               type: "email", required: true, maxLength: 255, error: errors[F.email] })}
             <label className="field">
               <span>Title</span>
               <input name={F.job_title} maxLength={100} />
             </label>
-            <PhoneField name={F.phone} countryName={F.phone_country} error={errors[F.phone] || ""} onInput={fix(F.phone)} />
+            <PhoneField name={F.phone} countryName={F.phone_country} regionName={F.region} error={errors[F.phone] || ""} onInput={fix(F.phone)} />
           </div>
         </fieldset>
       )}
@@ -326,7 +327,8 @@ export function newOpportunityPayload(v, extra) {
     contact_title: contactNew ? text(v.contact_title) : null,
     contact_phone: contactNew ? text(v.contact_phone) : null,
     // the phone's country (checked and saved in international format by the server) and the person's LinkedIn profile
-    ...(contactNew ? { contact_phone_country: v.contact_phone_country || "IN", contact_linkedin_url: text(v.contact_linkedin_url) } : {}),
+    // contact_phone_country: the new contact's Region, only when one was chosen (none: the number is checked for India)
+    ...(contactNew ? { contact_phone_country: v.contact_region || null, contact_linkedin_url: text(v.contact_linkedin_url) } : {}),
     ...extra,
   };
 }

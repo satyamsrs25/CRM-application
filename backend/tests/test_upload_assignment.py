@@ -112,13 +112,13 @@ def test_skipped_rows_are_listed_with_name_company_and_email(client):
     client.post("/api/leads", json={"first_name": "Test", "source": "Website", "last_name": "Old", "company": "Acme", "email": "old@acme-example.com",
                                     "company_website": "acme-example.com"})
     body = upload(client, [["Asha", "Iyer", "Acme", "OLD@acme-example.com", "acme-example.com", ""],
-                           ["Ben", "", "Acme", "ben@acme-example.com", "acme-example.com", ""],
+                           ["", "", "Acme", "ben@acme-example.com", "acme-example.com", ""],  # no name at all
                            ["Cara", "Lee", "Acme", "cara@gmail.com", "acme-example.com", ""]], dry_run=True).json()
     assert body["errors"] == [
         {"row": 2, "type": "Duplicate", "reason": "Email old@acme-example.com is already in the CRM (duplicate)",
          "name": "Asha Iyer", "company": "Acme", "email": "OLD@acme-example.com"},
-        {"row": 3, "type": "Invalid", "reason": "Last name is missing", "name": "Ben", "company": "Acme",
-         "email": "ben@acme-example.com"}]
+        {"row": 3, "type": "Invalid", "reason": "Name is missing (a first or last name)", "name": "", "company": "Acme",
+         "email": "ben@acme-example.com"}]  # a first name alone is enough now (test_optional_fields_and_region.py)
     note = body["warnings"][0]
     assert (note["row"], note["type"], note["name"], note["email"]) == (4, "Changed", "Cara Lee", "cara@gmail.com")
     assert note["reason"].startswith("Left blank: email 'cara@gmail.com' isn't on the company's domain")

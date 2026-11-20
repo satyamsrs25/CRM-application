@@ -189,7 +189,7 @@ def contact_matches(db: Session, email: str | None, account_id: int | None = Non
     if by_email is not None:
         found.append(_match(by_email, "email", type="Contact", name=by_email.full_name,
                             account=by_email.account.name if by_email.account else None))
-    if last_name and account_id is not None:
+    if (first_name or last_name) and account_id is not None:  # the full name, whichever parts it has (Last Name is optional)
         by_name = matches.find_contact(db, account_id, first_name=first_name, last_name=last_name)
         if by_name is not None and by_name is not by_email:
             found.append(_match(by_name, "name", type="Contact", name=by_name.full_name,
@@ -224,9 +224,9 @@ def create_contact(data: schemas.ContactCreate, db: Session = Depends(get_db)):
                 "lead": "is an open lead with this email: convert the lead instead"}[first["why"]]
         raise HTTPException(status_code=409, detail=(
             f'{first["type"]} {first["name"]}{where} ({owner}) {what}. One person has one contact.'))
-    contact = Contact(  # phone: already checked for its country and in international format (schemas.ContactCreate)
-        **data.model_dump(exclude={"owner_id", "phone_country"}), owner_id=resolve_user_id(db, owner_for_new(data.owner_id))
-    )
+    # phone: already checked for its country and in international format (schemas.ContactCreate); phone_country is the
+    # contact's Region, saved as chosen (None when none was)
+    contact = Contact(**data.model_dump(exclude={"owner_id"}), owner_id=resolve_user_id(db, owner_for_new(data.owner_id)))
     db.add(contact)
     db.commit()
     db.refresh(contact)

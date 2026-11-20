@@ -149,8 +149,8 @@ def test_a_manager_who_cant_open_team_records_gets_no_details(client, outbox):
 @pytest.mark.parametrize("change, status", [
     ({"email": "taken@harbor-synthetic.example"}, 409),  # the email is already on a lead
     ({"email": "ana@gmail.com", "company_website": "harbor-synthetic.example"}, 400),  # personal mailbox
-    ({"phone": ""}, 422),                                 # the New Lead form's phone is required
-    ({"last_name": ""}, 422),
+    ({"phone": "12345"}, 422),                            # a given phone must be valid (it is optional)
+    ({"first_name": ""}, 422),                            # First Name is required (Last Name is optional)
 ])
 def test_a_refused_creation_tells_nobody(client, outbox, change, status):
     setup_users({RAVI: {"reports_to_id": PRIYA, "email_stage_updates": True}, PRIYA: {"email_stage_updates": True}})

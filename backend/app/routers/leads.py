@@ -4,10 +4,12 @@ New -> Nurturing -> Revisit (optional, "not now": come back on a date) -> Demo -
 Closed without converting from any open stage: Unqualified (not eligible, with a reason; can be reopened) or Lost.
 At each stage the system closes the old follow-up ("Auto-closed") and creates the next one.
 """
+import logging
 from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
 from pydantic_core import PydanticCustomError
 
@@ -15,11 +17,12 @@ from app import schemas
 from app.constants import (AUTO_TASKS, DEFAULT_CURRENCY, LEAD_FLOW, LEAD_OPEN_STAGES, LEAD_OPTIONAL_STAGES, LEAD_SOURCES, LEAD_STAGES,
                            LEAD_START, STAGE_PROBABILITY)
 from app.database import get_db
-from app.security import (acting_user, acting_user_id, manages_pool, owner_for_new, require_edit,
+from app.security import (acting_user, acting_user_id, can_view, manages_pool, owner_for_new, require_edit,
                           require_transfer, require_view, visible)
 from app.models import (Account, Contact, Email, EmailAttachment, Lead, LeadTransfer, LeadTransferRequest, Note,
                         Notification, Opportunity, StageHistory, Task, User)
 from app.phone_matches import check_lead_phone, find_phone_matches, phone_key, phone_message
+from app.regions import phone_region_problem
 from app.text_rules import person_name_problem, text_problem
 from app.serializers import account_out, contact_out, history_out, lead_detail, lead_out, opportunity_out, task_out
 from app.opportunity_matches import (default_name, ensure_email_free_for_contact, ensure_no_duplicate, find_account,
@@ -56,6 +59,7 @@ from app.services import (
 )
 
 router = APIRouter(prefix="/api/leads", tags=["Leads"])
+log = logging.getLogger(__name__)
 
 
 def ensure_open(lead: Lead):
@@ -179,17 +183,13 @@ def check_lead_email(db: Session, email: str | None, website: str | None, *, exc
     check_email_free(db, email, exclude_lead_id=exclude_lead_id)
 
 
-LEAD_PHONE_REQUIRED = "Enter the lead's phone number."
-
-
-def manual_lead_phone(data: schemas.LeadCreate) -> str:
-    """New Lead (the form, POST /api/leads): a valid Phone is required, checked for its country like a contact's
-    (phone_country, default India; a number starting with + is checked for its own country code) and saved in
-    international format. Imports and the AI Assistant don't come through here: their phone stays optional."""
-    if not (data.phone or "").strip():
-        raise HTTPException(status_code=422, detail=LEAD_PHONE_REQUIRED)
+def lead_phone(phone: str | None, region: str | None) -> str | None:
+    """A lead's phone from the New Lead / Edit Lead form (POST and PUT /api/leads): optional ("" or only spaces ->
+    None). A given number is checked for its country like a contact's (the Region, India when none was chosen; a number
+    starting with + is checked for its own country code, which must be the Region's when one is chosen) and saved in
+    international format. The AI Assistant's leads come through here too; imports don't (a file's phone is kept as given)."""
     try:
-        return schemas.international_phone(data.phone, data.phone_country or schemas.DEFAULT_PHONE_COUNTRY)
+        return schemas.phone_for_region(phone, region)
     except PydanticCustomError as error:
         raise HTTPException(status_code=422, detail=error.message()) from None
 
@@ -197,9 +197,10 @@ def manual_lead_phone(data: schemas.LeadCreate) -> str:
 @router.post("", response_model=schemas.LeadDetail, status_code=status.HTTP_201_CREATED)
 def create_lead(data: schemas.LeadCreate, db: Session = Depends(get_db)):
     """Create a lead at stage New (the New Lead form). The system adds a 'Make first contact' task for the owner.
-    Admins can create leads too, and choose who owns them. A valid Phone is required here (manual_lead_phone)."""
-    data.phone = manual_lead_phone(data)
-    # the same number on other records: refused for the same person, asked about once otherwise (phone_matches.py)
+    Admins can create leads too, and choose who owns them. Phone is optional; a given one is checked (lead_phone)."""
+    data.phone = lead_phone(data.phone, data.phone_country)
+    # the same number on other records: refused for the same person, asked about once otherwise (phone_matches.py);
+    # a lead without a phone is never compared with anything
     check_lead_phone(db, data.phone, first_name=data.first_name, last_name=data.last_name, company=data.company,
                      confirmed=data.confirm_shared_phone)
     return add_lead(db, data)
@@ -216,8 +217,8 @@ def add_lead(db: Session, data: schemas.LeadCreate):
             raise HTTPException(status_code=400, detail="Leads can only be assigned to active Managers and Salespeople")
     actor_id = acting_user_id()
     check_lead_email(db, data.email, data.company_website, confirmed=data.confirm_email_domain)
-    lead = Lead(**data.model_dump(exclude={"owner_id", "created_by_id", "confirm_email_domain", "phone_country",
-                                        "confirm_shared_phone"}),
+    # phone_country is the lead's Region (saved as chosen; None when none was)
+    lead = Lead(**data.model_dump(exclude={"owner_id", "created_by_id", "confirm_email_domain", "confirm_shared_phone"}),
                 owner_id=owner_id, created_by_id=acting_user_id(), stage=LEAD_START, assigned_at=now())
     db.add(lead)
     db.flush()
@@ -302,10 +303,26 @@ def update_lead(lead_id: int, data: schemas.LeadUpdate, db: Session = Depends(ge
             raise HTTPException(status_code=400, detail=problem)
         if email and email.strip().lower() != (lead.email or "").strip().lower():
             check_email_free(db, email, exclude_lead_id=lead.id)
-    for field in ("last_name", "company", "source"):  # required, like Salesforce
+    for field in ("company", "source"):  # required, like Salesforce
         if field in changes and not changes[field]:
             raise HTTPException(status_code=400, detail=f"{field} can't be empty")
     check_new_lead_rules(lead, changes)
+    # Last Name is optional, but the lead keeps a name: a first name or a last name (an older lead may have only one)
+    if not (schemas.trimmed(changes.get("first_name", lead.first_name)) or
+            schemas.trimmed(changes.get("last_name", lead.last_name))):
+        raise HTTPException(status_code=400, detail=schemas.NAME_REQUIRED)
+    if "last_name" in changes:
+        changes["last_name"] = changes["last_name"] or ""  # the column holds "" for "no last name"
+    region = changes.get("phone_country", lead.phone_country)
+    if "phone" in changes:
+        if not (changes["phone"] or "").strip():
+            changes["phone"] = None  # cleared (the Region stays)
+        elif phone_key(changes["phone"]) != phone_key(lead.phone):  # a new number: checked and in international format
+            changes["phone"] = lead_phone(changes["phone"], region)
+    if "phone_country" in changes and changes["phone_country"] != lead.phone_country:
+        # a new Region for an unchanged number given with its +code: the code must be the Region's
+        if problem := phone_region_problem(changes.get("phone", lead.phone), region):
+            raise HTTPException(status_code=422, detail=problem)
     if changes.get("phone") and phone_key(changes["phone"]) != phone_key(lead.phone):  # a new number: phone_matches.py
         check_lead_phone(db, changes["phone"], first_name=changes.get("first_name", lead.first_name),
                          last_name=changes.get("last_name", lead.last_name), company=changes.get("company", lead.company),
@@ -514,7 +531,7 @@ def pool_recipient(db: Session, user_id: int, approver=None) -> User:
 
 
 def assign_from_pool(db: Session, lead: Lead, target: User, actor_id: int, note: str | None,
-                     request: LeadTransferRequest | None = None) -> LeadTransfer:
+                     request: LeadTransferRequest | None = None, quiet: bool = False) -> LeadTransfer:
     """Gives a pooled lead its first owner. The caller locked the lead (get_for_update) and checked who may do it.
     Only the owner changes: the stage, Created By and Created Date stay. The assignment time is saved, and the
     transfer history says who assigned it, to whom, when, and the request behind it. Every other pending request
@@ -543,7 +560,8 @@ def assign_from_pool(db: Session, lead: Lead, target: User, actor_id: int, note:
             notify(db, other.requested_by_id, "Lead request closed",
                    f'Your request for lead "{lead.name}" was closed: it was assigned to {target.full_name}.',
                    link="/transfer-requests", category="assignment")
-    if target.id != actor_id:
+    # quiet (Assign for several selected leads): the new owner gets one summary from the caller instead of one per lead
+    if target.id != actor_id and not quiet:
         how = "approved your request for the lead" if request else "assigned you the lead"
         lines = [f'{actor.full_name if actor else "Someone"} {how} "{lead.name}" ({lead.company or "no company"}) '
                  "from the Unassigned Pool.", *handover_lines(db, stage=lead.stage, tasks=tasks, lead_id=lead.id)]
@@ -576,6 +594,64 @@ def assign(lead_id: int, data: schemas.LeadAssign, db: Session = Depends(get_db)
     db.commit()
     db.refresh(lead)
     return lead_detail(lead)
+
+
+POOL_ASSIGN_ONLY = ('Only the Admin or a Manager with "Reassign owner" can assign leads from the Unassigned Pool.')
+
+
+@router.post("/bulk-assign")
+def bulk_assign(data: schemas.BulkAssign, db: Session = Depends(get_db)):
+    """Assign the pooled leads ticked in the Leads list to one Salesperson (direct assignment, not a request): the
+    Admin to any active Salesperson, a Manager with Reassign owner only to the active Salespeople who report to them,
+    as Assign on one lead. Salespeople request pooled leads instead. Only the ids sent are used (up to 500).
+
+    Each lead goes through the single Assign's own steps (assign_from_pool) under its own lock and its own save: it
+    must still be in the pool and open when its turn comes; then it gets its owner, assignment time, Transfer History
+    record and Activity Log line, and every pending request for it is closed (each requester told once). A lead that
+    was assigned meanwhile is a conflict and keeps its new owner; one that can't be assigned is skipped with the
+    reason; an unexpected failure saves nothing for that lead. The new owner gets one summary for the whole batch
+    (as a bulk transfer does), not one notice per lead; emails follow each person's settings."""
+    me = acting_user()
+    if not manages_pool(me):
+        raise HTTPException(status_code=403, detail=POOL_ASSIGN_ONLY
+                            + (" You can request these leads instead." if me.role == "Salesperson" else ""))
+    target = pool_recipient(db, data.to_user_id)  # an active Salesperson, and for a Manager one of their own
+    note = (data.note or "").strip() or None
+    done, conflicts, skipped, failed = [], [], [], []
+    for lead_id in sorted(set(data.lead_ids)):  # one at a time, in id order (each locks only its own lead)
+        found = db.get(Lead, lead_id)
+        row = {"id": lead_id, "name": found.name if found is not None else f"Lead {lead_id}"}
+        try:
+            lead = get_for_update(db, Lead, lead_id, "Lead")
+            if lead.owner_id is not None:  # owned (assigned meanwhile, or never pooled): its owner stays
+                owner = lead.owner.full_name if lead.owner and can_view(lead.owner_id) else "another user"
+                raise HTTPException(status_code=409, detail=f"Not in the Unassigned Pool any more: it belongs to {owner}")
+            assign_from_pool(db, lead, target, me.id, note, quiet=True)
+            db.commit()
+        except HTTPException as exc:
+            db.rollback()  # nothing of this lead is kept
+            (conflicts if exc.status_code == 409 else skipped).append(row | {"reason": str(exc.detail)})
+            continue
+        except SQLAlchemyError:
+            db.rollback()
+            log.exception("Bulk assign: lead %s couldn't be saved", lead_id)
+            failed.append(row | {"reason": "It couldn't be saved. Try again."})
+            continue
+        done.append(row)
+    if done:
+        count = len(done)
+        names = ", ".join(d["name"] for d in done[:10]) + (f" and {count - 10} more" if count > 10 else "")
+        lines = [f"{me.full_name} assigned you {count} lead{'s' if count != 1 else ''} from the Unassigned Pool: {names}."]
+        if note:
+            lines.append(f"Note: {note}")
+        notify(db, target.id, "Leads assigned to you" if count != 1 else "Lead assigned to you", "\n".join(lines)[:500],
+               link="/leads" if count != 1 else f"/leads/{done[0]['id']}", category="assignment")
+        log_activity(db, me.id, "Leads assigned", f"{count} lead{'s' if count != 1 else ''}",
+                     f"From the Unassigned Pool to {target.full_name}: {names}"
+                     + (f" • {len(conflicts) + len(skipped) + len(failed)} not assigned" if conflicts or skipped or failed else ""))
+        db.commit()
+    return {"assigned": count if done else 0, "to": target.full_name, "done": done, "conflicts": conflicts,
+            "skipped": skipped, "failed": failed}
 
 
 # ---------- demo cancellation ----------
@@ -827,6 +903,7 @@ def convert_lead(lead_id: int, data: schemas.ConvertLead, db: Session = Depends(
             job_title=lead.title,
             email=lead.email,
             phone=lead.phone,
+            phone_country=lead.phone_country,  # the lead's Region goes with its phone (empty stays empty)
             linkedin_url=lead.linkedin_url,
             account_id=account.id,
             owner_id=lead.owner_id,

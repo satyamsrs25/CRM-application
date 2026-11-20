@@ -74,7 +74,8 @@ def test_create_lead_starts_at_new_with_first_task(client):
 
 
 def test_lead_validation(client):
-    assert client.post("/api/leads", json={"first_name": "Test", "source": "Website", "company": "x"}).status_code == 422  # last name required
+    no_last = client.post("/api/leads", json={"first_name": "Test", "source": "Website", "company": "x"})
+    assert no_last.status_code == 201 and no_last.json()["last_name"] == ""  # Last Name is optional (Vinay)
     assert client.post("/api/leads", json={"first_name": "Test", "source": "Website", "last_name": "x"}).status_code == 422  # company required
     assert client.post("/api/leads", json={"first_name": "Test", "last_name": "x", "company": "c", "source": "Fax"}).status_code == 422
     assert client.post("/api/leads", json={"first_name": "Test", "source": "Website", "last_name": "x", "company": "c", "salutation": "Sir"}).status_code == 422
@@ -278,7 +279,8 @@ def test_edit_lead_name_updates_full_name(client):
     lead = new_lead(client)
     edited = client.put(f"/api/leads/{lead['id']}", json={"first_name": "Arjun K.", "salutation": "Dr."}).json()
     assert edited["name"] == "Arjun K. Mehta" and edited["salutation"] == "Dr."
-    assert client.put(f"/api/leads/{lead['id']}", json={"last_name": ""}).status_code == 422
+    cleared = client.put(f"/api/leads/{lead['id']}", json={"last_name": ""})  # optional: the first name stays
+    assert cleared.status_code == 200 and cleared.json()["name"] == "Arjun K."
     assert client.put(f"/api/leads/{lead['id']}", json={"company": None}).status_code == 400
 
 

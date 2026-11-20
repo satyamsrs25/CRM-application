@@ -38,11 +38,12 @@ email, tasks and reminders, notifications, lead conversion, closing a deal, and 
   otherwise the button says why). **Opportunities > Convert a Lead** opens the Leads list.
 - New Account needs **Account Name** and **Industry**; **Website** and **Company LinkedIn URL** are optional (checked
   as web addresses when given). There is no Phone on New Account; older accounts keep and show theirs.
-- New Contact (Contacts and Account pages) and New Opportunity's **New contact** need **First Name**, **Last Name** and
-  **Email** (a valid address); New Contact also needs the account. **Phone** is optional, with a country beside it
-  (India, +91, by default; every country is listed with its calling code). A given number is checked against that
-  country's numbering rules and saved in international format (e.g. +91 98765 43210); this checks the format only,
-  not that the number exists or belongs to the person. An optional **LinkedIn Profile URL** (a person's profile) can
+- New Contact (Contacts and Account pages) and New Opportunity's **New contact** need **First Name** and **Email** (a
+  valid address); **Last Name** is optional. New Contact also needs the account. **Phone** is optional, with a country
+  beside it (India, +91, by default; every country is listed with its calling code). A given number is checked against
+  that country's numbering rules and saved in international format (e.g. +91 98765 43210); this checks the format only,
+  not that the number exists or belongs to the person. The chosen country is shown and saved as the **Region** (see
+  below). An optional **LinkedIn Profile URL** (a person's profile) can
   fill the person's details from Apollo; the account is never chosen or changed by it, and another current employer
   is shown as a warning. The same rules apply in the API and the AI Assistant. Choosing an existing contact on New
   Opportunity reuses it as it is. Accounts and contacts made by converting a lead or by an import, and older records,
@@ -70,16 +71,32 @@ email, tasks and reminders, notifications, lead conversion, closing a deal, and 
 - A company or account name needs at least one letter or digit in any language ("Société Générale", "3M" and "AT&T" are
   fine; "  " and ".." are not): on New Lead, when a lead's company is changed, on New Account and on New Opportunity's
   new company. An older record's unchanged name doesn't block other edits.
-- New Lead needs **First Name**, Last Name, Company, Email and a **Lead Source** (Website, LinkedIn, Referral, Phone,
+- New Lead needs **First Name**, Company, Email and a **Lead Source** (Website, LinkedIn, Referral, Phone,
   Email, Event, Social Media or Other). **LinkedIn** needs the LinkedIn Profile URL (otherwise it's optional); **Other**
   shows a required **Specify lead source** box (up to 100 characters), saved with the lead and shown beside its source.
   Older leads without these values stay viewable, and an edit that doesn't touch them still saves (the rule applies
   when the user changes that field or the Lead Source). The same rules apply in the API and the AI Assistant.
-- The New Lead form (and `POST /api/leads`) also needs a valid **Phone**, with its country beside it as on New Contact
-  (India +91 first chosen; a number starting with + is checked for its own country code; business landlines are
-  fine). It is saved in international format. Uploads and the AI Assistant keep Phone optional, editing a lead keeps
-  it optional, and older leads without a phone still save. LinkedIn autofill fills it only with a valid number that
-  carries its country code; otherwise it stays blank for the user to enter.
+- **Last Name** is optional on leads and contacts (forms, API, uploads, conversion and the AI Assistant). An absent
+  last name is stored as an empty value, so names read "Asha", never "Asha None". A record always keeps a name: New
+  Lead and New Contact need the first name; an older lead with only a last name can't have it cleared; an upload row
+  needs a first or last name.
+- **Phone** is optional on New Lead and Edit Lead, with its country beside it as on New Contact (India +91 first
+  chosen; a number starting with + is checked for its own country code; business landlines are fine). A new or
+  changed number must be valid and is saved in international format; an older saved number is left as it is until it
+  is changed; clearing it saves no phone. Leads without a phone are never matched with each other as duplicates.
+  The AI Assistant's leads follow the same checks and duplicate-phone rule; uploads keep a file's phone as given.
+  LinkedIn autofill fills it only with a valid number that carries its country code; otherwise it stays blank for the
+  user to enter.
+- **Region** (leads and contacts) is the country chosen beside the phone, shown by name (India, United States...). It
+  is saved when the user picks a country or enters a number for it, and kept when the number is cleared; the default
+  India alone, with no number, saves none. Countries that share a calling code (+1: the United States, Canada,
+  Jamaica...) are separate choices. With a Region chosen, the number must be valid in that country's own numbering
+  plan, typed with or without its +code (Google libphonenumber's per-country rules: a Toronto number is Canadian, a +1
+  toll-free number is valid for each +1 country); without one, it is checked as before. Nothing is guessed from a
+  number's digits, and older records keep an empty Region. It is copied on conversion, hidden with the phone on pooled
+  leads, and in uploads and downloads it has its own **Region (Country)** column (a country name, a code like IN, or a
+  calling code only one country uses), separate from Location: a file's **State** or **Region** column is still the
+  state in the Location, as before.
 - LinkedIn autofill on New Lead: paste a LinkedIn profile URL and the empty fields are filled with the details Apollo
   returns (name, title, a work email Apollo marks verified, direct business phone, and the current employer's
   company name, industry, website and LinkedIn page). These are Apollo's data, not checked by the CRM: review them
@@ -122,7 +139,7 @@ email, tasks and reminders, notifications, lead conversion, closing a deal, and 
 - Uploaded leads appear in the normal lead lists with Lead Source **Upload**, and in the **Uploaded Leads** list view.
   A file's Lead Source column is kept (LinkedIn stays LinkedIn; a row without a profile URL gets a "Check" note), and
   a **Lead Source Details** column is kept for Other; downloads include **Lead Source Details**.
-  Only Last Name and Company are required; a wrong email, link or number is left blank (and listed) instead of
+  Only a name (First Name or Last Name) and Company are required; a wrong email, link or number is left blank (and listed) instead of
   skipping the row, so the salesperson can fill it in later. A personal email (gmail.com...) is left blank; an email
   on a different company domain than the website is kept with a "Check" note.
 - The Leads list loads page by page (100 rows) with server-side search and sorting, so it stays fast with 100,000s of leads.
@@ -296,7 +313,7 @@ note, task and any files are saved together or not at all. Implemented in `backe
 
 **Bulk upload.** Leads > Upload accepts .xlsx or .csv files with up to 100,000 rows (50 MB). Common column names
 are recognised (First Name, Last Name, Title, Company, Email, Person Linkedin Url, Website, Company Linkedin Url,
-Annual Revenue, # Employees, City, State, Country). Last Name and Company are required. Rows whose email or LinkedIn
+Annual Revenue, # Employees, City, State or Region, Country, and Region (Country) for the country Region). A First Name or Last Name, and Company, are required. Rows whose email or LinkedIn
 profile already belongs to an open lead are skipped. Implemented in `backend/app/routers/lead_files.py`.
 
 **One lead per email.** An email can belong to one lead only: a lead can't be created or edited with an email that is
@@ -313,6 +330,16 @@ follow-up tasks with their reminders and due dates (the previous owner's and the
 with the stage, the last note, the open tasks and the transfer note. Bulk transfers and the Admin's "transfer a
 user's records" work the same way and are listed in Transfer History. Implemented in `backend/app/services.py`
 (`reassign_system_tasks`, `handover_lines`).
+
+**Transfer requests.** Leads > Transfer Requests lists To Approve, My Requests and All, page by page. In To Approve,
+**Requested By** shows one requester's requests (only people with requests the user may decide are offered; the
+filter and the counts cover the whole list, not the loaded page). The Admin and Managers can tick requests and use
+**Approve Selected** or **Reject Selected** (one note for all; a reason is required to reject): up to 100 at a time,
+only the ones ticked on the page shown (the header box ticks this page only; a new filter or page clears the ticks).
+Each request is checked and decided on its own, exactly like a single Approve or Reject (who may decide it, still
+pending, the lead still open and with the same owner, a pooled lead still unassigned), with its own history, Activity
+Log line and the requester's notification; the result lists what was decided, what someone else decided or changed
+meanwhile (left as it is) and what wasn't possible. Implemented in `backend/app/routers/transfer_requests.py`.
 
 **Email campaigns.** The sender runs every minute in the API and sends up to `CAMPAIGN_PER_MINUTE` emails, never more
 than `CAMPAIGN_PER_DAY` in 24 hours across all campaigns. Failed sends are retried 3 times; an address the mail

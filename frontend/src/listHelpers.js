@@ -121,8 +121,40 @@ export function withoutFilter(values, key) {
   return next;
 }
 
+// The Leads Region filter (the country beside the phone, phone_country; not the Location's state). "none" is Not
+// specified: leads without a Region (older ones keep none: nothing is guessed). Its menu (ListView.jsx): All Regions,
+// Not specified, then every country of the phone's country list by name, searchable (matchChoices).
+export const REGION_NONE = "none";
+
+// A searchable filter menu's choices for what was typed, matched on their names: case and accents don't matter ("cote"
+// finds Côte d’Ivoire), "Saint" or "St" finds "St." and "and" finds "&". Names that start with it come first, then
+// names with a word that does, then any other match, each in the menu's own (alphabetical) order. Nothing typed: every
+// choice.
+const fold = (text) => String(text).normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+const spellings = (name) => [
+  name,
+  name.replace(/\bst\. /g, "saint ").replace(/ & /g, " and "),
+  name.replace(/\bst\. /g, "st ").replace(/ & /g, " and "),
+];
+export function matchChoices(choices, typed = "") {
+  const term = fold(typed).trim().replace(/\s+/g, " ");
+  if (!term) return choices;
+  const rank = (text) => {
+    const names = spellings(fold(text));
+    if (names.some((name) => name.startsWith(term))) return 0;
+    if (names.some((name) => name.split(/[^a-z0-9]+/).some((word) => word && word.startsWith(term)))) return 1;
+    return names.some((name) => name.includes(term)) ? 2 : -1;
+  };
+  return choices
+    .map((choice, at) => ({ choice, at, rank: rank(choice[1]) }))
+    .filter((c) => c.rank >= 0)
+    .sort((a, b) => a.rank - b.rank || a.at - b.at)
+    .map((c) => c.choice);
+}
+
 // One chip per applied filter, in the order the filters are offered; `without` is what the values become when the
 // chip is removed
+
 export const filterChips = (defs, values) =>
   defs.filter((f) => values[f.key]).map((f) => ({ key: f.key, text: chipText(f, values), without: withoutFilter(values, f.key) }));
 
@@ -172,7 +204,12 @@ export const BULK_LIMIT = 500;
 // the reason. Email Campaign and Transfer are offered only to users with those rights; the server checks every lead.
 // canRequest (a Salesperson with leads from the Unassigned Pool ticked): Request Assignment for the ticked leads only.
 // poolOnly (a Salesperson on Unassigned Leads): that is the only action, as they can't change pooled leads.
-export function leadSelectionActions({ count, convertChoice, canCampaign, canTransfer, canRequest = false, poolOnly = false }) {
+// Assign (the Admin, or a Manager with Reassign owner) gives the ticked pooled leads their first owner; it is never
+// offered to Salespeople (they request pooled leads). Owned leads ticked beside them are left out (Transfer Leads moves
+// those), so with no pooled lead ticked it only says why.
+export const ASSIGN_NONE_POOLED =
+  "None of the selected leads is in the Unassigned Pool. Assign gives pooled leads their first owner; use Transfer Leads for leads that already have one.";
+export function leadSelectionActions({ count, convertChoice, canCampaign, canTransfer, canRequest = false, poolOnly = false, canAssign = false, pooled = 0 }) {
   if (!count) return [];
   const one = count === 1;
   const limit = count > BULK_LIMIT ? `Up to ${BULK_LIMIT} leads at a time` : undefined;
@@ -186,6 +223,7 @@ export function leadSelectionActions({ count, convertChoice, canCampaign, canTra
       disabled: !convertChoice.action && !convertChoice.explain,
       reason: convertChoice.reason,
     },
+    canAssign && { key: "assign", label: "Assign", disabled: !pooled || !!limit, reason: limit || (!pooled ? ASSIGN_NONE_POOLED : undefined) },
     canCampaign && { key: "campaign", label: "Email Campaign" },
     canTransfer && { key: "transfer", label: `Transfer ${one ? "Lead" : "Leads"}`, disabled: !!limit, reason: limit },
     { key: "delete", label: `Delete ${one ? "Lead" : "Leads"}`, danger: true, disabled: !!limit, reason: limit },

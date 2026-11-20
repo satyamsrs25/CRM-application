@@ -104,7 +104,13 @@ TASK_REQUIRED = ["task_title", "task_due_date"]
 CURRENCY = {"type": "string", "enum": CURRENCIES, "description": "Currency of the amount (default USD)"}
 LEAD_FIELDS = {
     "salutation": {"type": "string", "enum": ["Mr.", "Ms.", "Mrs.", "Dr.", "Prof."]},
-    "first_name": S, "last_name": S, "company": S, "title": S, "industry": S, "email": S, "phone": S,
+    "first_name": S, "last_name": S, "company": S, "title": S, "industry": S, "email": S,
+    "phone": {"type": "string", "description": "Optional. Checked like the New Lead form: for phone_country, or with its "
+              "own +country code (otherwise for IN, India)"},
+    "phone_country": {"type": "string", "description": "The lead's Region: two-letter country of the phone, e.g. IN, US, "
+                      "CA (saved; leave it out unless the user said it)"},
+    "confirm_shared_phone": {"type": "boolean", "description": "Only after the tool said the phone is on other records "
+                             "and the user confirmed it is a shared business number"},
     "source": {"type": "string", "enum": [s for s in LEAD_SOURCES if s != "Upload"],  # Upload: bulk upload only
                "description": "Lead Source. LinkedIn needs linkedin_url; Other needs source_detail"},
     "source_detail": {"type": "string", "description": "What the source is, when source is Other (the user's words, "
@@ -150,22 +156,22 @@ TOOLS = [
           "them up.", {
         "name": S, "industry": S, "website": S, "linkedin_url": {"type": "string", "description": "The company's "
         "LinkedIn page"}, "address": S}, ["name", "industry"]),
-    _tool("create_contact", "Add a contact (person) to an account. First Name, Last Name and Email are required; Phone "
-          "and the person's LinkedIn Profile URL are optional. Take them from what the user gave, otherwise ask; never "
+    _tool("create_contact", "Add a contact (person) to an account. First Name and Email are required; Last Name, Phone "
+          "(with phone_country, the Region) and the person's LinkedIn Profile URL are optional. Take them from what the user gave, otherwise ask; never "
           "make them up.", {
         "account_id": I, "salutation": LEAD_FIELDS["salutation"], "first_name": S, "last_name": S, "job_title": S,
-        "email": S, "phone": {"type": "string", "description": "Optional. Checked for phone_country (default IN, India) unless it starts with + and its country code"}, "phone_country": {"type": "string", "description": "Two-letter country of the phone number, e.g. IN, US, GB (default IN)"}, "linkedin_url": {"type": "string", "description": "The person's LinkedIn profile "
-        "(linkedin.com/in/...)"}}, ["account_id", "first_name", "last_name", "email"]),
+        "email": S, "phone": {"type": "string", "description": "Optional. Checked for phone_country (default IN, India) unless it starts with + and its country code"}, "phone_country": {"type": "string", "description": "The contact's Region: two-letter country of the phone, e.g. IN, US, CA (saved; leave it out unless the user said it; the phone is then checked for IN)"}, "linkedin_url": {"type": "string", "description": "The person's LinkedIn profile "
+        "(linkedin.com/in/...)"}}, ["account_id", "first_name", "email"]),
     _tool("create_opportunity", "Create a new opportunity directly (without converting a lead). Give the account "
           "(account_id, or account_name: an existing account with that company name is reused) and the contact "
-          "(contact_id, or a new contact's contact_first_name, contact_last_name and contact_email, which are required, "
-          "like New Contact: an existing contact with that email or name is reused). "
+          "(contact_id, or a new contact's contact_first_name and contact_email, which are required, and an optional "
+          "contact_last_name, like New Contact: an existing contact with that email or name is reused). "
           "The same open opportunity for the same person and company can't be created twice.", {
               "name": {"type": "string", "description": "Opportunity name"}, "account_id": I, "account_name": S,
               "contact_id": I, "contact_first_name": S, "contact_last_name": S, "contact_email": S, "contact_title": S,
               "contact_phone": {"type": "string", "description": "Optional. Checked for contact_phone_country (default "
                                 "IN) unless it starts with + and its country code"},
-              "contact_phone_country": {"type": "string", "description": "Two-letter country of contact_phone (default IN)"},
+              "contact_phone_country": {"type": "string", "description": "The new contact's Region: two-letter country of contact_phone (saved; leave it out unless the user said it)"},
               "contact_linkedin_url": {"type": "string", "description": "The new contact's LinkedIn profile"},
               "amount": N, "currency": CURRENCY, "close_date": DATE,
               "owner_name": {"type": "string", "description": "Only when the user names another owner"},
@@ -182,12 +188,12 @@ TOOLS = [
         "description": S}, ["task_id"]),
     _tool("reopen_lead", "Bring an Unqualified lead back to New.", {"lead_id": I, "note": NOTE, **TASK_ARGS},
           ["lead_id", "note", *TASK_REQUIRED]),
-    _tool("create_lead", "Create a lead at stage New. Required, like the New Lead form: First Name, Last Name, Company, "
-          "Email and Lead Source; the LinkedIn Profile URL when the source is LinkedIn, and what the source is "
+    _tool("create_lead", "Create a lead at stage New. Required, like the New Lead form: First Name, Company, "
+          "Email and Lead Source (Last Name and Phone are optional); the LinkedIn Profile URL when the source is LinkedIn, and what the source is "
           "(source_detail) when it is Other. Company Website and Company LinkedIn URL are optional. Take them from what "
           "the user gave; ask only for the missing required ones, never make them up.", {
         **LEAD_FIELDS, "owner_name": {"type": "string", "description": "Only when the user names another owner"}},
-        ["first_name", "last_name", "company", "email", "source"]),
+        ["first_name", "company", "email", "source"]),
     _tool("update_lead", "Change details of a lead (not its stage or owner).", {"lead_id": I, **LEAD_FIELDS}, ["lead_id"]),
     _tool("move_lead_stage", "Move a lead to New, Nurturing, Revisit or Demo. Demo needs demo_date; Revisit needs revisit_date and revisit_reason.", {
         "lead_id": I, "stage": {"type": "string", "enum": LEAD_FLOW}, "demo_date": DATE_TIME,
@@ -247,8 +253,7 @@ TASK_MISSING = (f"{schemas.STAGE_TASK_REQUIRED} Ask the user for the task's subj
 # run: the model is told to ask the user for exactly those, in one question. (New account / contact: the API's own
 # checks already name the missing Industry, Phone or Email.)
 REQUIRED_FIELDS = {
-    "create_lead": [("first_name", "First Name"), ("last_name", "Last Name"), ("company", "Company"), ("email", "Email"),
-                    ("source", "Lead Source")],
+    "create_lead": [("first_name", "First Name"), ("company", "Company"), ("email", "Email"), ("source", "Lead Source")],
     "create_task": [("title", "Subject"), ("due_date", "Due Date")],
     "create_opportunity": [("name", "Opportunity Name"), (("account_id", "account_name"), "Account (company)")],
 }
@@ -270,7 +275,6 @@ def missing_required(name: str, args: dict) -> list[str]:
             missing.append("Specify lead source")
     if name == "create_opportunity" and not given("contact_id"):  # a new contact: the New Contact fields
         missing += [label for key, label in (("contact_first_name", "Contact First Name"),
-                                             ("contact_last_name", "Contact Last Name"),
                                              ("contact_email", "Contact Email")) if not given(key)]
     return missing
 
@@ -516,8 +520,9 @@ def run_tool(db: Session, name: str, args: dict) -> tuple[dict, dict | None]:
     if name == "create_lead":
         fields = {k: a[k] for k in LEAD_FIELDS if k in a}
         data = schemas.LeadCreate(**fields, owner_id=_user_id(db, a.get("owner_name")))
-        # the shared creation (owner and Manager notifications); the New Lead form's required Phone doesn't apply here
-        out = _plain(leads.add_lead(db, data))
+        # the New Lead form's own path: the phone stays optional, a given one is checked (for phone_country when the
+        # user named it, otherwise as the form does) and the duplicate-phone policy applies; then the shared creation
+        out = _plain(leads.create_lead(data=data, db=db))
         return _lead_row(out), _link("Lead", out)
     if name == "update_lead":
         fields = {k: a[k] for k in LEAD_FIELDS if k in a}
@@ -703,14 +708,14 @@ def system_prompt() -> str:
         "- Every stage change except Lost and Unqualified also needs a new task: its subject and due date (for Won, "
         "a post-sale task such as handover or onboarding). Take them from what the user said; otherwise ask.\n"
         "- Required fields are the ones marked * in SalesTrack's forms:\n"
-        "  - New lead: First Name, Last Name, Company, Email and Lead Source; also the LinkedIn Profile URL when the "
+        "  - New lead: First Name, Company, Email and Lead Source; also the LinkedIn Profile URL when the "
         "source is LinkedIn, and what the source is when it is Other (Company Website and Company LinkedIn URL are "
         "optional).\n"
         "  - New account: Account Name, Industry (Website and Company LinkedIn URL optional). New contact: Account, "
-        "First Name, Last Name, Email (Phone and LinkedIn Profile URL optional).\n"
+        "First Name, Email (Last Name, Phone and LinkedIn Profile URL optional).\n"
         "  - New task: Subject and Due Date (Priority defaults to Normal).\n"
         "  - New opportunity: Opportunity Name, Account (company), the contact (an existing one, or a new contact's "
-        "First Name, Last Name and Email), the user's comment, and a task "
+        "First Name and Email), the user's comment, and a task "
         "(subject and due date).\n"
         "  When the user starts a task without the details (e.g. 'Create a new lead'), ask for the required fields of "
         "that form only, as a short list, and add one line saying any other details (title, phone, industry...) are "

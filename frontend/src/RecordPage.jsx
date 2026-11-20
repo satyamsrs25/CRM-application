@@ -6,6 +6,7 @@ import OpportunityAttachments, { PICK_ATTACHMENTS } from "./Attachments";
 import { EmailList, useEmails } from "./Email";
 import { canAssignPool, canCreateSales, canEditRecord, canRequestPool, canTransferLead } from "./permissions";
 import { amount, dateTime, shortDate } from "./format";
+import { regionName } from "./phone";
 import { ActionMenu, Card, Icon, ObjectIcon, PathBar, PhoneReveal, StageBadge } from "./ui";
 import { AssignLeadDialog, RequestTransferDialog, TransferRequestList } from "./TransferRequests";
 import { api } from "./api";
@@ -480,6 +481,8 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
                 <Field label="Industry" onEdit={editField}>{item.industry}</Field>
                 <Field label="Email" onEdit={editField}>{item.email && <a href={`mailto:${item.email}`}>{item.email}</a>}</Field>
                 <Field label="Phone" onEdit={editField}><PhoneReveal value={item.phone} /></Field>
+                {/* the country chosen beside the phone, named as in the Leads Region filter (empty when none was chosen) */}
+                <Field label="Region" onEdit={editField}>{regionName(item.phone_country) || item.region}</Field>
                 <Field label="Lead LinkedIn URL" onEdit={editField}><ExternalLink href={item.linkedin_url} /></Field>
                 <Field label="Location" onEdit={editField}>{item.location}</Field>
                 <Field label="Lead Source" onEdit={editField}>

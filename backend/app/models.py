@@ -101,6 +101,8 @@ class Contact(Base):
     job_title: Mapped[str | None] = mapped_column(String(100))
     email: Mapped[str | None] = mapped_column(String(255))
     phone: Mapped[str | None] = mapped_column(String(30))
+    # Region: the country chosen beside the phone (two-letter code, e.g. IN, US, CA); empty when nobody chose one
+    phone_country: Mapped[str | None] = mapped_column(String(2))
     linkedin_url: Mapped[str | None] = mapped_column(String(300))
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"))
     owner_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
@@ -125,6 +127,8 @@ class Lead(Base):
     industry: Mapped[str | None] = mapped_column(String(100))
     email: Mapped[str | None] = mapped_column(String(255))
     phone: Mapped[str | None] = mapped_column(String(30))
+    # Region: the country chosen beside the phone (two-letter code); empty when nobody chose one (older leads too)
+    phone_country: Mapped[str | None] = mapped_column(String(2))
     # research links and company size (shown as clickable links on the lead)
     linkedin_url: Mapped[str | None] = mapped_column(String(300))
     company_website: Mapped[str | None] = mapped_column(String(255))

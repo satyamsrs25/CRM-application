@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from app import assistant, schemas
 from app.database import get_db
 from app.main import app
-from app.models import Account, Contact
+from app.models import Account, Contact, Lead
 from conftest import login_as
 from test_assistant import ai, call  # noqa: F401 (ai: a scripted stand-in for the AI model)
 from test_assistant_workspace import chat, tool
@@ -109,10 +109,10 @@ def test_stored_account_phones_are_kept_and_shown(client):
 # ---------- New Contact ----------
 
 @pytest.mark.parametrize("field, message", [("first_name", schemas.CONTACT_FIRST_NAME_REQUIRED),
-                                            ("last_name", schemas.CONTACT_LAST_NAME_REQUIRED),
                                             ("email", schemas.CONTACT_EMAIL_REQUIRED)])
 @pytest.mark.parametrize("value", ["missing", *BLANKS])
-def test_a_contact_needs_first_name_last_name_and_email(client, field, message, value):
+def test_a_contact_needs_first_name_and_email(client, field, message, value):
+    """Last Name is optional (Vinay's improvements: tests/test_optional_fields_and_region.py)."""
     body = {**CONTACT, "account_id": account(client)["id"]}
     if value == "missing":
         del body[field]
@@ -147,7 +147,8 @@ def test_a_contact_saves_without_a_phone(client, phone):
     ("020 7946 0958", "GB", "+44 20 7946 0958"),
     ("030 901820", "DE", "+49 30 901820"),                # not every country has ten digits
     ("6123 4567", "SG", "+65 6123 4567"),
-    ("+44 20 7946 0958", "IN", "+44 20 7946 0958"),       # with +, the number's own code decides
+    ("+44 20 7946 0958", None, "+44 20 7946 0958"),       # with +, the number's own code decides (no Region chosen)
+    ("+44 20 7946 0958", "GB", "+44 20 7946 0958"),       # (with Region India it is refused: test_optional_fields_and_region.py)
 ])
 def test_a_valid_phone_is_saved_in_international_format(client, phone, country, saved):
     res = contact(client, phone=phone, **({"phone_country": country} if country else {}))
@@ -219,8 +220,10 @@ def test_every_role_creates_contacts_with_the_same_rules(client, who):
 def test_lead_conversion_still_creates_an_account_and_contact_as_before(client):
     lead = client.post("/api/leads", json={"source": "Website", "first_name": "Bo", "last_name": "Lindqvist", "company": "Synthetic Fjord AB",
                                            "email": "bo@fjord.example", "phone": "98765 43210", "welcome_email": False}).json()
-    # an older phone format on the lead (New Lead now needs a valid number; an edit keeps a phone as typed)
-    assert client.put(f"/api/leads/{lead['id']}", json={"phone": "12345"}).status_code == 200
+    # an older phone format on the lead (New Lead and Edit Lead check a new number, so it is put there directly)
+    with next(app.dependency_overrides[get_db]()) as db:
+        db.get(Lead, lead["id"]).phone = "12345"
+        db.commit()
     res = client.post(f"/api/leads/{lead['id']}/convert", json={
         "note": "Synthetic conversion", "task": TASK, "completed_stages": ["New", "Nurturing", "Demo"]})
     assert res.status_code == 200, res.text
@@ -256,7 +259,7 @@ def test_the_assistant_tools_mark_the_fields_required():
     defined = {t["function"]["name"]: t["function"]["parameters"] for t in assistant.TOOLS}
     assert set(defined["create_account"]["required"]) == {"name", "industry"}
     assert "linkedin_url" in defined["create_account"]["properties"]
-    assert set(defined["create_contact"]["required"]) == {"account_id", "first_name", "last_name", "email"}
+    assert set(defined["create_contact"]["required"]) == {"account_id", "first_name", "email"}  # Last Name optional
     assert {"phone", "phone_country", "linkedin_url"} <= set(defined["create_contact"]["properties"])
 
 

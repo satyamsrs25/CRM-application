@@ -5,6 +5,8 @@ from app.security import sees_pool_contacts
 from app.services import demo_instant, is_date_reminder, start_of_today, task_related
 
 # A pooled lead (no owner) seen by someone who can't assign it: everything but how to reach the person
+# hidden on a pooled lead from users who can only request it. Its Region (phone_country, the country only) stays
+# visible and filterable for everyone who may list the lead
 POOL_CONTACT_FIELDS = ("email", "phone", "linkedin_url")
 
 

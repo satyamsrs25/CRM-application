@@ -165,10 +165,10 @@ def test_the_lead_lookup_follows_the_same_phone_rule(client, apollo_api):
 # ---------- New Opportunity > New contact ----------
 
 @pytest.mark.parametrize("field, message", [("contact_first_name", schemas.CONTACT_FIRST_NAME_REQUIRED),
-                                            ("contact_last_name", schemas.CONTACT_LAST_NAME_REQUIRED),
                                             ("contact_email", schemas.CONTACT_EMAIL_REQUIRED)])
 @pytest.mark.parametrize("value", [None, "", "   "])
-def test_a_new_contact_needs_first_name_last_name_and_email(client, field, message, value):
+def test_a_new_contact_needs_first_name_and_email(client, field, message, value):
+    """Last Name is optional, like New Contact (tests/test_optional_fields_and_region.py)."""
     acc = account(client)
     before = counts()
     res = new_opportunity(client, account_id=acc["id"], **{**NEW_CONTACT, field: value})

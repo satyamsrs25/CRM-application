@@ -106,18 +106,19 @@ def parse(header, rows):
             errors.append({"row": row_no, "reason": f"Email '{email}' is not valid"})
             continue
         first, last = raw.get("first_name") or None, raw.get("last_name") or None
-        if not last and raw.get("contact_name"):
+        if not first and not last and raw.get("contact_name"):
             parts = raw["contact_name"].split(" ")
             first, last = " ".join(parts[:-1]) or None, parts[-1]
-        if not last and email:
+        if not first and not last and email:  # no name at all: the address names the contact, as before
             last = email.split("@")[0]
         reason = next((r for r in LOST_REASONS if r.lower() == (raw.get("lost_reason") or "").strip().lower()), "Other")
         deals.append({
             "_row": row_no, "name": name, "company": company or name, "stage": stage, "amount": amount, "currency": currency,
             "final": final, "close": close, "lost_reason": reason if stage == "Lost" else None,
-            "contact": {"first_name": (first or "")[:50] or None, "last_name": last[:50], "email": email or None,
+            # a contact needs a first or last name (Last Name alone is no longer required); "" = no last name
+            "contact": {"first_name": (first or "")[:50] or None, "last_name": (last or "")[:50], "email": email or None,
                         "phone": (raw.get("phone") or "")[:30] or None, "job_title": (raw.get("title") or "")[:100] or None}
-            if last else None,
+            if first or last else None,
             "industry": (raw.get("industry") or "")[:100] or None, "website": (raw.get("website") or "")[:255] or None,
         })
     return deals, errors, mapped, ignored

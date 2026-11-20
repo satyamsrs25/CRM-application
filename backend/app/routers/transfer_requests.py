@@ -21,7 +21,7 @@ The Unassigned Pool (leads with no owner, e.g. every bulk upload) uses the same 
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app import schemas
@@ -260,30 +260,74 @@ def lead_requests(lead_id: int, db: Session = Depends(get_db)):
     return [request_out(db, r) for r in rows]
 
 
-@router.get("/transfer-requests")
-def list_requests(box: str = Query("all", pattern="^(to_approve|mine|all)$"), db: Session = Depends(get_db)):
-    """to_approve: pending requests you can approve. mine: the requests you made. all: both, newest first
-    (the Admin: every request)."""
-    me = acting_user()
-    query = (select(LeadTransferRequest).join(Lead, Lead.id == LeadTransferRequest.lead_id)
-             .options(selectinload(LeadTransferRequest.lead).selectinload(Lead.owner),
-                      selectinload(LeadTransferRequest.requested_by), selectinload(LeadTransferRequest.decided_by)))
+def box_conditions(db: Session, me, box: str) -> list:
+    """Which requests a box holds for this user (the same rules for the list, its page, its counts and the Requested By
+    choices). to_approve: pending requests you may decide. mine: the requests you made. all: both (the Admin: every
+    request)."""
     team = team_ids(db, me.id)
     may_decide = or_(Lead.owner_id == me.id, Lead.owner_id.in_(team)) if team else Lead.owner_id == me.id
     if team and manages_pool(me):  # requests for pooled leads from the Manager's own Salespeople
         may_decide = or_(may_decide, and_(LeadTransferRequest.owner_id.is_(None),
                                           LeadTransferRequest.requested_by_id.in_(team)))
     if box == "mine":
-        query = query.where(LeadTransferRequest.requested_by_id == me.id)
-    elif box == "to_approve":
-        query = query.where(LeadTransferRequest.status == "Pending")
-        if not me.is_admin:
-            query = query.where(may_decide)
-    elif not me.is_admin:
-        query = query.where(or_(LeadTransferRequest.requested_by_id == me.id, may_decide))
-    rows = db.scalars(query.order_by(LeadTransferRequest.status != "Pending", LeadTransferRequest.id.desc())
-                      .limit(500)).all()
+        return [LeadTransferRequest.requested_by_id == me.id]
+    if box == "to_approve":
+        return [LeadTransferRequest.status == "Pending"] + ([] if me.is_admin else [may_decide])
+    return [] if me.is_admin else [or_(LeadTransferRequest.requested_by_id == me.id, may_decide)]
+
+
+BOX = Query("all", pattern="^(to_approve|mine|all)$")
+ORDER = (LeadTransferRequest.status != "Pending", LeadTransferRequest.id.desc())  # pending first, newest first
+
+
+def box_query(conditions: list):
+    return (select(LeadTransferRequest).join(Lead, Lead.id == LeadTransferRequest.lead_id).where(*conditions)
+            .options(selectinload(LeadTransferRequest.lead).selectinload(Lead.owner),
+                     selectinload(LeadTransferRequest.requested_by), selectinload(LeadTransferRequest.decided_by)))
+
+
+@router.get("/transfer-requests")
+def list_requests(box: str = BOX, db: Session = Depends(get_db)):
+    """to_approve: pending requests you can approve. mine: the requests you made. all: both, newest first
+    (the Admin: every request). Up to 500; the Transfer Requests page uses /transfer-requests/page."""
+    me = acting_user()
+    rows = db.scalars(box_query(box_conditions(db, me, box)).order_by(*ORDER).limit(500)).all()
     return [request_out(db, r) for r in rows]
+
+
+PAGE_MAX = schemas.BULK_DECISION_MAX  # a page never holds more requests than one bulk decision may take
+
+
+@router.get("/transfer-requests/page")
+def requests_page(box: str = BOX,
+                  requested_by_id: int | None = Query(None, description="Only the requests this person made"),
+                  offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=PAGE_MAX),
+                  focus: int | None = Query(None, description="A request to show (e.g. from a notification): its page"),
+                  db: Session = Depends(get_db)):
+    """The Transfer Requests page, one page at a time. Requested By filters the whole box before it is paged, so
+    `total` counts every matching request, not just the loaded ones. `requesters` are the people with requests in this
+    box (with how many each), the only choices the filter offers: nobody the user can't already see there."""
+    me = acting_user()
+    conditions = box_conditions(db, me, box)
+    counted = (select(LeadTransferRequest.requested_by_id, func.count())
+               .join(Lead, Lead.id == LeadTransferRequest.lead_id).where(*conditions)
+               .group_by(LeadTransferRequest.requested_by_id))
+    counts = dict(db.execute(counted).all())
+    names = dict(db.execute(select(User.id, User.full_name).where(User.id.in_(counts))).all()) if counts else {}
+    requesters = sorted(({"id": uid, "name": names.get(uid, "Unknown user"), "count": n} for uid, n in counts.items()),
+                        key=lambda p: p["name"].lower())
+    box_total = sum(counts.values())
+    if requested_by_id is not None:
+        conditions = [*conditions, LeadTransferRequest.requested_by_id == requested_by_id]
+    total = counts.get(requested_by_id, 0) if requested_by_id is not None else box_total
+    if focus is not None:  # the page that holds this request, when it is in this (filtered) box
+        ids = db.scalars(select(LeadTransferRequest.id).join(Lead, Lead.id == LeadTransferRequest.lead_id)
+                         .where(*conditions).order_by(*ORDER)).all()
+        if focus in ids:
+            offset = ids.index(focus) // limit * limit
+    rows = db.scalars(box_query(conditions).order_by(*ORDER).offset(offset).limit(limit)).all()
+    return {"box": box, "items": [request_out(db, r) for r in rows], "total": total, "box_total": box_total,
+            "offset": offset, "limit": limit, "requested_by_id": requested_by_id, "requesters": requesters}
 
 
 def decided(db: Session, request_id: int) -> tuple[LeadTransferRequest, Lead]:
@@ -293,8 +337,9 @@ def decided(db: Session, request_id: int) -> tuple[LeadTransferRequest, Lead]:
     lead = get_for_update(db, Lead, found.lead_id, "Lead")
     request = get_for_update(db, LeadTransferRequest, request_id, "Transfer request")
     if request.status != "Pending":
+        who = f" by {request.decided_by.full_name}" if request.decided_by else ""
         why = f": {request.decision_note}" if request.decision_note else ""
-        raise HTTPException(status_code=409, detail=f"This request was already {request.status.lower()}{why}")
+        raise HTTPException(status_code=409, detail=f"This request was already {request.status.lower()}{who}{why}")
     return request, lead
 
 
@@ -305,24 +350,34 @@ def close(request: LeadTransferRequest, status_: str, note: str | None) -> None:
     request.decision_note = (note or "").strip() or None
 
 
-@router.post("/transfer-requests/{request_id}/approve")
-def approve(request_id: int, data: schemas.TransferRequestDecision, db: Session = Depends(get_db)):
-    """The lead's owner, the owner's Manager or the Admin approves: the lead moves to the requester now."""
+# ---------- deciding: one request, or the ones ticked in To Approve (the same rules for both) ----------
+
+def approve_one(db: Session, request_id: int, note: str | None) -> LeadTransferRequest:
+    """Approves one request (not committed): the lead moves to the requester, or a pooled lead is assigned to them.
+    Raises HTTPException (nothing changed) when it can't: 404 not found, 403 not yours to decide, 409 decided or
+    changed meanwhile (decided by someone else, the pooled lead assigned, or the lead's owner changed since it was
+    asked for), 400 the lead is closed or the requester can't take it."""
     me = acting_user()
     request, lead = decided(db, request_id)
     if is_pool_request(request):
-        return approve_pool_request(db, request, lead, data)
+        approve_pool_request(db, request, lead, note)
+        return request
     if not can_decide(db, lead):
         raise HTTPException(status_code=403, detail="Only the lead's owner, their Manager or the Admin can approve this")
+    if lead.owner_id not in (request.owner_id, request.requested_by_id):
+        # the lead was transferred since it was asked for: approving now would take it from its new owner
+        raise HTTPException(status_code=409, detail="The lead's owner changed since this request (it now belongs to "
+                                                    f"{lead.owner.full_name if lead.owner else 'someone else'}). Reject "
+                                                    "the request, or the requester can ask again.")
     if lead.stage not in LEAD_OPEN_STAGES:
         raise HTTPException(status_code=400, detail=f"This lead is {lead.stage} now: only open leads can be transferred. "
                                                     "Reject the request instead.")
-    close(request, "Approved", data.note)
-    note = f"Transfer request approved by {me.full_name}. Reason: {request.reason}"
+    close(request, "Approved", note)
+    text = f"Transfer request approved by {me.full_name}. Reason: {request.reason}"
     if request.decision_note:
-        note += f" • {request.decision_note}"
+        text += f" • {request.decision_note}"
     if request.requested_by_id != lead.owner_id:
-        transfer_lead(db, lead, request.requested_by_id, note[:300], me.id, request_id=request.id)
+        transfer_lead(db, lead, request.requested_by_id, text[:300], me.id, request_id=request.id)
     # anyone else waiting for this lead: closed (it has just been given away)
     for other in db.scalars(select(LeadTransferRequest).where(LeadTransferRequest.lead_id == lead.id,
                                                               LeadTransferRequest.status == "Pending",
@@ -332,13 +387,10 @@ def approve(request_id: int, data: schemas.TransferRequestDecision, db: Session 
                f'Your request for lead "{lead.name}" was closed: it was transferred to {request.requested_by.full_name}.',
                link="/transfer-requests", category="assignment")
     log_activity(db, me.id, "Lead transfer approved", lead.name, f"To: {request.requested_by.full_name}")
-    db.commit()
-    db.refresh(request)
-    return request_out(db, request)
+    return request
 
 
-def approve_pool_request(db: Session, request: LeadTransferRequest, lead: Lead,
-                         data: schemas.TransferRequestDecision) -> dict:
+def approve_pool_request(db: Session, request: LeadTransferRequest, lead: Lead, note: str | None) -> None:
     """The Admin or the requester's Manager approves a request for a pooled lead: it is assigned to the requester."""
     me = acting_user()
     if not can_decide(db, lead, request):
@@ -351,12 +403,40 @@ def approve_pool_request(db: Session, request: LeadTransferRequest, lead: Lead,
         raise HTTPException(status_code=400, detail=f"{requester.full_name if requester else 'The requester'} is no "
                                                     "longer an active Salesperson. Reject the request instead.")
     target = pool_recipient(db, requester.id)
-    close(request, "Approved", data.note)
-    note = f"Request approved by {me.full_name}. Reason: {request.reason}"
+    close(request, "Approved", note)
+    text = f"Request approved by {me.full_name}. Reason: {request.reason}"
     if request.decision_note:
-        note += f" • {request.decision_note}"
-    assign_from_pool(db, lead, target, me.id, note[:300], request=request)
+        text += f" • {request.decision_note}"
+    assign_from_pool(db, lead, target, me.id, text[:300], request=request)
     log_activity(db, me.id, "Lead request approved", lead.name, f"From the Unassigned Pool to {target.full_name}")
+
+
+REJECT_REASON_REQUIRED = "Say why the request is rejected"
+
+
+def reject_one(db: Session, request_id: int, note: str | None) -> LeadTransferRequest:
+    """Rejects one request with a reason (not committed). The lead stays where it is; the requester is told."""
+    me = acting_user()
+    request, lead = decided(db, request_id)
+    if not can_decide(db, lead, request):
+        raise HTTPException(status_code=403, detail="Only the lead's owner, their Manager or the Admin can reject this")
+    if not (note or "").strip():
+        raise HTTPException(status_code=422, detail=REJECT_REASON_REQUIRED)
+    close(request, "Rejected", note)
+    pool = is_pool_request(request)
+    notify(db, request.requested_by_id, "Lead request rejected" if pool else "Lead transfer request rejected",
+           f'{me.full_name} rejected your request for lead "{lead.name}"{" from the Unassigned Pool" if pool else ""}.'
+           f"\nReason: {request.decision_note}",
+           link=f"/transfer-requests?request={request.id}", category="assignment")
+    log_activity(db, me.id, "Lead transfer rejected", lead.name,
+                 f"Asked by: {request.requested_by.full_name} • Reason: {request.decision_note}")
+    return request
+
+
+@router.post("/transfer-requests/{request_id}/approve")
+def approve(request_id: int, data: schemas.TransferRequestDecision, db: Session = Depends(get_db)):
+    """The lead's owner, the owner's Manager or the Admin approves: the lead moves to the requester now."""
+    request = approve_one(db, request_id, data.note)
     db.commit()
     db.refresh(request)
     return request_out(db, request)
@@ -365,23 +445,48 @@ def approve_pool_request(db: Session, request: LeadTransferRequest, lead: Lead,
 @router.post("/transfer-requests/{request_id}/reject")
 def reject(request_id: int, data: schemas.TransferRequestDecision, db: Session = Depends(get_db)):
     """The lead's owner, the owner's Manager or the Admin says no (with a reason). The lead stays where it is."""
-    me = acting_user()
-    request, lead = decided(db, request_id)
-    if not can_decide(db, lead, request):
-        raise HTTPException(status_code=403, detail="Only the lead's owner, their Manager or the Admin can reject this")
-    if not (data.note or "").strip():
-        raise HTTPException(status_code=422, detail="Say why the request is rejected")
-    close(request, "Rejected", data.note)
-    pool = is_pool_request(request)
-    notify(db, request.requested_by_id, "Lead request rejected" if pool else "Lead transfer request rejected",
-           f'{me.full_name} rejected your request for lead "{lead.name}"{" from the Unassigned Pool" if pool else ""}.'
-           f"\nReason: {request.decision_note}",
-           link=f"/transfer-requests?request={request.id}", category="assignment")
-    log_activity(db, me.id, "Lead transfer rejected", lead.name,
-                 f"Asked by: {request.requested_by.full_name} • Reason: {request.decision_note}")
+    request = reject_one(db, request_id, data.note)
     db.commit()
     db.refresh(request)
     return request_out(db, request)
+
+
+@router.post("/transfer-requests/bulk-decision")
+def decide_many(data: schemas.TransferRequestBulkDecision, db: Session = Depends(get_db)):
+    """Approve or reject the requests ticked in To Approve, with one note (required to reject), by the Admin or a
+    Manager. Only the ids sent are decided (up to 100), never a whole filter. Each one goes through the same checks
+    as deciding it alone (approve_one / reject_one: who may decide it, still pending, lead still open and with the
+    same owner, a pooled lead still unassigned), under its own locks and its own save, so one that can't be decided
+    changes nothing and doesn't stop the others. Each decided request keeps its own history, Activity Log line and
+    the requester's notification, exactly as a single decision; nothing is sent for one that wasn't decided.
+    Results: done (approved or rejected), conflicts (decided or changed by someone else meanwhile: nothing was
+    overwritten) and skipped (not allowed, or not possible now), each with the reason. Sending the same ids twice
+    decides nothing the second time: they are no longer pending (conflicts)."""
+    me = acting_user()
+    if me.role not in ("Admin", "Manager"):
+        raise HTTPException(status_code=403, detail="Only the Admin or a Manager approves or rejects requests in bulk. "
+                                                    "Approve or reject each request on its own.")
+    note = (data.note or "").strip() or None
+    if data.decision == "reject" and not note:
+        raise HTTPException(status_code=422, detail=REJECT_REASON_REQUIRED)
+    decide = approve_one if data.decision == "approve" else reject_one
+    done, conflicts, skipped = [], [], []
+    for request_id in sorted(set(data.request_ids)):  # one at a time, in id order (each locks its lead, then itself)
+        found = db.get(LeadTransferRequest, request_id)
+        row = {"id": request_id, "lead_id": found.lead_id if found else None,
+               "lead_name": found.lead.name if found and found.lead else f"Request {request_id}",
+               "requested_by_name": found.requested_by.full_name if found and found.requested_by else None}
+        try:
+            request = decide(db, request_id, note)
+            db.commit()  # this request's decision, history, notifications and emails (sent once it is saved)
+        except HTTPException as exc:
+            db.rollback()  # nothing of this one is kept or sent
+            (conflicts if exc.status_code == 409 else skipped).append(row | {"reason": str(exc.detail)})
+            continue
+        done.append(row | {"status": request.status})
+    count = len(done)
+    return {"decision": data.decision, "approved" if data.decision == "approve" else "rejected": count,
+            "done": done, "conflicts": conflicts, "skipped": skipped}
 
 
 @router.post("/transfer-requests/{request_id}/cancel")

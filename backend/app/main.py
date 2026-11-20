@@ -105,6 +105,9 @@ def upgrade_database() -> None:
             ("opportunities", "currency", "VARCHAR(3) NOT NULL DEFAULT 'USD'"),
             # Lead Source Other: what the source is (empty on older leads; nothing is filled in for them)
             ("leads", "source_detail", "VARCHAR(100)"),
+            # Region: the country chosen beside the phone. New empty columns only: no row is updated, so nothing is
+            # guessed for older records and their Last Modified stays as it is
+            ("leads", "phone_country", "VARCHAR(2)"), ("contacts", "phone_country", "VARCHAR(2)"),
         ):
             conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {kind}"))
         # Lead sources: 'Upload' (bulk upload) and 'LinkedIn'. Only the allowed list grows; no lead's source changes.

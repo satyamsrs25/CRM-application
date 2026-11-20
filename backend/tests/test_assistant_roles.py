@@ -99,7 +99,7 @@ def test_the_assistant_asks_for_the_required_fields_of_the_form(client, monkeypa
     told = json.loads(seen[1][-1]["content"])["error"]
     assert "Lead Source" in told and "Email" not in told
     assert "Company Website" not in told and "Company LinkedIn URL" not in told  # optional now
-    assert "New lead: First Name, Last Name, Company, Email and Lead Source" in seen[0][0]["content"]
+    assert "New lead: First Name, Company, Email and Lead Source" in seen[0][0]["content"]  # Last Name optional
     assert assistant.missing_required("create_task", {"title": "Call", "due_date": " "}) == ["Due Date"]
     assert assistant.missing_required("create_opportunity", {"name": "Deal", "account_name": "Northwind",
                                                              "contact_id": 4}) == []
