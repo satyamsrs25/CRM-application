@@ -9,7 +9,13 @@ export default function PeriodPicker({ period, setPeriod, shown, id = "home-peri
   const toInput = (value) => localIso(new Date(value)).slice(0, 16); // datetime-local: 2026-11-12T15:30
   const [custom, setCustom] = useState(null); // the From / To box, while it is open
   const choose = (preset) => {
-    if (preset === "custom") setCustom({ from: toInput(shown.start), to: toInput(new Date()) });
+    // a custom range opens with the dates in use (the applied range, or the current period up to now)
+    if (preset === "custom")
+      setCustom(
+        period.preset === "custom" && period.from && period.to
+          ? { from: period.from, to: period.to }
+          : { from: toInput(shown.start), to: toInput(new Date()) },
+      );
     else {
       setCustom(null);
       setPeriod({ preset });
@@ -24,8 +30,19 @@ export default function PeriodPicker({ period, setPeriod, shown, id = "home-peri
         <label className="sr-only" htmlFor={id}>
           Period
         </label>
-        <select id={id} value={custom ? "custom" : period.preset} onChange={(e) => choose(e.target.value)}
-          onKeyDown={(e) => e.key === "Escape" && setCustom(null)}>
+        {/* an applied custom range shows through a hidden "applied" option, so choosing Custom range again in the
+            list is a change and reopens From / To */}
+        <select
+          id={id}
+          value={custom ? "custom" : period.preset === "custom" ? "applied" : period.preset}
+          onChange={(e) => choose(e.target.value)}
+          onKeyDown={(e) => e.key === "Escape" && setCustom(null)}
+        >
+          {period.preset === "custom" && !custom && (
+            <option value="applied" hidden>
+              Custom range
+            </option>
+          )}
           {PERIODS.map(([key, label]) => (
             <option key={key} value={key}>
               {label}
@@ -34,7 +51,7 @@ export default function PeriodPicker({ period, setPeriod, shown, id = "home-peri
         </select>
       </div>
       {period.preset === "custom" && !custom ? (
-        <button type="button" className="home-period-range link-button" title="Change the range"
+        <button type="button" className="home-period-range" title="Change the range"
           onClick={() => setCustom({ from: period.from || toInput(shown.start), to: period.to || toInput(shown.end) })}>
           {range}
         </button>

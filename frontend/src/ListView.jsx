@@ -14,6 +14,7 @@ import {
   POOL_LABEL,
   POOL_OWNER,
   UPLOAD_SOURCE,
+  initials,
 } from "./domain";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { amount, compact, maskPhone, shortDate } from "./format";
@@ -236,14 +237,14 @@ function Kanban({ records, setModal }) {
     else setModal({ type: "stage", collection: "opportunities", record, stage });
   };
   return (
-    <div className="kanban">
+    <div className="kanban opportunity-board">
       {KANBAN_STAGES.map((stage) => {
         const items = records.filter((r) => r.stage === stage);
         const sum = items.reduce((s, r) => s + Number(r.value || 0), 0);
         return (
           <section
             key={stage}
-            className={`kanban-col ${over === stage ? "drag-over" : ""}`}
+            className={`kanban-col stage-${stage.toLowerCase()} ${over === stage ? "drag-over" : ""}`}
             onDragOver={(e) => {
               e.preventDefault();
               setOver(stage);
@@ -252,10 +253,15 @@ function Kanban({ records, setModal }) {
             onDrop={(e) => drop(stage, e.dataTransfer.getData("text/plain"))}
           >
             <header>
-              <h3 className={`kanban-stage k-${stage.toLowerCase()}`}>
-                {stage} ({items.length})
-              </h3>
-              <p>{compact(sum)}</p>
+              <div>
+                <h3 className={`kanban-stage k-${stage.toLowerCase()}`}>{stage}</h3>
+                <p>
+                  {OPEN_OPP.includes(stage) ? "Open" : "Closed"} • {compact(sum)}
+                </p>
+              </div>
+              <span className="kanban-count" aria-label={`${items.length} opportunities`}>
+                {items.length}
+              </span>
             </header>
             <div className="kanban-cards">
               {items.map((r) => (
@@ -263,21 +269,25 @@ function Kanban({ records, setModal }) {
                   key={r.id}
                   className="kanban-card"
                   draggable={OPEN_OPP.includes(r.stage)}
+                  title={OPEN_OPP.includes(r.stage) ? "Drag to another column to change its stage" : undefined}
                   onDragStart={(e) => e.dataTransfer.setData("text/plain", r.id)}
                 >
-                  <a href={`#/opportunities/${r.id}`}>{r.name}</a>
-                  <dl>
-                    <dt>Account Name</dt>
-                    <dd>{r.account_name}</dd>
-                    <dt>Close Date</dt>
-                    <dd>{shortDate(r.expected_close_date)}</dd>
-                    <dt>Amount</dt>
-                    <dd>{amount(r.value, r.currency) || "—"}</dd>
-                  </dl>
-                  <small>{r.owner}</small>
+                  <div className="kanban-card-head">
+                    <span className="kanban-initials" aria-hidden="true">{initials(r.name)}</span>
+                    <a href={`#/opportunities/${r.id}`}>{r.name}</a>
+                  </div>
+                  <p className={`kanban-line${r.account_name ? "" : " none"}`} title="Account Name">
+                    <Icon name="building" size={13} /> <span>{r.account_name || "No account"}</span>
+                  </p>
+                  <p className={`kanban-line${r.expected_close_date ? "" : " none"}`}>
+                    <Icon name="calendar" size={13} /> <span>{r.expected_close_date ? `Closes ${shortDate(r.expected_close_date)}` : "No close date"}</span>
+                  </p>
+                  <div className="kanban-card-foot">
+                    <span className="kanban-owner">{r.owner || "No owner"}</span>
+                    <b className="kanban-amount">{amount(r.value, r.currency) || "—"}</b>
+                  </div>
                 </article>
               ))}
-              {!items.length && <p className="kanban-empty">No opportunities</p>}
             </div>
           </section>
         );

@@ -21,7 +21,9 @@ Emails queued during a request are sent only after the database commit succeeds,
 so a failed save never sends an email.
 """
 import base64
+import html as html_text
 import json
+import re
 import logging
 import os
 import smtplib
@@ -101,12 +103,13 @@ def company_name() -> str:
 
 
 def send(to: list[str], subject: str, body: str, *, cc: list[str] | None = None, sender_name: str = SYSTEM_NAME,
-         reply_to: str | None = None, attachments: list[tuple[str, str, bytes]] = ()) -> str | None:
-    """Sends one email. Returns None when sent, or the error text."""
+         reply_to: str | None = None, attachments: list[tuple[str, str, bytes]] = (), html: str | None = None) -> str | None:
+    """Sends one email (html: a formatted version shown by mail apps; body stays the plain-text version).
+    Returns None when sent, or the error text."""
     cfg = settings()
     if provider() == "graph":
         return send_graph(to, subject, body, cc=cc or [], sender_name=sender_name, reply_to=reply_to,
-                          attachments=attachments)
+                          attachments=attachments, html=html)
     if not cfg["host"]:
         log.info("SMTP_HOST not set; email not sent: %s", subject)
         return None
@@ -119,6 +122,8 @@ def send(to: list[str], subject: str, body: str, *, cc: list[str] | None = None,
         msg["Reply-To"] = reply_to
     msg["Subject"] = subject
     msg.set_content(body)
+    if html:
+        msg.add_alternative(html, subtype="html")
     for filename, content_type, data in attachments:
         main, _, sub = (content_type or "application/octet-stream").partition("/")
         msg.add_attachment(data, maintype=main, subtype=sub or "octet-stream", filename=filename)
@@ -167,7 +172,7 @@ def graph_token() -> str:
 
 
 def send_graph(to: list[str], subject: str, body: str, *, cc: list[str], sender_name: str,
-               reply_to: str | None, attachments) -> str | None:
+               reply_to: str | None, attachments, html: str | None = None) -> str | None:
     sender = settings()["sender"]
     if not all(os.getenv(k) for k in ("MS_TENANT_ID", "MS_CLIENT_ID", "MS_CLIENT_SECRET")):
         return "Outlook (Graph) is not set up: MS_TENANT_ID, MS_CLIENT_ID and MS_CLIENT_SECRET are needed"
@@ -176,7 +181,7 @@ def send_graph(to: list[str], subject: str, body: str, *, cc: list[str], sender_
     people = lambda addresses: [{"emailAddress": {"address": a}} for a in addresses]  # noqa: E731
     message = {
         "subject": subject,
-        "body": {"contentType": "Text", "content": body},
+        "body": {"contentType": "HTML", "content": html} if html else {"contentType": "Text", "content": body},
         "from": {"emailAddress": {"address": sender, "name": sender_name}},
         "toRecipients": people(to),
         "ccRecipients": people(cc),
@@ -200,13 +205,64 @@ def send_graph(to: list[str], subject: str, body: str, *, cc: list[str], sender_
 
 # ---------- outbox: send after commit ----------
 
-def queue(db: Session, to: str, subject: str, body: str, *, sender_name: str = SYSTEM_NAME) -> None:
-    db.info.setdefault("outbox", []).append((to, subject, body, sender_name))
+def queue(db: Session, to: str, subject: str, body: str, *, sender_name: str = SYSTEM_NAME,
+          html: str | None = None) -> None:
+    db.info.setdefault("outbox", []).append((to, subject, body, sender_name, html))
 
 
-def _deliver(messages: list[tuple[str, str, str, str]]) -> None:
-    for to, subject, body, sender_name in messages:
-        send([to], subject, body, sender_name=sender_name)
+def _deliver(messages: list[tuple[str, str, str, str, str | None]]) -> None:
+    for to, subject, body, sender_name, html in messages:
+        send([to], subject, body, sender_name=sender_name, html=html)
+
+
+# ---------- notification emails: the same text, laid out (Outlook joins the lines of plain-text emails) ----------
+
+_DETAIL = re.compile(r"^([A-Z][A-Za-z /]{0,28}): (.+)$")  # "Company: Acme" -> a row of the details table
+
+
+def notification_html(first_name: str, message: str, link_url: str | None, why: str) -> str:
+    """The HTML version of a notification email: each line of the message on its own line, "Label: value" lines as a
+    details table, "- " lines as a list, and an Open in SalesTrack button."""
+    esc = html_text.escape
+    parts, rows, items = [], [], []
+
+    def flush():
+        if rows:
+            parts.append('<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:8px 0 14px">'
+                         + "".join(f'<tr><td style="padding:4px 16px 4px 0;color:#5c5c5c;vertical-align:top;'
+                                   f'white-space:nowrap">{esc(k)}</td><td style="padding:4px 0;color:#181818;'
+                                   f'font-weight:600">{esc(v)}</td></tr>' for k, v in rows) + "</table>")
+            rows.clear()
+        if items:
+            parts.append('<ul style="margin:4px 0 14px;padding-left:20px">'
+                         + "".join(f'<li style="margin:2px 0">{esc(i)}</li>' for i in items) + "</ul>")
+            items.clear()
+
+    for line in message.splitlines():
+        line = line.strip()
+        detail = _DETAIL.match(line)
+        if detail and detail.group(2)[:1].islower() and line.endswith("."):
+            detail = None  # a sentence ("No open tasks: add the next follow-up."), not a detail
+        if not line:
+            flush()
+        elif line.startswith("- "):
+            if rows:
+                flush()
+            items.append(line[2:])
+        elif detail:
+            if items:
+                flush()
+            rows.append(detail.groups())
+        else:
+            flush()
+            parts.append(f'<p style="margin:0 0 10px">{esc(line)}</p>')
+    flush()
+    button = (f'<p style="margin:18px 0"><a href="{esc(link_url)}" style="background:#0176d3;color:#ffffff;'
+              f'padding:9px 18px;border-radius:6px;text-decoration:none;font-weight:600">Open in SalesTrack</a></p>'
+              if link_url else "")
+    return ('<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;line-height:1.5;color:#181818">'
+            f'<p style="margin:0 0 12px">Hi {esc(first_name)},</p>{"".join(parts)}{button}'
+            f'<p style="margin:18px 0 0;color:#747474;font-size:12px">{esc(why)}</p></div>')
 
 
 @event.listens_for(Session, "after_commit")

@@ -1249,153 +1249,202 @@ td.high {
   cursor: default;
 }
 
-/* ---------- Kanban ---------- */
+/* ---------- Kanban (Leads and Opportunities): one row of columns, each with its stage color on top ---------- */
 .kanban {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(220px, 1fr));
-  gap: 8px;
-  padding: 12px;
-  background: var(--white);
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 14px 16px 18px;
+  background: #f3f5f8;
   border: 1px solid var(--border);
   border-top: 0;
   border-radius: 0 0 var(--radius) var(--radius);
   overflow-x: auto;
 }
 .kanban-col {
+  --stage: #8c8b86;
   display: flex;
+  flex: 0 0 264px;
   flex-direction: column;
   min-height: 420px;
-  background: #f3f3f3;
-  border-radius: 8px;
+  background: #f8f9fb;
+  border: 1px solid #e4e7ec;
+  border-top: 3px solid var(--stage);
+  border-radius: 10px;
+  scroll-margin-top: 72px; /* a page change brings the column's top back into view, below the app header */
 }
+.kanban-col.stage-unassigned { --stage: #e67e22; }
+.kanban-col.stage-unqualified { --stage: #8c8b86; }
+.kanban-col.stage-new,
+.kanban-col.stage-opportunity { --stage: #2a78d6; }
+.kanban-col.stage-nurturing,
+.kanban-col.stage-discovery { --stage: #1baf7a; }
+.kanban-col.stage-revisit { --stage: #e34948; }
+.kanban-col.stage-demo,
+.kanban-col.stage-proposal { --stage: #6250d6; }
+.kanban-col.stage-converted,
+.kanban-col.stage-won { --stage: #008300; }
+.kanban-col.stage-lost { --stage: #c23934; }
 .kanban-col.drag-over {
   background: var(--brand-light);
   outline: 2px dashed var(--brand);
+  outline-offset: -2px;
 }
 .kanban-col header {
-  padding: 10px;
-  text-align: center;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 12px 10px;
 }
 .kanban-stage {
-  padding: 6px;
-  background: #dddbda;
-  font-size: 13px;
-  clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 50%, calc(100% - 10px) 100%, 0 100%, 10px 50%);
-}
-.k-won {
-  background: #cdefc4;
-}
-.k-lost {
-  background: #fddde3;
+  margin: 0;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
 }
 .kanban-col header p {
-  margin-top: 6px;
-  font-size: 16px;
-  font-weight: 700;
+  margin: 2px 0 0;
+  color: var(--text-weak);
+  font-size: 12px;
+}
+.kanban-count {
+  flex: none;
+  min-width: 28px;
+  padding: 2px 9px;
+  border: 1px solid #e4e7ec;
+  border-radius: 999px;
+  background: var(--white);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
 }
 .kanban-cards {
   display: grid;
-  gap: 8px;
-  padding: 0 8px 8px;
+  gap: 10px;
+  padding: 0 10px 10px;
   align-content: start;
 }
+.kanban-cards.is-loading {
+  opacity: 0.55;
+  transition: opacity 0.15s;
+}
 .kanban-card {
-  padding: 10px 12px;
+  min-width: 0;
+  padding: 12px;
   background: var(--white);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  box-shadow: var(--shadow);
+  border: 1px solid #e4e7ec;
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.kanban-card:hover {
+  border-color: #c9d6ea;
+  box-shadow: 0 4px 12px rgba(16, 24, 40, 0.08);
 }
 .kanban-card[draggable="true"] {
   cursor: grab;
 }
-.kanban-card > a {
+.kanban-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-bottom: 8px;
+}
+.kanban-initials {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: #eaf2fd;
+  color: #0b5cab;
+  font-size: 10px;
   font-weight: 700;
 }
-.kanban-card dl {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 2px 8px;
-  margin: 8px 0 4px;
-  font-size: 12px;
+.kanban-card-head a {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.kanban-card dt {
+.kanban-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin: 4px 0 0;
+  color: var(--text);
+  font-size: 12.5px;
+}
+.kanban-line svg {
+  flex: none;
   color: var(--text-weak);
 }
-.kanban-card dd {
-  margin: 0;
+.kanban-line span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.kanban-card small {
+.kanban-line.none {
   color: var(--text-weak);
+}
+.kanban-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  margin-top: 10px;
+}
+.kanban-owner {
+  overflow: hidden;
+  max-width: 60%;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: #f1f3f6;
+  color: var(--text-weak);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kanban-owner.pool {
+  background: #fff4e0;
+  color: #8a5300;
+}
+.kanban-card-foot small {
+  overflow: hidden;
+  color: var(--text-weak);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kanban-amount {
+  font-size: 13px;
 }
 .kanban-empty {
-  padding: 16px;
+  margin: 0;
+  padding: 16px 8px;
   color: var(--text-weak);
+  font-size: 12.5px;
   text-align: center;
 }
-/* Leads Kanban (inside the Leads list card): five columns; Converted and Lost are separate closed columns, so their
-   headers are flat instead of path arrows. Narrow screens scroll the board sideways, not the page. */
+/* Leads Kanban (inside the Leads list card): no outer frame of its own */
 .kanban.lead-board {
-  grid-template-columns: repeat(5, minmax(210px, 1fr));
   border: 0;
   border-radius: 0;
 }
-.lead-board .kanban-col.closed {
-  background: #f7f7f7;
-}
-.lead-board .kanban-col.closed .kanban-stage {
-  clip-path: none;
-  border-radius: 4px;
-}
-.lead-board .k-converted {
-  background: #cdefc4;
-}
-.lead-board .kanban-col header p {
-  margin-top: 4px;
-  color: var(--text-weak);
-  font-size: 12px;
-  font-weight: 400;
-}
-.lead-board .kanban-card dd {
-  overflow-wrap: anywhere;
-}
-.lead-board .lead-card-foot {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px 8px;
-  margin-top: 6px;
-}
-.lead-board .action-menu-button {
-  min-height: 26px;
-  padding: 0 8px;
-  font-size: 12px;
-}
 /* a column left out of this board (list view or Lead Status filter): muted, with no count */
 .lead-board .kanban-col.excluded {
-  background: #f9f9f9;
+  background: #f9fafb;
+  border-top-color: #d5dae1;
 }
 .lead-board .kanban-col.excluded .kanban-stage {
   color: var(--text-weak);
-}
-.lead-board .kanban-col.excluded .kanban-empty {
-  font-size: 12px;
-}
-.lead-board .kanban-cards.is-loading {
-  opacity: 0.55;
-  transition: opacity 0.15s;
-}
-/* each column's page: the range, then Previous / Next, right after its cards (the header shows the range too) */
-.lead-board .kanban-col {
-  scroll-margin-top: 72px; /* a page change brings the column's top back into view, below the app header */
-}
-/* the Unassigned Pool: its Kanban column (first; its cards don't move), the Owner "Unassigned" and the notes */
-.lead-board .kanban-col.pool {
-  background: #f4f6fb;
-}
-.lead-board .k-unassigned {
-  background: #e3e8f4;
 }
 .pool-owner {
   color: var(--text-weak);
@@ -1590,18 +1639,6 @@ td.high {
 }
 .record-side .card-header h2 {
   font-size: 14px;
-}
-/* Account page only: Details, Leads and Opportunities stacked in the main column (Emails and Contacts on the right).
-   Long names, emails and links wrap instead of widening the page. */
-.account-main {
-  display: grid;
-  gap: 12px;
-  min-width: 0;
-}
-.account-columns .related-records a,
-.account-columns .related-records dd,
-.account-columns .field-value {
-  overflow-wrap: anywhere;
 }
 .tabs {
   display: flex;
@@ -7012,10 +7049,15 @@ p.list-state {
   font-size: 12px;
   color: var(--text-weak);
 }
-/* a custom range: its dates reopen the From / To box */
+/* a custom range: its dates (plain text, like Past 1 week's) reopen the From / To box */
 .home-title button.home-period-range {
-  text-decoration: underline dotted;
-  text-underline-offset: 3px;
+  padding: 0 8px 0 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-weak);
+  text-decoration: none;
   cursor: pointer;
 }
 .home-period-custom {
@@ -8114,5 +8156,129 @@ p.list-state {
   .th-menu-list > button {
     padding-top: 9px;
     padding-bottom: 9px;
+  }
+}
+/* ---------- Account page: header, information, Contacts | Leads, Opportunities, Emails ---------- */
+.account-page {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr); /* long names and links never widen the page */
+  gap: 14px;
+}
+.account-page > .card {
+  margin: 0;
+}
+.account-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px 18px;
+  padding: 18px 20px;
+}
+.account-title {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+.account-title small {
+  color: var(--text-weak);
+  font-size: 12px;
+}
+.account-title h1 {
+  margin: 0;
+  font-size: 22px;
+  line-height: 1.25;
+}
+.account-title p {
+  margin: 4px 0 0;
+  overflow: hidden;
+  color: var(--text-weak);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-info {
+  padding: 16px 20px 6px;
+}
+.account-info h2,
+.account-page .card-header h2 {
+  font-size: 15px;
+  font-weight: 700;
+}
+.account-info h2 {
+  margin: 0 0 6px;
+}
+.account-fields {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0 24px;
+  margin: 0;
+}
+.account-fields > div {
+  min-width: 0;
+  padding: 10px 0;
+  border-bottom: 1px solid #eef0f3;
+}
+.account-fields dt {
+  margin-bottom: 2px;
+  color: var(--text-weak);
+  font-size: 12px;
+}
+.account-fields dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+}
+.account-fields dd.none {
+  color: var(--text-weak);
+}
+.account-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  align-items: start;
+}
+.account-pair > .card {
+  margin: 0;
+}
+.account-table-wrap {
+  overflow-x: auto;
+}
+.account-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+}
+.account-table th {
+  padding: 8px 12px;
+  background: #f8f9fb;
+  border-bottom: 1px solid #e4e7ec;
+  color: var(--text-weak);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+}
+.account-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #eef0f3;
+  vertical-align: middle;
+}
+.account-table tr:last-child td {
+  border-bottom: 0;
+}
+.account-table .num {
+  text-align: right;
+  white-space: nowrap;
+}
+@media (max-width: 1100px) {
+  .account-fields {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .account-pair {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 640px) {
+  .account-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
