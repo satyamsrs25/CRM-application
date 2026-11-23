@@ -24,6 +24,7 @@ from app.models import Account, ActivityLog, Contact, Lead, LeadTransfer, StageH
 from app.security import acting_user, can_view, require, sees_pool_contacts, team_ids, visible
 from app.regions import country_name, region_from_text, supported
 from app.serializers import lead_out
+from app.stage_clock import CATEGORIES, Clock, clock_rows, order_by_clock, stage_clocks
 from app.text_rules import has_letter, text_problem
 from app.services import (activity_condition, email_matches_website, is_personal_email, log_activity, notify,
                           notify_data_owners, now, website_host)
@@ -435,6 +436,7 @@ SORTS = {"name": Lead.name, "title": Lead.title, "company": Lead.company, "phone
          "transferred": select(func.max(LeadTransfer.transferred_at)).where(LeadTransfer.lead_id == Lead.id)
          .correlate(Lead).scalar_subquery(),
          "created": Lead.created_at, "modified": Lead.updated_at}
+CLOCK_SORT = "in_stage"  # In stage: time at the current Lead Status (app/stage_clock.py), worked out per request
 
 
 def as_local(value: datetime) -> datetime:
@@ -503,7 +505,9 @@ def leads_page(
                                                               "code, or 'none' for leads without one"),
     activity: str | None = Query(None, description="Home's pills: upcoming, past or none (services.activity_condition)"),
     created_days: int | None = Query(None, ge=1, le=3650, description="Created in the last N days (Home: 30)"),
-    sort: str = Query("created", description=", ".join(SORTS)),
+    in_stage: str | None = Query(None, description="In stage: " + ", ".join(CATEGORIES) + " (leads timed at an open "
+                                                   "status; Not started, Not recorded and closed leads are in none)"),
+    sort: str = Query("created", description=", ".join([*SORTS, CLOCK_SORT])),
     direction: str = Query("desc", pattern="^(asc|desc)$"),
     offset: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
@@ -514,8 +518,11 @@ def leads_page(
     me = acting_user()
     if view not in LIST_VIEWS:
         raise HTTPException(status_code=400, detail="Unknown list view")
-    if sort not in SORTS:
+    if sort not in SORTS and sort != CLOCK_SORT:
         raise HTTPException(status_code=400, detail="Unknown sort column")
+    if in_stage and in_stage not in CATEGORIES:
+        raise HTTPException(status_code=400, detail="Unknown In stage filter")
+    clock = Clock()  # one reference time for this response: the filter, the sort and every lead's In stage
     # pooled leads in this list hide their contact details (and aren't searched or sorted on them) for this user
     limited = not sees_pool_contacts(me)
     query = list_query(me, view, owner)
@@ -551,19 +558,35 @@ def leads_page(
         contact = or_(Lead.email.ilike(like), Lead.phone.ilike(like))
         query = query.where(or_(Lead.name.ilike(like), Lead.company.ilike(like), Lead.title.ilike(like),
                                 Lead.location.ilike(like), and_(Lead.owner_id.is_not(None), contact) if limited else contact))
+    clocks = None
+    if in_stage or sort == CLOCK_SORT:  # In stage is worked out in the database too, so it filters and sorts before paging
+        clocks = clock_rows(clock)
+        query = query.join(clocks, clocks.c.id == Lead.id)
+        if in_stage:
+            query = query.where(clocks.c.category == in_stage)
     total = db.scalar(select(func.count()).select_from(query.subquery()))
-    column = SORTS[sort]
-    if limited and sort in ("email", "phone"):  # pooled leads sort as if they had none (at the end)
-        column = case((Lead.owner_id.is_(None), None), else_=column)
+    if sort == CLOCK_SORT:
+        order = order_by_clock(clocks, direction)
+    else:
+        order = [order_column(sort, direction, limited)]
     if sort == "owner":  # pooled leads (no owner) are kept, at the end
         query = query.outerjoin(User, User.id == Lead.owner_id)
     elif sort == "created_by":
         query = query.outerjoin(CreatedBy, CreatedBy.id == Lead.created_by_id)
-    order = column.desc().nulls_last() if direction == "desc" else column.asc().nulls_last()
     rows = db.scalars(query.options(selectinload(Lead.owner), selectinload(Lead.opportunity), selectinload(Lead.created_by),
                                     selectinload(Lead.transfers).selectinload(LeadTransfer.to_user))
-                      .order_by(order, Lead.id.desc()).offset(offset).limit(limit)).all()
-    return {"total": total, "offset": offset, "limit": limit, "items": [lead_out(l) for l in rows]}
+                      .order_by(*order, Lead.id.desc()).offset(offset).limit(limit)).all()
+    in_stages = {lead_id: schemas.StageClockOut(**value)
+                 for lead_id, value in stage_clocks(db, clock, [lead.id for lead in rows]).items()}
+    return {"total": total, "offset": offset, "limit": limit,
+            "items": [lead_out(l).model_copy(update={"in_stage": in_stages.get(l.id)}) for l in rows]}
+
+
+def order_column(sort: str, direction: str, limited: bool):
+    column = SORTS[sort]
+    if limited and sort in ("email", "phone"):  # pooled leads sort as if they had none (at the end)
+        column = case((Lead.owner_id.is_(None), None), else_=column)
+    return column.desc().nulls_last() if direction == "desc" else column.asc().nulls_last()
 
 
 # ---------- same company already in the CRM (shown while typing the company on a lead) ----------
