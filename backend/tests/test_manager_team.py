@@ -161,15 +161,26 @@ def test_team_charts(client, outbox):
     login_as(client, RAVI).post("/api/leads", json={"source": "Website", "first_name": "Mira", "last_name": "Shah", "company": "Brightline",
                                                     "email": "mira@brightline.test", "welcome_email": False})
     assert client.get("/api/home/team-charts").status_code == 403  # Salespeople: no team dashboard
-    everyone = login_as(client, PRIYA).get("/api/home/team-charts").json()
-    assert everyone["scope"] == "all"
-    assert {p["name"]: p["open_leads"] for p in everyone["people"]}["Ravi Kumar"] == 1
-    assert [p["name"] for p in everyone["people"]] == ["Priya Sharma", "Ravi Kumar"]
-    # once Priya has a team, she sees her team only
+    # a Manager sees only her own team: before anyone reports to her, just herself (not Ravi, not other Managers)
+    alone = login_as(client, PRIYA).get("/api/home/team-charts").json()
+    assert alone["scope"] == "team" and [p["name"] for p in alone["people"]] == ["Priya Sharma"]
+    assert sum(p["open_leads"] for p in alone["people"]) == 0  # Ravi's lead isn't counted
+    login_as(client, ASHA).put(f"/api/users/{RAVI}", json={"reports_to_id": PRIYA})
+    mine = login_as(client, PRIYA).get("/api/home/team-charts").json()
+    assert {p["name"]: p["open_leads"] for p in mine["people"]} == {"Priya Sharma": 0, "Ravi Kumar": 1}
+    # another Manager and her Salesperson are never in Priya's Team Performance
+    meera = add_user(login_as(client, ASHA), "Meera Iyer", "meera@crm.test", role="Manager")
+    assert meera.status_code == 201, meera.text
+    names = {p["name"] for p in login_as(client, PRIYA).get("/api/home/team-charts").json()["people"]}
+    assert "Meera Iyer" not in names
+    meeras = login_as(client, meera.json()["id"]).get("/api/home/team-charts").json()
+    assert [p["name"] for p in meeras["people"]] == ["Meera Iyer"]  # not Priya, not Ravi
+    login_as(client, PRIYA)
+    # Kiran is added to Priya's team
     kiran = add_user(client, "Kiran Rao", "kiran@crm.test").json()
     team = client.get("/api/home/team-charts").json()
-    assert team["scope"] == "team" and {p["name"] for p in team["people"]} == {"Priya Sharma", "Kiran Rao"}
-    assert sum(p["open_leads"] for p in team["people"]) == 0 and set(team["pipeline"]) >= {"open", "won", "lost"}
+    assert team["scope"] == "team" and {p["name"] for p in team["people"]} == {"Priya Sharma", "Ravi Kumar", "Kiran Rao"}
+    assert sum(p["open_leads"] for p in team["people"]) == 1 and set(team["pipeline"]) >= {"open", "won", "lost"}
 
 
 def test_a_team_members_own_download_is_in_team_activity_not_the_bell(client, outbox):

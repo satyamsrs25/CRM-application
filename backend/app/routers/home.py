@@ -280,9 +280,9 @@ def home_page(owner_id: int | None = Query(None, description="Only this salesper
 
 @router.get("/home/team-charts")
 def team_charts(start: datetime | None = START, end: datetime | None = END, db: Session = Depends(get_db)):
-    """The team cards for the selected period. A Manager with a team sees their team (themselves and the Salespeople
-    who report to them); a Manager without a team yet sees everyone. The Admin sees every record and also gets
-    Lead Sources, Closing Soon and Recent Activity."""
+    """The team cards for the selected period. A Manager sees only their own team: themselves and the Salespeople who
+    report to them (just themselves until someone is assigned), never other Managers or their teams. The Admin sees
+    every record and also gets Lead Sources, Closing Soon and Recent Activity."""
     me = acting_user()
     start, end = period(start, end)
     if not me.can("view_team_dashboard"):
@@ -290,7 +290,7 @@ def team_charts(start: datetime | None = START, end: datetime | None = END, db: 
     admin = me.role == "Admin"
     lead_of = db.get(User, me.id) if me.role == "Manager" else None
     members = team_ids(db, lead_of.id) if lead_of else set()
-    scope = "team" if members else "all"
+    scope = "team" if lead_of else "all"
     if scope == "team":
         members.add(lead_of.id)
         people = db.scalars(select(User).where(User.id.in_(members)).order_by(User.full_name)).all()

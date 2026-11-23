@@ -3,6 +3,8 @@
 from conftest import login_as
 from test_opportunity_duplicates import PRIYA, convert, create, new_lead
 
+ASHA, RAVI = 3, 2  # the Admin, and the Salesperson the client logs in as (conftest)
+
 
 def test_lead_turnover_currency_defaults_to_usd_and_can_be_changed(client):
     lead = new_lead(client, "mira@brightline.test", annual_revenue=2500000)
@@ -47,5 +49,6 @@ def test_home_totals_are_split_by_currency(client):
            contact_last_name="Rao")
     home = client.get("/api/home").json()["seller_home"]
     assert home["close_deals"]["by_currency"]["open"] == {"USD": 1000.0, "INR": 50000.0}
+    login_as(client, ASHA).put(f"/api/users/{RAVI}", json={"reports_to_id": PRIYA})  # a Manager sees her own team
     charts = login_as(client, PRIYA).get("/api/home/team-charts").json()
     assert charts["pipeline"]["by_currency"]["open"] == {"USD": 1000.0, "INR": 50000.0}

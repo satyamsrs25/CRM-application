@@ -30,6 +30,7 @@ import {
   filterQuery,
   filtersFromQuery,
   fitChart,
+  fitLabel,
   formatValue,
   isPicked,
   labelEvery,
@@ -38,8 +39,10 @@ import {
   removeFilter,
   SINGLE,
   suggestedTitle,
+  TIME_GROUPS,
   WIDTHS,
   withPeriod,
+  withSplit,
 } from "./analyticsCharts";
 import { periodRange } from "./homePeriod";
 import PeriodPicker from "./PeriodPicker";
@@ -99,16 +102,27 @@ function Axis({ scale, fmt, y, W }) {
   ));
 }
 
-function XLabels({ points, x, W }) {
-  const every = labelEvery(points.length, Math.round(W / 70));
-  return points.map((p, i) =>
-    i % every === 0 ? (
-      // a label at either end of the axis is anchored inwards, so it isn't cut off
-      <text key={i} x={x(i)} y={H - PAD.bottom + 18} textAnchor={x(i) > W - 40 ? "end" : x(i) < PAD.left + 20 ? "start" : "middle"} style={text(11)}>
-        {p.label.replace(/^Week of /, "")}
+// The x-axis labels. Dates (day / week / month) are spaced out when crowded; names (sources, stages, people) all
+// show under their own column, shortened to fit (the full name on hover).
+function XLabels({ points, x, W, band, dates }) {
+  const every = dates ? labelEvery(points.length, Math.round(W / 70)) : 1;
+  return points.map((p, i) => {
+    if (i % every) return null;
+    const label = p.label.replace(/^Week of /, "");
+    const lines = dates || !band ? [label] : fitLabel(label, band);
+    // a date label at either end of the axis is anchored inwards, so it isn't cut off
+    const anchor = dates ? (x(i) > W - 40 ? "end" : x(i) < PAD.left + 20 ? "start" : "middle") : "middle";
+    return (
+      <text key={i} x={x(i)} y={H - PAD.bottom + 18} textAnchor={anchor} style={text(11)}>
+        {lines.join(" ") !== label && <title>{label}</title>}
+        {lines.map((line, n) => (
+          <tspan key={n} x={x(i)} dy={n ? 13 : 0}>
+            {line}
+          </tspan>
+        ))}
       </text>
-    ) : null,
-  );
+    );
+  });
 }
 
 const clickable = (onPick, p) => (onPick && p.key ? { onClick: () => onPick(p), style: { cursor: "pointer" } } : {});
@@ -130,7 +144,7 @@ function ColumnChart({ chart, fmt, onPick, filters, w: W = 560 }) {
         <Axis scale={scale} fmt={fmt} y={y} W={W} />
         {points.map((p, i) => {
           if (!p.value) return null;
-          const top = y(p.value);
+          const top = Math.min(y(p.value), base - 3); // a small value next to large ones still shows (at least 3px)
           const r = Math.min(4, barW / 2, base - top);
           const left = x(i) - barW / 2;
           // the data end rounded (4px), anchored square to the baseline
@@ -143,7 +157,7 @@ function ColumnChart({ chart, fmt, onPick, filters, w: W = 560 }) {
             onMouseEnter={() => show(x(i), y(p.value || 0), p.label, fmt(p.value))} onMouseLeave={hide} {...clickable(onPick, p)} />
         ))}
         <line x1={PAD.left} x2={W - PAD.right} y1={base} y2={base} stroke={AXIS} strokeWidth="1" />
-        <XLabels points={points} x={x} W={W} />
+        <XLabels points={points} x={x} W={W} band={band} dates={TIME_GROUPS.includes(chart.group_shown || chart.group_by)} />
       </svg>
       {box}
     </div>
@@ -202,7 +216,7 @@ function LineChart({ chart, fmt, onPick, filters, w: W = 560 }) {
           <rect key={i} x={x(i) - step / 2} y={PAD.top} width={Math.max(step, 8)} height={y(0) - PAD.top} fill="transparent"
             onMouseEnter={() => (setHover(i), show(x(i), y(p.value || 0), p.label, fmt(p.value)))} {...clickable(onPick, p)} />
         ))}
-        <XLabels points={points} x={x} W={W} />
+        <XLabels points={points} x={x} W={W} dates />
       </svg>
       {box}
     </div>
@@ -462,7 +476,7 @@ function ChartFields({ options, chart, set, setChart, title, setTitle }) {
       </label>
       <label className="field">
         <span>Split by</span>
-        <select value={chart.group_by} onChange={(e) => set({ group_by: e.target.value, chart_type: e.target.value === "none" ? "number" : chart.chart_type })}>
+        <select value={chart.group_by} onChange={(e) => set(withSplit(chart, e.target.value))}>
           {groups
             .filter((g) => metric?.groups.includes(g.key))
             .map((g) => (

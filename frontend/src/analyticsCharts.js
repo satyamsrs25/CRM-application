@@ -35,6 +35,14 @@ export function fitChart(chart, metrics) {
   return { ...chart, metric: m.key, group_by: group, chart_type: type };
 }
 
+// Split by changed: Total only shows one Number; any other split leaves Number for a column chart (a line chart for
+// Day / Week / Month), so the new split isn't undone by the chart type
+export function withSplit(chart, group) {
+  if (group === "none") return { ...chart, group_by: group, chart_type: "number" };
+  const type = chart.chart_type === "number" ? (TIME_GROUPS.includes(group) ? "line" : "column") : chart.chart_type;
+  return { ...chart, group_by: group, chart_type: type };
+}
+
 export function chartTypesFor(metric, group, metrics, types) {
   return types.map((t) => ({ ...t, problem: chartProblem(metric, group, t.key, metrics) }));
 }
@@ -70,6 +78,18 @@ export function donutSlices(points, limit = SERIES.length) {
 // Which x-axis labels to print so they don't collide (every one up to 12, then every 2nd, 3rd...)
 export function labelEvery(count, room = 12) {
   return Math.max(1, Math.ceil(count / room));
+}
+
+// An x-axis label that fits its column, as one or two lines: names (sources, stages, people) are never skipped; a
+// two-word name too wide for one line wraps ("Social" / "Media"), and only a word still too wide is shortened with
+// "…" (the full name shows on hover). About 5.8px per character at 11px.
+export function fitLabel(label, width) {
+  const room = Math.max(3, Math.floor((width - 4) / 5.8));
+  const cut = (text) => (text.length <= room ? text : `${text.slice(0, room - 1).trimEnd()}…`);
+  if (label.length <= room) return [label];
+  const space = label.indexOf(" ", Math.max(1, Math.floor(label.length / 2) - 1));
+  const at = space > 0 ? space : label.indexOf(" ");
+  return at > 0 ? [cut(label.slice(0, at)), cut(label.slice(at + 1))] : [cut(label)];
 }
 
 export const BLANK_CHART = { title: "", metric: "leads_created", group_by: "stage", chart_type: "donut", period: "30d", start_date: "", end_date: "", currency: "USD" };

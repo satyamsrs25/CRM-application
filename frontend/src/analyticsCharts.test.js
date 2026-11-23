@@ -74,6 +74,25 @@ test("Analytics: click-to-filter and the filter chips", async () => {
   assert.deepEqual(filtersFromQuery(new URLSearchParams("user=4&source=Website&x=1")), { source: "Website" });
 });
 
+test("Analytics: x-axis names are never skipped, only shortened to their column", async () => {
+  const { fitLabel } = await import("./analyticsCharts.js");
+  assert.deepEqual(fitLabel("LinkedIn", 56), ["LinkedIn"]);
+  assert.deepEqual(fitLabel("Social Media", 56), ["Social", "Media"]); // two words wrap onto two lines
+  assert.deepEqual(fitLabel("Opportunities", 40), ["Oppor…"]); // one long word is shortened
+  assert.deepEqual(fitLabel("Website", 10), ["We…"]); // always at least a few letters
+});
+
+test("Analytics: changing Split by away from Total only takes (the Number chart doesn't undo it)", async () => {
+  const { withSplit, fitChart } = await import("./analyticsCharts.js");
+  const metrics = [{ key: "leads_created", label: "Leads created", unit: "count", groups: ["none", "source", "stage", "week"] }];
+  const total = { metric: "leads_created", group_by: "none", chart_type: "number" };
+  assert.deepEqual(fitChart(withSplit(total, "source"), metrics), { ...total, group_by: "source", chart_type: "column" });
+  assert.deepEqual(fitChart(withSplit(total, "week"), metrics), { ...total, group_by: "week", chart_type: "line" });
+  const donut = { metric: "leads_created", group_by: "source", chart_type: "donut" };
+  assert.deepEqual(fitChart(withSplit(donut, "stage"), metrics), { ...donut, group_by: "stage" }); // keeps its type
+  assert.deepEqual(fitChart(withSplit(donut, "none"), metrics), { ...donut, group_by: "none", chart_type: "number" });
+});
+
 test("Analytics: the board's Period (the Dashboard's picker) in the filters", async () => {
   const { withPeriod, filterChips } = await import("./analyticsCharts.js");
   const custom = withPeriod({ source: "Referral" }, "custom", "2026-01-05T09:00", "2026-02-01T18:00");
