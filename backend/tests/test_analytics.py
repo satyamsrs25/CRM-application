@@ -268,6 +268,11 @@ def test_share_a_chart_as_excel_and_send_reports_to_people_picked(client):
     assert [(c["full_name"], c["picked"]) for c in choices] == [("Priya Sharma", True), ("Asha Rao", True)]
     # a Salesperson can't send to another Salesperson
     assert client.post("/api/analytics/reports", json={"recipient_ids": [neha], "chart_id": made["id"]}).status_code == 400
+    # a Salesperson with no Reports To still sees the Managers to pick from (only the Admins are ticked)
+    login_as(client, neha)
+    assert [(c["full_name"], c["role"], c["picked"]) for c in client.get("/api/analytics/recipients").json()] == [
+        ("Asha Rao", "Admin", True), ("Priya Sharma", "Manager", False)]
+    login_as(client, RAVI)
     shared = client.post("/api/analytics/reports", json={"recipient_ids": [ASHA], "chart_id": made["id"], "filters": {"period": "7d"}})
     assert shared.status_code == 201, shared.text
     shared = shared.json()
