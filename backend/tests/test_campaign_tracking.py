@@ -86,15 +86,27 @@ def test_a_tracked_email_has_its_own_token_tracked_content_links_and_an_open_ima
     state = rows(campaign_id)
     token_a, token_b = state[a][0], state[b][0]
     assert token_a != token_b and len(token_a) == 32 and state[a][1:3] == (True, True)
+    db = db_session()
+    try:
+        [link] = db.query(CampaignLink).filter_by(campaign_id=campaign_id).all()
+        recipient_ids = [r.id for r in db.query(CampaignRecipient).filter_by(campaign_id=campaign_id)]
+    finally:
+        db.close()
+    record_ids = {str(i) for i in (a, b, campaign_id, link.id, *recipient_ids)}
+    assert len(link.link_key) >= 12 and link.link_key not in record_ids
     for mail, token in ((first, token_a), (second, token_b)):
         urls = links_in(mail)
         # the same address twice: one link (the same tracking address), shown as the original address
         assert len(urls) == 2 and urls[0] == urls[1] and f"/t/c/{token}/" in urls[0]
         assert ">https://pricing.example.com/plans?a=1&amp;b=2</a>" in mail["html"]
         assert pixel_in(mail).endswith(f"/api/public/t/o/{token}.gif")
-        # no email address or lead id in a tracking address
+        # no email address or record id in a tracking address: only the recipient's random token and the link's
+        # random key. Ids are compared with whole path parts: a random token or key may happen to contain a digit.
         for url in urls + [pixel_in(mail)]:
-            assert "@" not in url and f"/{a}" not in url.split("/t/")[1] and f"/{b}" not in url.split("/t/")[1]
+            parts = url.split("/api/public/t/", 1)[1].split("/")
+            assert "@" not in url and "?" not in url
+            assert parts in (["c", token, link.link_key], ["o", f"{token}.gif"])
+            assert not record_ids & set(parts) and not record_ids & {parts[-1].removesuffix(".gif")}
         # the text version: the content link becomes the tracking address
         assert f"/t/c/{token}/" in mail["body"] and "https://pricing.example.com" not in mail["body"].split("--")[0]
         # never tracked: tel:, mailto:, the app's own links, Unsubscribe / Subscribe
