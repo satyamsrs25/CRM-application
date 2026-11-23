@@ -92,3 +92,5 @@
 .signin-submit { border-color: #0167b8; background: #0176d3; }
 .signin-submit:hover:not(:disabled) { background: #015ba6; }
 .signin-forgot { color: #0176d3; }
+/* a record link opened while signed out (an assignment email's Open in SalesTrack): signing in goes straight to it */
+.signin-destination { margin: 14px 0 0; padding: 10px 12px; border: 1px solid #b9d7f5; border-radius: 10px; color: #0b4a8b; background: #eef6ff; font-size: 14px; line-height: 1.45; }

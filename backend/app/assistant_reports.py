@@ -4,15 +4,18 @@ over the records the user may see (their own, or the team's with "View team reco
 crm_report(period=..., owner_id=...) returns leads, opportunities and tasks figures for a period, plus a snapshot of
 what is open right now. Amounts are in each deal's own currency (see "currency"). Rates are percentages with one decimal.
 """
+import os
 from datetime import date, datetime, time, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.constants import LEAD_OPEN_STAGES, LEAD_STAGES, OPPORTUNITY_OPEN_STAGES, OPPORTUNITY_STAGES
-from app.models import Lead, Opportunity, Task, User
+from app.models import Lead, LeadTransfer, Opportunity, Task, User
 from app.security import acting_user
+from app.services import BUSINESS_TIMEZONE, BUSINESS_TZ_NAME
 
 PERIODS = ["today", "this_week", "last_week", "this_month", "last_month", "this_quarter", "last_quarter",
            "this_year", "last_year", "last_7_days", "last_30_days", "last_90_days", "all_time"]
@@ -195,4 +198,136 @@ def crm_report(db: Session, *, period: str | None = None, date_from: str | None 
         "scope": ("the whole team" if me.sees_team else "your own records") +
                  (f", owner {names.get(owner_id)}" if owner_id is not None else ""),
         "currency": currency, "leads": leads, "opportunities": opportunities, "tasks": tasks,
+        "assignments": "Not in this report: leads assigned from the Unassigned Pool are counted by assignment_report (created_in_period counts leads created, not assigned).",
+    }
+
+
+# ---------- leads assigned from the Unassigned Pool (issue 6) ----------
+# What counts: one assignment = one Transfer History row (lead_transfers) with no previous owner. Only Assign gives a
+# pooled lead its first owner (routers/leads.py assign_from_pool: Assign for one lead, Assign for several selected
+# leads, and an approved request); a transfer between owners always has a previous owner, so it never counts here.
+# The row keeps who got the lead, who assigned it and when, so later transfers or a lead going back to work don't
+# change the count, and nothing is counted from the lead's creation date or from who owns it now.
+# Days are IST days (the company's time zone: demo times and Home's "today" use it too). The rows are stored in
+# server time without a zone (TZ, America/New_York in docker-compose.yml, which has daylight saving), so an IST day
+# is turned into server time for the query, boundary by boundary.
+
+ASSIGNMENT_ROWS = 25
+ASSISTANT_NOTE = ("The AI Assistant has no action that assigns pooled leads: every assignment here was made by a "
+                  "person in SalesTrack (Assign, or approving a request).")
+
+
+def server_zone():
+    """The time zone the timestamps are stored in: TZ (docker-compose.yml), else this computer's own."""
+    try:
+        return ZoneInfo(os.environ["TZ"]) if os.getenv("TZ") else None
+    except (ZoneInfoNotFoundError, ValueError):
+        return None
+
+
+def ist_to_server(moment: datetime | None) -> datetime | None:
+    """A naive IST date and time (midnight that starts a day) -> the same instant in server time, naive as stored."""
+    if moment is None:
+        return None
+    return moment.replace(tzinfo=BUSINESS_TIMEZONE).astimezone(server_zone()).replace(tzinfo=None)
+
+
+def server_to_ist(stored: datetime) -> datetime:
+    zone = server_zone()
+    return (stored.replace(tzinfo=zone) if zone else stored.astimezone()).astimezone(BUSINESS_TIMEZONE)
+
+
+def ist_text(moment: datetime) -> str:
+    return f"{moment:%d %b %Y, %I:%M %p} {BUSINESS_TZ_NAME}"
+
+
+def assignment_window(period: str | None, date_from: str | None = None, date_to: str | None = None,
+                      today: date | None = None) -> tuple[datetime | None, datetime | None, dict]:
+    """(start, end, window): start inclusive and end exclusive in server time (what the query compares), and the same
+    window in IST for the answer. A period running up to now ("today", "this week") has no end."""
+    today = today or datetime.now(BUSINESS_TIMEZONE).date()
+    start, end, label = period_range(period, date_from, date_to, today=today)
+    window = {
+        "period": label,
+        "time_zone": f"{BUSINESS_TZ_NAME} (Asia/Kolkata, UTC+05:30)",
+        "from": ist_text(start.replace(tzinfo=BUSINESS_TIMEZONE)) if start else "the first recorded assignment",
+        "to": f"{ist_text(end.replace(tzinfo=BUSINESS_TIMEZONE))} (not included)" if end else "now",
+    }
+    return ist_to_server(start), ist_to_server(end), window
+
+
+def _any_user(db: Session, name: str | None) -> int | None:
+    """A user named in a report question, active or not (someone may have left since): 'Sai' -> their id."""
+    if not name:
+        return None
+    term = name.strip().lower()
+    users = db.query(User).all()
+    exact = [u for u in users if term in (u.full_name.lower(), u.email.lower())]
+    found = exact or [u for u in users if term in u.full_name.lower() or term in u.email.lower()]
+    if len(found) != 1:
+        listed = ", ".join(u.full_name for u in (found or users))
+        raise HTTPException(status_code=400, detail=f'No single user matches "{name}". Users: {listed}')
+    return found[0].id
+
+
+def assignment_report(db: Session, *, period: str | None = None, date_from: str | None = None,
+                      date_to: str | None = None, assigned_to: str | None = None, assigned_by: str | None = None,
+                      assigned_by_me: bool = False, today: date | None = None) -> dict:
+    """Leads assigned from the Unassigned Pool in a period, from the Transfer History. Scope: everyone's assignments
+    for a user who sees the team's records; otherwise only the assignments the user received or made."""
+    me = acting_user()
+    start, end, window = assignment_window(period, date_from, date_to, today)
+    to_id = _any_user(db, assigned_to)
+    by_id = me.id if assigned_by_me else _any_user(db, assigned_by)
+    names = dict(db.execute(select(User.id, User.full_name)).all())
+
+    def scoped(query):
+        if not me.sees_team:
+            query = query.where(or_(LeadTransfer.to_user_id == me.id, LeadTransfer.transferred_by_id == me.id))
+        if start is not None:
+            query = query.where(LeadTransfer.transferred_at >= start)
+        if end is not None:
+            query = query.where(LeadTransfer.transferred_at < end)
+        return query
+
+    query = scoped(select(LeadTransfer, Lead).join(Lead, Lead.id == LeadTransfer.lead_id)
+                   .where(LeadTransfer.from_user_id.is_(None)))
+    if to_id is not None:
+        query = query.where(LeadTransfer.to_user_id == to_id)
+    if by_id is not None:
+        query = query.where(LeadTransfer.transferred_by_id == by_id)
+    rows = db.execute(query.order_by(LeadTransfer.transferred_at.desc(), LeadTransfer.id.desc())).all()
+    between_owners = db.scalar(scoped(select(func.count()).select_from(LeadTransfer)
+                                      .where(LeadTransfer.from_user_id.is_not(None)))) or 0
+
+    def tally(key) -> dict:
+        out: dict = {}
+        for move, _ in rows:
+            out[key(move)] = out.get(key(move), 0) + 1
+        return dict(sorted(out.items(), key=lambda kv: (-kv[1], kv[0])))
+
+    person = lambda uid: names.get(uid, f"User {uid}")  # noqa: E731
+    via = lambda move: "approved request" if move.request_id else "Assign (one lead or several selected)"  # noqa: E731
+    return {
+        "what": "Leads assigned from the Unassigned Pool to a person (Assign for one lead or several selected leads, "
+                "and approved requests), one per Transfer History row. Transfers between owners aren't counted.",
+        **window,
+        "scope": "everyone's assignments (team access)" if me.sees_team
+                 else "only assignments you received or made (you don't have team access)",
+        "assigned_to": person(to_id) if to_id is not None else "anyone",
+        "assigned_by": person(by_id) if by_id is not None else "anyone",
+        "assignments": len(rows),
+        "distinct_leads": len({move.lead_id for move, _ in rows}),
+        "by_assignee": tally(lambda move: person(move.to_user_id)),
+        "by_assigner": tally(lambda move: person(move.transferred_by_id)),
+        "via": tally(via),
+        "transfers_between_owners_not_counted": between_owners,
+        "assistant_assigned": 0,
+        "assistant_note": ASSISTANT_NOTE,
+        "rows": [{"lead": lead.name, "company": lead.company, "assigned_to": person(move.to_user_id),
+                  "assigned_by": person(move.transferred_by_id), "at": ist_text(server_to_ist(move.transferred_at)),
+                  "via": via(move)} for move, lead in rows[:ASSIGNMENT_ROWS]],
+        "more_rows": max(0, len(rows) - ASSIGNMENT_ROWS),
+        "source": "Each lead's Transfer History. A lead deleted since then is not counted (its history is deleted "
+                  "with it); nothing is estimated.",
     }

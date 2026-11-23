@@ -8282,3 +8282,167 @@ p.list-state {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+/* A lead or opportunity opened from a link that this account can't open (RecordPage.jsx RecordUnavailable) */
+.record-unavailable p {
+  margin: 0 0 10px;
+}
+.record-unavailable-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+/* Campaign open and click tracking (CampaignsPage.jsx: Tracking settings, New Campaign > Tracking, Engagement) */
+.tracking-option,
+.tracking-switch {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0 0 10px;
+  cursor: pointer;
+}
+.tracking-option input,
+.tracking-switch input {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+}
+.tracking-option span,
+.tracking-switch span {
+  display: grid;
+  gap: 2px;
+}
+.tracking-option small,
+.tracking-switch small {
+  color: var(--text-weak);
+}
+.tracking-option.off {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.tracking-settings {
+  display: grid;
+  gap: 12px;
+}
+.tracking-state {
+  margin: 0;
+  color: var(--text-weak);
+}
+.tracking-facts {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+  color: #3e3e3c;
+  line-height: 1.45;
+}
+.tracking-facts.compact {
+  margin: 4px 16px 14px;
+  font-size: 12px;
+  color: var(--text-weak);
+}
+.tracking-before {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid #f3d19e;
+  border-radius: 8px;
+  background: #fff8ec;
+  color: #6b4a00;
+  line-height: 1.45;
+}
+.tracking-before svg {
+  flex: none;
+  margin-top: 2px;
+}
+.engagement-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  padding: 0 16px;
+}
+.engagement-tile {
+  display: grid;
+  gap: 2px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fbfcfe;
+}
+.engagement-tile > span {
+  color: var(--text-weak);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.engagement-tile > b {
+  font-size: 22px;
+}
+.engagement-tile > small {
+  color: var(--text-weak);
+}
+.engagement-definition {
+  margin: 10px 16px;
+  color: var(--text-weak);
+  font-size: 12px;
+}
+.engagement-links td:first-child {
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.signal-cell {
+  display: grid;
+  gap: 1px;
+  min-width: 150px;
+}
+.signal-cell.muted > span {
+  color: var(--text-weak);
+}
+.signal-cell small {
+  color: var(--text-weak);
+  font-size: 11px;
+  white-space: normal;
+}
+.signal-cell .signal-link {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (max-width: 760px) {
+  .engagement-tiles {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+/* a tracked campaign's recipients: two more columns (Opens, Clicks), so the table scrolls sideways instead of
+   squeezing them */
+.campaign-recipients.tracked {
+  min-width: 1180px;
+}
+.campaign-recipients.tracked th:nth-child(1) {
+  width: 15%;
+}
+.campaign-recipients.tracked th:nth-child(2) {
+  width: 21%;
+}
+.campaign-recipients.tracked th:nth-child(3) {
+  width: 9%;
+}
+.campaign-recipients.tracked th:nth-child(4) {
+  width: 15%;
+}
+.campaign-recipients.tracked th:nth-child(5) {
+  width: 19%;
+}
+.campaign-recipients.tracked th:nth-child(6) {
+  width: 21%;
+}
+.campaign-recipients.tracked td {
+  vertical-align: top;
+}

@@ -24,17 +24,26 @@ export async function apiRequest(path, { method = "GET", body, signal } = {}) {
       signal: signal || AbortSignal.timeout(15000),
     });
   } catch (error) {
-    throw new Error(
-      error.name === "TimeoutError"
-        ? "The backend took too long to respond. Try again."
-        : "Cannot reach the backend. Check that it is running and try again.",
+    // no answer at all (offline, refused, timed out): "unreachable", never mistaken for an access problem
+    throw Object.assign(
+      new Error(
+        error.name === "TimeoutError"
+          ? "The backend took too long to respond. Try again."
+          : "Cannot reach the backend. Check that it is running and try again.",
+      ),
+      { unreachable: true },
     );
   }
   checkLogin(response);
   const result = await response.json().catch(() => null);
   if (!response.ok) {
     const detail = result?.detail;
-    const message = Array.isArray(detail)
+    // a gateway in front of the API answered for it (502/503/504 without the API's own message): the API is
+    // unreachable. The API's own 502/503 (an AI or mail service it calls) keep their message and aren't "unreachable".
+    const gateway = [502, 503, 504].includes(response.status) && detail === undefined;
+    const message = gateway
+      ? `Cannot reach the backend (the server answered ${response.status}). Try again in a moment.`
+      : Array.isArray(detail)
       ? detail
           .map(
             (item) =>
@@ -45,10 +54,15 @@ export async function apiRequest(path, { method = "GET", body, signal } = {}) {
         ? detail
         : "The backend could not complete this request.";
     // the API's field errors stay with the error, so a form can show each under its field (domain.leadServerProblems)
-    throw Object.assign(new Error(message), { status: response.status, details: Array.isArray(detail) ? detail : null });
+    throw Object.assign(new Error(message), {
+      status: response.status,
+      details: Array.isArray(detail) ? detail : null,
+      unreachable: gateway,
+    });
   }
+  // an answer that isn't the API's (e.g. a web page served instead of it): the API wasn't reached
   if (result === null)
-    throw new Error("The backend returned an unexpected response.");
+    throw Object.assign(new Error("The backend returned an unexpected response."), { unreachable: true });
   return result;
 }
 
@@ -470,6 +484,9 @@ export const api = {
   campaignPreview: (audience) => apiRequest("/campaigns/preview", { method: "POST", body: audience }),
   createCampaign: (values) => apiRequest("/campaigns", { method: "POST", body: values }),
   campaignAction: (id, action) => apiRequest(`/campaigns/${id}/${action}`, { method: "POST", body: {} }),
+  // open and click tracking: the Admin's setting (everyone reads it for New Campaign; only the Admin changes it)
+  trackingSettings: () => apiRequest("/campaigns/tracking"),
+  setTracking: (enabled) => apiRequest("/campaigns/tracking", { method: "PUT", body: { enabled } }),
   setLeadEmailStatus: (id, status, reason) =>
     apiRequest(`/leads/${id}/email-status`, { method: "POST", body: { status, reason: reason || null } }),
   bulkTransferOpportunities: (opportunity_ids, to_user_id, note) =>

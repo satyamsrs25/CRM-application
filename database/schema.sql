@@ -443,7 +443,9 @@ CREATE TABLE campaigns (
   created_by_id INT NOT NULL REFERENCES users(id),
   created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   started_at    TIMESTAMP,
-  finished_at   TIMESTAMP
+  finished_at   TIMESTAMP,
+  track_opens   BOOLEAN NOT NULL DEFAULT FALSE,   -- open tracking chosen on New Campaign (app/tracking.py)
+  track_clicks  BOOLEAN NOT NULL DEFAULT FALSE    -- click tracking chosen on New Campaign
 );
 CREATE TABLE campaign_recipients (
   id              SERIAL PRIMARY KEY,
@@ -458,9 +460,52 @@ CREATE TABLE campaign_recipients (
   attempts        INT NOT NULL DEFAULT 0,
   next_attempt_at TIMESTAMP,
   sent_at         TIMESTAMP,
-  error           VARCHAR(300)
+  error           VARCHAR(300),
+  -- tracking (app/tracking.py): a random token for this email's tracking links, whether the sent email carried
+  -- them, and the open / click signals so far (UTC). Never the sending status: a signal isn't a delivery.
+  tracking_token  VARCHAR(64),
+  opens_tracked   BOOLEAN NOT NULL DEFAULT FALSE,
+  clicks_tracked  BOOLEAN NOT NULL DEFAULT FALSE,
+  first_open_at   TIMESTAMPTZ,
+  last_open_at    TIMESTAMPTZ,
+  open_events     INT NOT NULL DEFAULT 0,
+  first_click_at  TIMESTAMPTZ,
+  last_click_at   TIMESTAMPTZ,
+  click_events    INT NOT NULL DEFAULT 0
 );
 CREATE INDEX idx_campaign_recipients_campaign ON campaign_recipients (campaign_id, status);
+CREATE UNIQUE INDEX idx_campaign_recipients_tracking_token ON campaign_recipients (tracking_token)
+  WHERE tracking_token IS NOT NULL;
+-- Links whose clicks are tracked: the stored original address and the random key in the tracking address
+CREATE TABLE campaign_links (
+  id          SERIAL PRIMARY KEY,
+  campaign_id INT NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+  url         TEXT NOT NULL,
+  link_key    VARCHAR(32) NOT NULL UNIQUE,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_campaign_links_campaign ON campaign_links (campaign_id);
+-- One open or click signal: the time (UTC), the link and a cautious "possibly automated" hint only
+-- (kept TRACKING_RETENTION_DAYS, then deleted)
+CREATE TABLE campaign_events (
+  id             SERIAL PRIMARY KEY,
+  campaign_id    INT NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+  recipient_id   INT NOT NULL REFERENCES campaign_recipients(id) ON DELETE CASCADE,
+  kind           VARCHAR(5) NOT NULL CHECK (kind IN ('open','click')),
+  link_id        INT REFERENCES campaign_links(id) ON DELETE SET NULL,
+  occurred_at    TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  automated_hint VARCHAR(60)
+);
+CREATE INDEX idx_campaign_events_campaign ON campaign_events (campaign_id, kind);
+CREATE INDEX idx_campaign_events_recipient ON campaign_events (recipient_id);
+CREATE INDEX idx_campaign_events_time ON campaign_events (occurred_at);
+-- Settings the Admin changes in the app (email_tracking_enabled); no row = the default (off)
+CREATE TABLE app_settings (
+  key           VARCHAR(60) PRIMARY KEY,
+  value         TEXT,
+  updated_by_id INT REFERENCES users(id),
+  updated_at    TIMESTAMPTZ
+);
 CREATE INDEX idx_campaign_recipients_sent ON campaign_recipients (sent_at) WHERE sent_at IS NOT NULL;
 CREATE INDEX idx_campaign_recipients_email ON campaign_recipients (lower(email)) WHERE status = 'Sent';
 -- Unsubscribed / not working addresses, leads or not (typed-in recipients are only tracked here)

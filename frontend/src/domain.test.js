@@ -3031,3 +3031,114 @@ test("Assign dialog: the pooled leads that will be assigned, the owned ones left
   const table = source("./LeadsTable.jsx");
   assert.match(table, /<BulkAssignDialog[\s\S]*?setSelected\(new Set\(\)\);\s*setAgain\(\(n\) => n \+ 1\);\s*reload\(\)\.catch/);
 });
+
+// ---------- issue 1: "Open in SalesTrack" in a lead assignment email ----------
+
+test("Email links: no answer from the server is 'can't reach', never 'no access'; the API's own answers keep theirs", async (t) => {
+  const { loadProblem } = await import("./linkAccess.js");
+  const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+  const answers = [
+    () => Promise.reject(new TypeError("Failed to fetch")), // offline, refused, DNS
+    () => Promise.reject(Object.assign(new Error("timed out"), { name: "TimeoutError" })),
+    () => new Response("<html><body>502 Bad Gateway</body></html>", { status: 502 }), // a gateway, the API is down
+    () => new Response("<!doctype html><html></html>", { status: 200 }), // a web page instead of the API
+    () => json(404, { detail: "This lead doesn't exist or you don't have access to it" }), // the API: no access
+    () => json(403, { detail: "You can only change your own records." }),
+    () => json(502, { detail: "The AI service could not be reached: timeout" }), // the API's own 502
+    () => json(500, { detail: "Internal Server Error" }),
+  ];
+  t.mock.method(globalThis, "fetch", async () => answers.shift()());
+  const failure = async () => {
+    const err = await apiRequest("/leads/53072").catch((e) => e);
+    return [err.status ?? null, !!err.unreachable, loadProblem(err), err.message];
+  };
+  assert.deepEqual(await failure(), [null, true, "offline", "Cannot reach the backend. Check that it is running and try again."]);
+  assert.deepEqual(await failure(), [null, true, "offline", "The backend took too long to respond. Try again."]);
+  assert.deepEqual(await failure(), [502, true, "offline", "Cannot reach the backend (the server answered 502). Try again in a moment."]);
+  assert.deepEqual(await failure(), [null, true, "offline", "The backend returned an unexpected response."]);
+  assert.deepEqual(await failure(), [404, false, "denied", "This lead doesn't exist or you don't have access to it"]);
+  assert.deepEqual(await failure(), [403, false, "denied", "You can only change your own records."]);
+  assert.deepEqual(await failure(), [502, false, "error", "The AI service could not be reached: timeout"]);
+  assert.deepEqual(await failure(), [500, false, "error", "Internal Server Error"]);
+});
+
+test("Email links: the sign-in page names the record a link opened, so a signed-out recipient goes straight back to it", async () => {
+  const { linkDestination } = await import("./linkAccess.js");
+  assert.equal(linkDestination("/leads/53072"), "lead");
+  assert.equal(linkDestination("/opportunities/7?tab=emails"), "opportunity");
+  for (const route of ["/", "/leads", "/transfer-requests?request=24", "/users/3", ""]) assert.equal(linkDestination(route), null, route);
+  const app = source("./App.jsx");
+  // signing in continues to the address in the browser (the lead from the email); only Log Out goes back to Home
+  const login = app.slice(app.indexOf("<Login"), app.indexOf("<Workspace"));
+  assert.match(login, /destination=\{linkDestination\(readRoute\(\)\)\}/);
+  assert.doesNotMatch(login, /location\.hash/);
+  assert.match(app, /onLogout=\{\(\) => \{\s*window\.location\.hash = "\/";\s*update\(null\);\s*\}\}/);
+  assert.match(app, /onSwitchAccount=\{\(\) => update\(null\)\}/); // signs out here only: the link opens after sign-in
+  assert.match(source("./Login.jsx"), /\{destination && <p className="signin-destination" role="status">Sign in to open the \{destination\} from your link\./);
+});
+
+test("Email links: a lead this account can't open says so (no 'Can't reach the server'); the rest of the app still loads", () => {
+  const work = source("./useWorkspace.js");
+  // only the record failed: the other lists load and the problem is kept for the page; no answer still fails the load
+  assert.match(work, /apiRequest\(`\/\$\{collection\}\/\$\{id\}`\)\.catch\(\(err\) => \{[\s\S]*?if \(loadProblem\(err\) === "offline"\) throw err;\s*return \{ problem: \{ collection, id, kind: loadProblem\(err\), status: err\.status, message: err\.message \} \};/);
+  assert.match(work, /setRecordProblem\(detail\?\.problem \|\| null\);/);
+  assert.match(work, /setOffline\(loadProblem\(err\) === "offline"\);/);
+  const app = source("./App.jsx");
+  assert.match(app, /const unavailable = recordProblem && recordProblem\.collection === section && String\(recordProblem\.id\) === String\(id\) \? recordProblem : null;/);
+  assert.match(app, /unavailable \? \(\s*<RecordUnavailable\s+collection=\{section\}\s+problem=\{unavailable\}\s+user=\{user\}\s+onSwitchAccount=\{onSwitchAccount\}/);
+  // "Can't reach the server" only when the server didn't answer: before anything loaded, and for a record that couldn't
+  // be fetched for that reason (never RecordPage's "doesn't exist, or you don't have access")
+  assert.match(app, /function Unreachable\(\) \{[\s\S]*?<h2>Can&apos;t reach the server<\/h2>/);
+  assert.match(app, /offline \? \(\s*<Unreachable \/>\s*\) : \(\s*<div className="page">\s*<section className="card pad">\s*<h2>This page couldn&apos;t be loaded<\/h2>/);
+  assert.match(app, /\) : offline && !data\[section\]\.some\(\(x\) => x\.id === id\) \? \([\s\S]*?<Unreachable \/>/);
+  assert.doesNotMatch(app, /Start the backend, then select Reload data/);
+  const page = source("./RecordPage.jsx");
+  const card = page.slice(page.indexOf("export function RecordUnavailable"), page.indexOf("function Field("));
+  // who is signed in, the same words for "doesn't exist" and "not yours" (nothing more is told), a way to switch
+  assert.match(card, /You can't open this \$\{noun\} with this account/);
+  assert.match(card, /You&apos;re signed in as <b>\{user\.full_name\}<\/b> \(\{user\.email\}\)\. This \{noun\} doesn&apos;t exist, or this\s+account doesn&apos;t have access to it\./);
+  assert.match(card, /reassigned\s+after the email was sent/);
+  assert.match(card, /Sign in with a different account/);
+  assert.doesNotMatch(card.slice(card.indexOf("{denied ? ("), card.indexOf(") : (")), /problem\.message/); // denial: the server's wording isn't shown
+});
+
+// ---------- issue 7: campaign open and click tracking ----------
+
+test("Campaign tracking: signals, not proof; no open is 'No open detected' (never 'Unread'); rates never divide by zero", async () => {
+  const { rateText, reachNote, signalText, TRACKING_FACTS } = await import("./campaignTracking.js");
+  assert.equal(rateText(33.3), "33.3%");
+  assert.equal(rateText(null), "—"); // nothing sent with that tracking: no rate
+  assert.deepEqual(signalText(false, 0), { text: "Not tracked", tone: "muted" });
+  assert.deepEqual(signalText(true, 0), { text: "No open detected", tone: "muted" });
+  assert.deepEqual(signalText(true, 0, "click"), { text: "No click detected", tone: "muted" });
+  assert.deepEqual(signalText(true, 2), { text: "2 open signals", tone: "on" });
+  assert.deepEqual(signalText(true, 1, "click"), { text: "1 click signal", tone: "on" });
+  for (const word of ["Unread", "Delivered"]) assert.ok(!JSON.stringify([signalText(true, 0), TRACKING_FACTS]).includes(word), word);
+  assert.match(TRACKING_FACTS.join(" "), /don't prove anyone read the email/);
+  assert.match(TRACKING_FACTS.join(" "), /forwarded email records its new reader's activity against the original recipient/);
+  assert.match(TRACKING_FACTS.join(" "), /never change a lead .* never count as delivery/);
+  // localhost / private addresses only work locally: the Admin is told production needs public https
+  assert.match(reachNote({ public_https: false, tracking_base: "http://localhost:5173" }), /http:\/\/localhost:5173.*public https address \(PUBLIC_URL\)/);
+  assert.equal(reachNote({ public_https: true, tracking_base: "https://crm.example.com" }), "");
+});
+
+test("Campaign tracking: off by default, the Admin's switch, separate Track opens / Track clicks, engagement apart from sending", () => {
+  const page = source("./CampaignsPage.jsx");
+  // New Campaign: both boxes start unticked and are offered only while the Admin allows tracking
+  assert.match(page, /const \[trackOpens, setTrackOpens\] = useState\(false\);\s*const \[trackClicks, setTrackClicks\] = useState\(false\);/);
+  assert.match(page, /track_opens: !!tracking\?\.enabled && trackOpens,\s*track_clicks: !!tracking\?\.enabled && trackClicks,/);
+  assert.match(page, /disabled=\{!tracking\?\.enabled\} onChange=\{\(e\) => setTrackOpens\(e\.target\.checked\)\}/);
+  assert.match(page, /<b>Track opens<\/b>/);
+  assert.match(page, /<b>Track clicks<\/b>/);
+  // the Admin only: Tracking settings on the Campaigns page
+  assert.match(page, /\{user\.role === "Admin" && \(\s*<button className="sf-button" onClick=\{\(\) => setTrackingOpen\(true\)\}>\s*Tracking settings/);
+  assert.match(page, /const saved = await api\.setTracking\(on\);/);
+  assert.match(page, /add a privacy\s+notice or ask for consent where the law requires it/);
+  // the report: recipients with signals vs signals, with the rate's definition, beside (not inside) sending
+  assert.match(page, /\{c\.tracking && <Engagement tracking=\{c\.tracking\} \/>\}/);
+  assert.match(page, /Rate = recipients with at least one signal ÷ emails sent with that tracking/);
+  assert.match(page, /a signal never means delivered/);
+  assert.match(page, /\{c\.tracking && <th>Opens<\/th>\}/);
+  assert.match(page, /links=\{r\.engagement\.links\}/);
+  assert.match(source("./api.js"), /setTracking: \(enabled\) => apiRequest\("\/campaigns\/tracking", \{ method: "PUT", body: \{ enabled \} \}\)/);
+});

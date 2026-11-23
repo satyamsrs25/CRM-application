@@ -4,7 +4,7 @@ The tables are created by the SQL script; these classes only read/write them.
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Computed, ForeignKey, LargeBinary, String, Text, func
+from sqlalchemy import Computed, DateTime, ForeignKey, LargeBinary, String, Text, false, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -447,6 +447,10 @@ class Campaign(Base):
     created_at: Mapped[datetime | None] = mapped_column(server_default=func.now())
     started_at: Mapped[datetime | None]
     finished_at: Mapped[datetime | None]
+    # open / click tracking chosen on New Campaign (off unless asked, and only while the Admin allows tracking:
+    # app/tracking.py). Campaigns made before tracking existed keep both off.
+    track_opens: Mapped[bool] = mapped_column(default=False, server_default=false())
+    track_clicks: Mapped[bool] = mapped_column(default=False, server_default=false())
 
     created_by: Mapped[User] = relationship()
     recipients: Mapped[list["CampaignRecipient"]] = relationship(back_populates="campaign", cascade="all, delete-orphan")
@@ -470,8 +474,60 @@ class CampaignRecipient(Base):
     next_attempt_at: Mapped[datetime | None]
     sent_at: Mapped[datetime | None]
     error: Mapped[str | None] = mapped_column(String(300))
+    # tracking (app/tracking.py): a random token for this email's tracking links (never the email or the lead id),
+    # whether the sent email carried an open image / tracked links, and the signals so far (UTC). Engagement is kept
+    # apart from the sending status: a signal never makes an email "Delivered".
+    tracking_token: Mapped[str | None] = mapped_column(String(64), unique=True)
+    opens_tracked: Mapped[bool] = mapped_column(default=False, server_default=false())
+    clicks_tracked: Mapped[bool] = mapped_column(default=False, server_default=false())
+    first_open_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_open_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    open_events: Mapped[int] = mapped_column(default=0, server_default="0")
+    first_click_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_click_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    click_events: Mapped[int] = mapped_column(default=0, server_default="0")
 
     campaign: Mapped[Campaign] = relationship(back_populates="recipients")
+
+
+class CampaignLink(Base):
+    """A link in a campaign's message that clicks are tracked on: the original address (checked: http or https, no
+    user name or password) and the random key in its tracking address. A click always goes to this stored address:
+    nothing in the tracking address can send people anywhere else."""
+
+    __tablename__ = "campaign_links"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    campaign_id: Mapped[int] = mapped_column(ForeignKey("campaigns.id", ondelete="CASCADE"), index=True)
+    url: Mapped[str] = mapped_column(Text)
+    link_key: Mapped[str] = mapped_column(String(32), unique=True)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CampaignEvent(Base):
+    """One open or click signal (kept TRACKING_RETENTION_DAYS, then deleted: app/tracking.py). Only the time (UTC),
+    the link and a cautious "possibly automated" hint are kept: no address, browser details or location."""
+
+    __tablename__ = "campaign_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    campaign_id: Mapped[int] = mapped_column(ForeignKey("campaigns.id", ondelete="CASCADE"), index=True)
+    recipient_id: Mapped[int] = mapped_column(ForeignKey("campaign_recipients.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(5))  # open | click
+    link_id: Mapped[int | None] = mapped_column(ForeignKey("campaign_links.id", ondelete="SET NULL"))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    automated_hint: Mapped[str | None] = mapped_column(String(60))
+
+
+class AppSetting(Base):
+    """A setting the Admin changes in the app (e.g. email_tracking_enabled). No row: the default (off)."""
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(60), primary_key=True)
+    value: Mapped[str | None] = mapped_column(Text)
+    updated_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class EmailAddress(Base):

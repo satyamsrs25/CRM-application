@@ -6,9 +6,10 @@ import { senderClosing } from "./domain";
 import { EmailComposer } from "./Email";
 import Header, { Sidebar } from "./Header";
 import ListView from "./ListView";
+import { linkDestination } from "./linkAccess";
 import Login from "./Login";
 import Modal from "./Modal";
-import RecordPage from "./RecordPage";
+import RecordPage, { RecordUnavailable } from "./RecordPage";
 import { AccountPage, ContactPage } from "./RelatedPages";
 import SellerHome from "./SellerHome";
 import { loadPeriod, savePeriod } from "./homePeriod";
@@ -49,6 +50,19 @@ function saveSession(session) {
 
 const readRoute = () => location.hash.slice(1) || "/";
 
+// SalesTrack's server didn't answer (no network, timed out, a gateway page instead of the API): a connection problem,
+// never reported as "no access". The alert above it says what happened and offers Reload data.
+function Unreachable() {
+  return (
+    <div className="page">
+      <section className="card pad">
+        <h2>Can&apos;t reach the server</h2>
+        <p>SalesTrack&apos;s server didn&apos;t answer. Check your connection, then select Reload data.</p>
+      </section>
+    </div>
+  );
+}
+
 export default function App() {
   const [session, setSession] = useState(loadSession);
   const [sessionExpired, setSessionExpired] = useState(false);
@@ -77,14 +91,16 @@ export default function App() {
       })
       .catch(() => {});
   }, [session?.token]);
+  // Signing in continues to the page in the address bar: the record a link (an assignment email's "Open in
+  // SalesTrack") opened while signed out, or the page whose session expired. Log Out starts the next person at Home.
   if (!session)
     return (
       <Login
         sessionExpired={sessionExpired}
+        destination={linkDestination(readRoute())}
         onLogin={(user, token) => {
           setSessionExpired(false);
           update({ user, token });
-          window.location.hash = "/";
         }}
       />
     );
@@ -92,13 +108,17 @@ export default function App() {
     <Workspace
       key={session.user.id}
       user={session.user}
-      onLogout={() => update(null)}
+      onLogout={() => {
+        window.location.hash = "/";
+        update(null);
+      }}
+      onSwitchAccount={() => update(null)} // signs out here only; the same link opens after the next sign-in
       onUserChanged={(user) => update({ ...session, user })}
     />
   );
 }
 
-function Workspace({ user, onLogout, onUserChanged }) {
+function Workspace({ user, onLogout, onSwitchAccount, onUserChanged }) {
   const [route, setRoute] = useState(readRoute);
   const [path, query = ""] = route.split("?");
   const section = path.split("/")[1] || "home";
@@ -128,7 +148,9 @@ function Workspace({ user, onLogout, onUserChanged }) {
     setHomePeriodState(value);
     savePeriod(value);
   };
-  const { data, run, error, loading, saving, reload, hasLoaded } = useWorkspace(section, id, user.id, homeScope, homePeriod);
+  const { data, run, error, offline, recordProblem, loading, saving, reload, hasLoaded } = useWorkspace(section, id, user.id, homeScope, homePeriod);
+  // the record of this route didn't load though the server answered (no access, not found, another error)
+  const unavailable = recordProblem && recordProblem.collection === section && String(recordProblem.id) === String(id) ? recordProblem : null;
   const [modal, setModal] = useState(null);
   const [toast, setToast] = useState("");
   const [composer, setComposer] = useState(null);
@@ -207,21 +229,34 @@ function Workspace({ user, onLogout, onUserChanged }) {
     );
   else if (["leads", "opportunities"].includes(section))
     page = id ? (
-      <RecordPage
-        key={section + id}
-        collection={section}
-        item={data[section].find((x) => x.id === id)}
-        data={data}
-        user={user}
-        openLead={openLead}
-        openTask={openTask}
-        toggleTask={toggleTask}
-        convert={convert}
-        setModal={setModal}
-        openEmail={openEmail}
-        emailVersion={emailVersion}
-        reload={reload}
-      />
+      unavailable ? (
+        <RecordUnavailable
+          collection={section}
+          problem={unavailable}
+          user={user}
+          onSwitchAccount={onSwitchAccount}
+          onRetry={() => reload().catch(() => {})}
+        />
+      ) : offline && !data[section].some((x) => x.id === id) ? (
+        // a record that couldn't be fetched because the server didn't answer: not "doesn't exist or no access"
+        <Unreachable />
+      ) : (
+        <RecordPage
+          key={section + id}
+          collection={section}
+          item={data[section].find((x) => x.id === id)}
+          data={data}
+          user={user}
+          openLead={openLead}
+          openTask={openTask}
+          toggleTask={toggleTask}
+          convert={convert}
+          setModal={setModal}
+          openEmail={openEmail}
+          emailVersion={emailVersion}
+          reload={reload}
+        />
+      )
     ) : (
       <ListView key={route} collection={section} data={data} user={user} openNew={openNew} setModal={setModal} query={query} notify={notify} reload={reload} />
     );
@@ -290,12 +325,18 @@ function Workspace({ user, onLogout, onUserChanged }) {
             Loading…
           </div>
         ) : !hasLoaded ? (
-          <div className="page">
-            <section className="card pad">
-              <h2>Can't reach the server</h2>
-              <p>Start the backend, then select Reload data.</p>
-            </section>
-          </div>
+          // nothing loaded yet: "Can't reach the server" only when the server didn't answer; an answer that was an
+          // error (the alert above says which) is not a connection problem
+          offline ? (
+            <Unreachable />
+          ) : (
+            <div className="page">
+              <section className="card pad">
+                <h2>This page couldn&apos;t be loaded</h2>
+                <p>The server answered with an error (above). Select Reload data to try again.</p>
+              </section>
+            </div>
+          )
         ) : (
           page
         )}

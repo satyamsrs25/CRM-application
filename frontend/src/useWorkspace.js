@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, apiRequest, normalizeWorkspace } from "./api";
 import { DEFAULT_PERIOD, periodQuery } from "./homePeriod";
+import { loadProblem } from "./linkAccess";
 
 const empty = {
   leads: [],
@@ -20,6 +21,9 @@ export function useWorkspace(collection, id, userId, homeScope = "team", homePer
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [offline, setOffline] = useState(false); // the last failed load got no answer from the server
+  // the record this page opens didn't load, though the server answered: { collection, id, kind, message }
+  const [recordProblem, setRecordProblem] = useState(null);
   const [hasLoaded, setHasLoaded] = useState(false);
   const notificationOwner = userId ? String(userId) : "";
   const sequence = useRef(0),
@@ -46,7 +50,12 @@ export function useWorkspace(collection, id, userId, homeScope = "team", homePer
       const [responses, detail, notifications] = await Promise.all([
         Promise.all(names.map((name) => apiRequest(path(name)))),
         id && ["leads", "opportunities"].includes(collection)
-          ? apiRequest(`/${collection}/${id}`)
+          ? apiRequest(`/${collection}/${id}`).catch((err) => {
+              // only this record failed (no access, not found, or another server error): everything else still
+              // loads and the page explains it (RecordUnavailable). No answer from the server fails the whole load.
+              if (loadProblem(err) === "offline") throw err;
+              return { problem: { collection, id, kind: loadProblem(err), status: err.status, message: err.message } };
+            })
           : null,
         notificationOwner
           ? apiRequest("/notifications")
@@ -56,17 +65,23 @@ export function useWorkspace(collection, id, userId, homeScope = "team", homePer
       const raw = Object.fromEntries(
         names.map((name, index) => [name, responses[index]]),
       );
-      last.current = { raw, notifications, detail };
+      const record = detail && !detail.problem ? detail : null;
+      last.current = { raw, notifications, detail: record };
       setData(
         normalizeWorkspace(
           { ...raw, notifications },
-          detail ? { collection, record: detail } : null,
+          record ? { collection, record } : null,
         ),
       );
+      setRecordProblem(detail?.problem || null);
       setError("");
+      setOffline(false);
       setHasLoaded(true);
     } catch (err) {
-      if (ticket === sequence.current) setError(err.message);
+      if (ticket === sequence.current) {
+        setError(err.message);
+        setOffline(loadProblem(err) === "offline");
+      }
       throw err;
     } finally {
       if (ticket === sequence.current) setLoading(false);
@@ -140,6 +155,8 @@ export function useWorkspace(collection, id, userId, homeScope = "team", homePer
     loading,
     saving,
     error,
+    offline,
+    recordProblem,
     hasLoaded,
     notificationOwner,
   };

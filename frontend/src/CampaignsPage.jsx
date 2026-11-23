@@ -11,6 +11,7 @@ import { can } from "./permissions";
 import { Th } from "./Filters";
 import { CampaignDraftAssistant } from "./EmailDraftAssistant";
 import { Icon, ObjectIcon } from "./ui";
+import { reachNote, rateText, signalText, TRACKING_FACTS } from "./campaignTracking";
 
 const n = (x) => Number(x || 0).toLocaleString();
 const when = (value) =>
@@ -144,6 +145,10 @@ export function NewCampaign({ user, users = [], leadIds = null, onClose, onCreat
   const [body, setBody] = useState(SAMPLE_BODY);
   const [preview, setPreview] = useState(null);
   const [settings, setSettings] = useState(null);
+  // open / click tracking: off unless ticked, and only offered while the Admin allows it (backend/app/tracking.py)
+  const [tracking, setTracking] = useState(null);
+  const [trackOpens, setTrackOpens] = useState(false);
+  const [trackClicks, setTrackClicks] = useState(false);
   const [showLeftOut, setShowLeftOut] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -175,6 +180,7 @@ export function NewCampaign({ user, users = [], leadIds = null, onClose, onCreat
 
   useEffect(() => {
     api.campaignSettings().then(setSettings).catch(() => {});
+    api.trackingSettings().then(setTracking).catch(() => setTracking({ enabled: false }));
   }, []);
   useEffect(() => {
     if (nobody) return setPreview(null);
@@ -227,6 +233,9 @@ export function NewCampaign({ user, users = [], leadIds = null, onClose, onCreat
         body: body.trim(),
         send_at: null, // sent straight away, paced automatically within the Outlook limits
         cc: ccChips.map((r) => r.email),
+        // only when the Admin allows tracking (the server checks it again)
+        track_opens: !!tracking?.enabled && trackOpens,
+        track_clicks: !!tracking?.enabled && trackClicks,
       });
       onCreated(created);
     } catch (err) {
@@ -465,6 +474,29 @@ export function NewCampaign({ user, users = [], leadIds = null, onClose, onCreat
           </p>
         </fieldset>
 
+        <fieldset className="campaign-section tracking-section">
+          <legend>Tracking</legend>
+          <label className={`tracking-option ${tracking?.enabled ? "" : "off"}`}>
+            <input type="checkbox" checked={!!tracking?.enabled && trackOpens} disabled={!tracking?.enabled} onChange={(e) => setTrackOpens(e.target.checked)} />
+            <span>
+              <b>Track opens</b>
+              <small>A tiny transparent image records when the email&apos;s images are loaded.</small>
+            </span>
+          </label>
+          <label className={`tracking-option ${tracking?.enabled ? "" : "off"}`}>
+            <input type="checkbox" checked={!!tracking?.enabled && trackClicks} disabled={!tracking?.enabled} onChange={(e) => setTrackClicks(e.target.checked)} />
+            <span>
+              <b>Track clicks</b>
+              <small>Links in the message go through SalesTrack first, which records the click and opens the page. The Unsubscribe link is never tracked.</small>
+            </span>
+          </label>
+          <p className="field-hint">
+            {tracking?.enabled
+              ? "Off unless you tick them. Signals can come from mail apps and security scanners: they don't prove the email was read."
+              : "Tracking is turned off for all campaigns (the Admin's setting in Email Campaigns > Tracking settings)."}
+          </p>
+        </fieldset>
+
         <fieldset className="campaign-section">
           <legend>Sending</legend>
           {preview?.eligible === 1 ? (
@@ -499,6 +531,193 @@ export function NewCampaign({ user, users = [], leadIds = null, onClose, onCreat
         )}
       </form>
     </Dialog>
+  );
+}
+
+// ---------- Tracking settings (the Admin): allow open and click tracking for campaigns that ask for it ----------
+
+export function TrackingSettings({ onClose, notify }) {
+  const [settings, setSettings] = useState(null);
+  const [on, setOn] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    api
+      .trackingSettings()
+      .then((s) => (setSettings(s), setOn(s.enabled)))
+      .catch((err) => setError(err.message));
+  }, []);
+  const save = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const saved = await api.setTracking(on);
+      notify(saved.enabled ? "Open and click tracking is allowed for campaigns that ask for it." : "Open and click tracking is turned off.");
+      onClose(saved);
+    } catch (err) {
+      setError(err.message);
+      setBusy(false);
+    }
+  };
+  const note = reachNote(settings);
+  return (
+    <Dialog
+      title="Email tracking"
+      onClose={() => onClose(null)}
+      busy={busy}
+      footer={
+        <>
+          <button type="button" className="sf-button" onClick={() => onClose(null)} disabled={busy}>
+            Cancel
+          </button>
+          <button type="button" className="sf-button brand" onClick={save} disabled={busy || !settings || on === settings.enabled}>
+            {busy ? "Saving…" : "Save"}
+          </button>
+        </>
+      }
+    >
+      <div className="tracking-settings">
+        <label className="tracking-switch">
+          <input type="checkbox" checked={on} onChange={(e) => setOn(e.target.checked)} disabled={!settings || busy} />
+          <span>
+            <b>Allow open and click tracking</b>
+            <small>For campaign emails SalesTrack sends itself. Not for Open in Outlook emails, notifications or reports.</small>
+          </span>
+        </label>
+        {settings && (
+          <p className="tracking-state">
+            Now: <b>{settings.enabled ? "On" : "Off"}</b>
+            {settings.updated_by && settings.updated_at ? ` · changed by ${settings.updated_by}, ${when(settings.updated_at)}` : " · never changed (off by default)"}
+          </p>
+        )}
+        <ul className="tracking-facts">
+          {TRACKING_FACTS.map((fact) => (
+            <li key={fact}>{fact}</li>
+          ))}
+          {settings && (
+            <li>
+              Kept: the time of each signal (UTC) for {settings.retention_days} days, then deleted; no IP address, location or device
+              details. Turning tracking off stops collecting at once; links in emails already sent keep working.
+            </li>
+          )}
+        </ul>
+        {note && (
+          <p className="field-hint field-error-text" role="status">
+            {note}
+          </p>
+        )}
+        <p className="tracking-before">
+          <Icon name="warn" size={14} /> Before using it with real recipients: agree how long signals are kept, and add a privacy
+          notice or ask for consent where the law requires it (for example for recipients in the EU or UK). SalesTrack doesn&apos;t
+          check this for you.
+        </p>
+        {error && (
+          <p className="form-error" role="alert">
+            {error}
+          </p>
+        )}
+      </div>
+    </Dialog>
+  );
+}
+
+// One campaign's engagement: recipients with signals (unique) and signals (repeated), apart from sending
+function Engagement({ tracking: e }) {
+  return (
+    <section className="card engagement-card" aria-labelledby="engagement-title">
+      <header className="card-header">
+        <h2 id="engagement-title">Engagement</h2>
+        <span className="muted">open and click signals</span>
+      </header>
+      <div className="engagement-tiles">
+        <div className="engagement-tile">
+          <span>Open signals</span>
+          {e.track_opens ? (
+            <>
+              <b>{rateText(e.open_signal_rate_pct)}</b>
+              <small>
+                {n(e.recipients_with_open_signal)} of {n(e.sent_with_open_tracking)} recipients · {n(e.open_signals)} signal
+                {e.open_signals === 1 ? "" : "s"} in total
+              </small>
+            </>
+          ) : (
+            <b className="muted">Not tracked</b>
+          )}
+        </div>
+        <div className="engagement-tile">
+          <span>Click signals</span>
+          {e.track_clicks ? (
+            <>
+              <b>{rateText(e.click_signal_rate_pct)}</b>
+              <small>
+                {n(e.recipients_with_click_signal)} of {n(e.sent_with_click_tracking)} recipients · {n(e.click_signals)} signal
+                {e.click_signals === 1 ? "" : "s"} in total
+              </small>
+            </>
+          ) : (
+            <b className="muted">Not tracked</b>
+          )}
+        </div>
+        <div className="engagement-tile">
+          <span>Possibly automated</span>
+          <b>{n(e.possibly_automated.open + e.possibly_automated.click)}</b>
+          <small>
+            {n(e.possibly_automated.open)} open · {n(e.possibly_automated.click)} click signals (a cautious guess: most can&apos;t be told apart)
+          </small>
+        </div>
+      </div>
+      <p className="engagement-definition">
+        Rate = recipients with at least one signal ÷ emails sent with that tracking ({n(e.sent)} sent in all). A recipient
+        counts once in the rate however many signals they have.
+      </p>
+      {e.links.length > 0 && (
+        <div className="table-scroll">
+          <table className="sf-table engagement-links">
+            <thead>
+              <tr>
+                <th>Clicked link</th>
+                <th>Click signals</th>
+                <th>Recipients</th>
+              </tr>
+            </thead>
+            <tbody>
+              {e.links.map((l) => (
+                <tr key={l.url}>
+                  <td title={l.url}>{l.url}</td>
+                  <td>{n(l.clicks)}</td>
+                  <td>{n(l.recipients)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <ul className="tracking-facts compact">
+        <li>{TRACKING_FACTS[1]}</li>
+        <li>{TRACKING_FACTS[2]} Sending status (above) is separate: a signal never means delivered.</li>
+        <li>
+          Times are shown in your time zone. Each signal is kept {e.retention_days} days.
+          {!e.allowed_now && " Tracking is turned off now (the Admin's setting): no new signals are recorded."}
+        </li>
+      </ul>
+    </section>
+  );
+}
+
+// One recipient's opens or clicks in the table: first and latest signal, how many, and the clicked links
+function SignalCell({ tracked, count, first, last, kind, links = [] }) {
+  const s = signalText(tracked, count, kind);
+  return (
+    <div className={`signal-cell ${s.tone}`}>
+      <span>{s.text}</span>
+      {tracked && count > 0 && <small>First {when(first)}</small>}
+      {tracked && count > 1 && <small>Latest {when(last)}</small>}
+      {links.map((l) => (
+        <small key={l.url} className="signal-link" title={l.url}>
+          {l.url} ({n(l.clicks)})
+        </small>
+      ))}
+    </div>
   );
 }
 
@@ -661,6 +880,8 @@ function CampaignDetail({ id, user, notify }) {
         )}
       </section>
 
+      {c.tracking && <Engagement tracking={c.tracking} />}
+
       <section className="card campaign-recipients-card">
         <header className="card-header">
           <h2>Recipients</h2>
@@ -674,13 +895,15 @@ function CampaignDetail({ id, user, notify }) {
           )}
         </header>
         <div className="table-scroll">
-          <table className="sf-table campaign-recipients">
+          <table className={`sf-table campaign-recipients ${c.tracking ? "tracked" : ""}`}>
             <thead>
               <tr>
                 <th>Recipient</th>
                 <th>Email</th>
                 <Th label="Status" filter={statusFilter} values={{ status }} onChange={(v) => (setStatus(v.status || ""), setPage(0))} />
                 <th>Sent</th>
+                {c.tracking && <th>Opens</th>}
+                {c.tracking && <th>Clicks</th>}
               </tr>
             </thead>
             <tbody>
@@ -694,6 +917,24 @@ function CampaignDetail({ id, user, notify }) {
                     </span>
                   </td>
                   <td className="nowrap">{r.sent_at ? when(r.sent_at) : <span className="muted">—</span>}</td>
+                  {c.tracking && (
+                    <td>
+                      {r.status === "Sent" && r.engagement ? (
+                        <SignalCell tracked={r.engagement.opens_tracked} count={r.engagement.open_signals} first={r.engagement.first_open_at} last={r.engagement.last_open_at} kind="open" />
+                      ) : (
+                        <span className="muted">—</span>
+                      )}
+                    </td>
+                  )}
+                  {c.tracking && (
+                    <td>
+                      {r.status === "Sent" && r.engagement ? (
+                        <SignalCell tracked={r.engagement.clicks_tracked} count={r.engagement.click_signals} first={r.engagement.first_click_at} last={r.engagement.last_click_at} kind="click" links={r.engagement.links} />
+                      ) : (
+                        <span className="muted">—</span>
+                      )}
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
@@ -1027,6 +1268,7 @@ export default function CampaignsPage({ id, user, data, notify }) {
   const [totals, setTotals] = useState(null); // the email dashboard
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
+  const [trackingOpen, setTrackingOpen] = useState(false); // the Admin's Tracking settings
   const [tick, setTick] = useState(0);
   const [tab, setTab] = useState("campaigns"); // "campaigns" or an email status (Sent, Queued, Invalid...)
   useEffect(() => {
@@ -1063,11 +1305,18 @@ export default function CampaignsPage({ id, user, data, notify }) {
               )}
             </div>
           </div>
-          {canSend && (
-            <button className="sf-button brand" onClick={() => setCreating(true)}>
-              New Campaign
-            </button>
-          )}
+          <div className="button-group">
+            {user.role === "Admin" && (
+              <button className="sf-button" onClick={() => setTrackingOpen(true)}>
+                Tracking settings
+              </button>
+            )}
+            {canSend && (
+              <button className="sf-button brand" onClick={() => setCreating(true)}>
+                New Campaign
+              </button>
+            )}
+          </div>
         </header>
         {totals && <EmailDashboard totals={totals} tab={tab} setTab={setTab} />}
         <nav className="campaign-tabs" role="tablist" aria-label="Email Campaigns">
@@ -1150,6 +1399,7 @@ export default function CampaignsPage({ id, user, data, notify }) {
           and a Subscribe link until the recipient subscribes.
         </p>
       </section>
+      {trackingOpen && <TrackingSettings notify={notify} onClose={() => setTrackingOpen(false)} />}
       {creating && (
         <NewCampaign
           user={user}
