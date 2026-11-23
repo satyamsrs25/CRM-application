@@ -14,8 +14,8 @@
 - Each chart takes a quarter, half or the full width of the board's row.
 - Downloads: the board as Excel (one sheet per chart) or one chart as Excel (GET .../excel).
 - Send Report (the board, shown as charts) and Share as Excel (one chart): a dated snapshot with a note goes to the
-  people the sender picks: a Salesperson / Manager to their Manager and the Admins, the Admin to Managers and other
-  Admins (reports go to Managers and Admins only). Each one is notified with a link that opens it, and can mark it
+  people the sender picks: any Manager or Admin (reports go to Managers and Admins only), with the sender's own
+  Manager and the Admins ticked at first. Each one is notified with a link that opens it, and can mark it
   Reviewed with an optional comment and download it.
 """
 import io
@@ -197,13 +197,12 @@ def can_see_board(me, owner: User) -> bool:
 
 
 def recipient_choices(db: Session, author: User) -> list[User]:
-    """Who the author can send a report to: their Manager and the Admins (the Admin: every Manager and other Admin).
-    Reports go to Managers and Admins only; Salespeople send them."""
-    if author.role == "Admin":
-        users = db.scalars(select(User).where(User.is_active.is_(True), User.id != author.id,
-                                              User.role.in_(["Admin", "Manager"]))).all()
-        return sorted(users, key=lambda u: (u.role != "Admin", u.full_name.lower()))
-    return [u for u in reviewers(db, author) if u.id != author.id]
+    """Who the author can send a report to: every active Manager and Admin but themselves (reports go to Managers and
+    Admins only; Salespeople send them). Their own Manager (Reports To) comes first, then the Admins, then the other
+    Managers; reviewers() says who is ticked at first."""
+    users = db.scalars(select(User).where(User.is_active.is_(True), User.id != author.id,
+                                          User.role.in_(["Admin", "Manager"]))).all()
+    return sorted(users, key=lambda u: (u.id != author.reports_to_id, u.role != "Admin", u.full_name.lower()))
 
 
 def reviewers(db: Session, author: User) -> list[User]:
