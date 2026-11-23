@@ -8,6 +8,10 @@ Recipients: leads (Leads > select > Actions > Email Campaign) and/or email addre
 people who aren't in the CRM (a typed address that belongs to a lead the user can see is treated as that lead).
 Unsubscribed and invalid addresses are always left out (see app/campaigns.py for the sending rules and limits).
 The unsubscribe page (/api/public/unsubscribe) needs no login: it's opened from the link in the email.
+Open and click tracking (app/tracking.py): the Admin allows it (GET/PUT /api/campaigns/tracking); a campaign asks for
+it on New Campaign (track_opens / track_clicks); the campaign's page shows the signals to whoever may see the campaign.
+The tracking image and links (/api/public/t/...) need no login and only record a signal: they never change a lead,
+a request or an email preference.
 """
 import re
 from dataclasses import dataclass
@@ -16,13 +20,13 @@ from html import escape
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from app import ai_email, campaigns as engine
+from app import ai_email, campaigns as engine, tracking
 from app.constants import LEAD_OPEN_STAGES, LEAD_STAGES
 from app.database import SessionLocal, get_db
 from app.models import Campaign, CampaignRecipient, EmailAddress, Lead
@@ -67,6 +71,8 @@ class CampaignIn(Audience):
     body: str = Field(min_length=10, max_length=20_000)
     send_at: datetime | None = None  # empty = now
     cc: list[str] = Field(default_factory=list, max_length=MAX_CC)  # copied on every email
+    track_opens: bool = False   # open signals (a transparent image): only while the Admin allows tracking
+    track_clicks: bool = False  # click signals (the message's links go through a tracking address)
 
     @field_validator("cc")
     @classmethod
@@ -248,7 +254,7 @@ def campaign_out(c: Campaign, counts: dict) -> dict:
             "status_note": c.status_note, "send_at": c.send_at, "created_at": c.created_at,
             "started_at": c.started_at, "finished_at": c.finished_at,
             "created_by_id": c.created_by_id, "created_by": c.created_by.full_name if c.created_by else None,
-            "counts": counts}
+            "counts": counts, "track_opens": c.track_opens, "track_clicks": c.track_clicks}
 
 
 # ---------- campaigns ----------
@@ -262,6 +268,31 @@ def campaign_settings():
     reachable = not re.search(r"//(localhost|127\.|0\.0\.0\.0|10\.|192\.168\.|\[::1\])", base)
     return {"limits": engine.limits(), "mail": mailer.mode(), "merge_fields": list(engine.MERGE_FIELDS),
             "unsubscribe_base": base, "links_reachable": reachable}
+
+
+class TrackingIn(BaseModel):
+    enabled: bool
+
+
+@router.get("/tracking")
+def tracking_settings(db: Session = Depends(get_db)):
+    """Whether campaigns may track opens and clicks (the Admin's setting), how long signals are kept and where the
+    tracking addresses point. Everyone who makes campaigns reads it (New Campaign)."""
+    return tracking.settings_out(db)
+
+
+@router.put("/tracking")
+def set_tracking(data: TrackingIn, db: Session = Depends(get_db)):
+    """The Admin turns tracking on or off for all campaigns. Off stops new signals and new tracked emails at once;
+    links already sent keep working. Campaigns keep their own Track opens / Track clicks choice."""
+    me = acting_user()
+    if not me.is_admin:
+        raise HTTPException(status_code=403, detail="Only the Admin can turn email tracking on or off")
+    tracking.set_enabled(db, data.enabled, me.id)
+    log_activity(db, me.id, "Email tracking " + ("turned on" if data.enabled else "turned off"), "Email Campaigns",
+                 f"Open and click tracking for campaigns that ask for it; signals kept {tracking.retention_days()} days")
+    db.commit()
+    return tracking.settings_out(db)
 
 
 @router.post("/preview")
@@ -300,6 +331,9 @@ def create_campaign(data: CampaignIn, db: Session = Depends(get_db)):
                                                     + ", ".join("{" + f + "}" for f in engine.MERGE_FIELDS))
     if not (data.lead_ids or data.emails or data.stages):
         raise HTTPException(status_code=400, detail="Add the email addresses to send to")
+    if (data.track_opens or data.track_clicks) and not tracking.enabled(db):
+        raise HTTPException(status_code=400, detail="Open and click tracking is turned off. The Admin can turn it on "
+                                                    "in Email Campaigns > Tracking settings.")
     ok, left_out = split(db, targets(db, data))
     if not ok:
         raise HTTPException(status_code=400, detail="None of these people can get the email "
@@ -309,7 +343,8 @@ def create_campaign(data: CampaignIn, db: Session = Depends(get_db)):
     # once below, so one email goes out in seconds
     campaign = Campaign(name=data.name, subject=data.subject, body=data.body, cc=", ".join(data.cc) or None,
                         created_by_id=me.id, send_at=send_at, status="Sending" if due else "Scheduled",
-                        started_at=now() if due else None)
+                        started_at=now() if due else None, track_opens=data.track_opens,
+                        track_clicks=data.track_clicks)
     db.add(campaign)
     db.flush()
     def row(t: Target, **extra) -> CampaignRecipient:
@@ -320,8 +355,10 @@ def create_campaign(data: CampaignIn, db: Session = Depends(get_db)):
     # (a ticked lead the sender may not email has no row: its details aren't copied into the campaign)
     db.add_all([row(t, status="Skipped", error=reason[:300]) for t, reason in left_out if t.lead or t.email])
     when = "now" if due else f"at {send_at:%d %b %Y %I:%M %p}"
+    tracked = " and ".join(w for w, on in (("opens", data.track_opens), ("clicks", data.track_clicks)) if on)
     log_activity(db, me.id, "Campaign created", campaign.name,
-                 f"{len(ok):,} people, sending {when} • {len(left_out):,} left out (unsubscribed, invalid or no email)")
+                 f"{len(ok):,} people, sending {when} • {len(left_out):,} left out (unsubscribed, invalid or no email)"
+                 + (f" • tracking {tracked}" if tracked else ""))
     db.commit()
     if due:
         engine.start_soon(SessionLocal)
@@ -430,11 +467,16 @@ def get_one(campaign_id: int, status: str | None = Query(None), offset: int = Qu
     total = db.scalar(select(func.count()).select_from(query.subquery()))
     rows = db.scalars(query.order_by(CampaignRecipient.id).offset(offset).limit(limit)).all()
     counts = counts_of(db, [campaign.id])[campaign.id]
+    # engagement (open / click signals), apart from the sending status; only for a campaign that asked for tracking
+    tracked = campaign.track_opens or campaign.track_clicks
+    links = tracking.recipient_links(db, [r.id for r in rows]) if tracked else {}
     return campaign_out(campaign, counts) | {
         "eta": eta(counts["Queued"], max(now(), campaign.send_at)),
+        "tracking": tracking.engagement(db, campaign) if tracked else None,
         "recipients": {"total": total, "items": [
             {"id": r.id, "lead_id": r.lead_id, "name": r.name, "email": r.email, "status": r.status,
-             "attempts": r.attempts, "sent_at": r.sent_at, "next_attempt_at": r.next_attempt_at, "error": r.error}
+             "attempts": r.attempts, "sent_at": r.sent_at, "next_attempt_at": r.next_attempt_at, "error": r.error,
+             **({"engagement": tracking.recipient_out(r, links.get(r.id, []))} if tracked else {})}
             for r in rows]}}
 
 
@@ -644,6 +686,40 @@ def _set_subscribed(db: Session, who: Subscriber, subscribed: bool) -> None:
 
 NOT_VALID = ("This link isn't valid any more. Please use the Subscribe or Unsubscribe button in the latest email "
              "you received from us.")
+
+
+# ---------- tracking image and links (app/tracking.py): no login; they record a signal and nothing else ----------
+
+@public.api_route("/t/o/{token}.gif", methods=["GET", "HEAD"], include_in_schema=False)
+def open_image(token: str, request: Request, db: Session = Depends(get_db)):
+    """The transparent image in a tracked email. Always the same image, whatever the token (a wrong token tells
+    nothing); a signal is saved only when tracking is on for this email."""
+    try:
+        tracking.record_open(db, token, request.headers.get("user-agent"), request.method)
+    except Exception:  # noqa: BLE001 - the image must load whatever happens
+        db.rollback()
+        engine.log.exception("Tracking: an open signal couldn't be saved")
+    return Response(tracking.PIXEL, media_type="image/gif", headers=tracking.NO_STORE)
+
+
+@public.api_route("/t/c/{token}/{key}", methods=["GET", "HEAD"], include_in_schema=False)
+def tracked_click(token: str, key: str, request: Request, db: Session = Depends(get_db)):
+    """A tracked link: saves the click (when tracking is on for this email) and goes on to the link's stored address.
+    The address is never taken from the request, so this can't send anyone elsewhere. A link stays usable however
+    often it's opened (security scanners open links before people do), also after tracking is turned off."""
+    link = tracking.link_by_key(db, key)
+    if link is None:
+        missing = page("This link doesn't work", "The link is incomplete or no longer exists. Open the email again "
+                       "and use its link, or contact the sender.", "", None, icon="info")
+        missing.status_code = 404
+        return missing
+    destination = link.url
+    try:
+        tracking.record_click(db, token, link, request.headers.get("user-agent"), request.method)
+    except Exception:  # noqa: BLE001 - the link must work even if the signal can't be saved
+        db.rollback()
+        engine.log.exception("Tracking: a click signal couldn't be saved")
+    return RedirectResponse(destination, status_code=302, headers=tracking.NO_STORE)
 
 
 @public.get("/logo.png", include_in_schema=False)

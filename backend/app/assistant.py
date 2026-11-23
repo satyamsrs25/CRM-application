@@ -34,10 +34,11 @@ from decimal import Decimal
 import httpx
 from fastapi import HTTPException
 from pydantic import BaseModel, ValidationError
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app import schemas
-from app.assistant_reports import PERIODS, crm_report
+from app.assistant_reports import PERIODS, assignment_report, crm_report
 from app.constants import (CURRENCIES, LEAD_FLOW, LEAD_SOURCE_DETAIL_MAX, LEAD_SOURCES, LEAD_STAGES, OPPORTUNITY_FLOW,
                            OPPORTUNITY_STAGES, REVISIT_REASONS, UNQUALIFIED_REASONS)
 from app.models import Lead, User
@@ -144,10 +145,23 @@ TOOLS = [
     _tool("crm_report", "Exact statistics and reports counted in the database: leads created / converted / lost, "
           "conversion rate, opportunities created / won / lost with amounts, win rate, average deal, pipeline by "
           "stage, won by owner, lost reasons, biggest open deals, tasks open / overdue / completed. Use it for EVERY "
-          "number, total, rate or comparison (never count from list results, which are capped).", {
+          "number, total, rate or comparison (never count from list results, which are capped). It has no "
+          "assignment counts: use assignment_report for leads assigned from the Unassigned Pool.", {
               "period": {"type": "string", "enum": PERIODS, "description": "Default all_time"},
               "date_from": DATE, "date_to": DATE,
               "owner_name": {"type": "string", "description": "Only this user's records"}}),
+    _tool("assignment_report", "Exact counts of leads ASSIGNED from the Unassigned Pool (unassigned leads given to a "
+          "person with Assign, for one lead or several selected leads, or by approving a request), counted from each "
+          "lead's Transfer History by WHEN they were assigned, in IST days. Use it for every question about "
+          "assignments: 'how many unassigned leads were assigned today', 'how many did I assign', 'how many were "
+          "assigned to Sai on 20 Nov'. Never answer these from crm_report (its created counts are leads created). "
+          "Transfers between owners are not counted.", {
+              "period": {"type": "string", "enum": PERIODS, "description": "Default all_time; 'today' is today in IST"},
+              "date_from": DATE, "date_to": DATE,
+              "assigned_to_name": {"type": "string", "description": "Only assignments to this user"},
+              "assigned_by_me": {"type": "boolean", "description": "Only assignments the signed-in user made "
+                                 "('how many did I assign', or 'how many did you assign' asked about the user's own work)"},
+              "assigned_by_name": {"type": "string", "description": "Only assignments made by this user"}}),
     _tool("list_accounts", "List accounts (companies) the user can see.", {"search": S}),
     _tool("get_account", "One account with its contacts and opportunities.", {"account_id": I}, ["account_id"]),
     _tool("list_contacts", "List contacts (people at accounts).", {"search": S, "account_id": I}),
@@ -287,7 +301,7 @@ def required_message(missing: list[str]) -> str:
 # ---------- what each role is offered (the API still checks every call) ----------
 
 READ_TOOLS = {"search", "list_leads", "get_lead", "list_opportunities", "get_opportunity", "list_tasks", "list_users",
-              "pipeline_summary", "crm_report", "list_accounts", "get_account", "list_contacts"}
+              "pipeline_summary", "crm_report", "assignment_report", "list_accounts", "get_account", "list_contacts"}
 SALES_TOOLS = {"create_lead", "update_lead", "move_lead_stage", "reschedule_demo", "convert_lead", "move_opportunity_stage",
                "mark_lead_lost", "cancel_demo", "mark_opportunity_won", "mark_opportunity_lost", "mark_lead_unqualified",
                "reopen_lead"}
@@ -460,6 +474,10 @@ def run_tool(db: Session, name: str, args: dict) -> tuple[dict, dict | None]:
     if name == "crm_report":
         return crm_report(db, period=a.get("period"), date_from=a.get("date_from"), date_to=a.get("date_to"),
                           owner_id=_user_id(db, a.get("owner_name"))), None
+    if name == "assignment_report":
+        return assignment_report(db, period=a.get("period"), date_from=a.get("date_from"), date_to=a.get("date_to"),
+                                 assigned_to=a.get("assigned_to_name"), assigned_by=a.get("assigned_by_name"),
+                                 assigned_by_me=bool(a.get("assigned_by_me"))), None
     if name == "list_accounts":
         rows = [_account_row(_plain(r)) for r in accounts.list_accounts(search=a.get("search"), owner_id=None, db=db)]
         return {"count": len(rows), "accounts": rows[:MAX_LIST], "more": max(0, len(rows) - MAX_LIST)}, None
@@ -607,6 +625,12 @@ def safe_run(db: Session, name: str, args: dict) -> tuple[dict, dict | None]:
     except (KeyError, TypeError, ValueError) as exc:
         db.rollback()
         return {"error": f"Missing or wrong value: {exc}"}, None
+    except SQLAlchemyError:
+        # a failed query is not a zero: the model is told plainly that the number isn't known
+        db.rollback()
+        log.exception("Assistant tool %s failed", name)
+        return {"error": "The data couldn't be read just now, so this number isn't known. Don't give a number; "
+                         "suggest trying again."}, None
 
 
 def log_ai_action(db: Session, name: str, args: dict, link: dict | None) -> None:
@@ -728,6 +752,14 @@ def system_prompt() -> str:
         "- Statistics and reports: always use crm_report (and pipeline_summary) for numbers, totals, rates and "
         "comparisons, and quote its figures exactly. Say which period and scope they cover. Never count list "
         "results, which are capped at 25. Show reports as short sections with bullet points or a markdown table.\n"
+        "- Assignments (leads assigned from the Unassigned Pool: how many, to whom, by whom, when): always use "
+        "assignment_report, never crm_report's created counts (leads created are not leads assigned). Its days are "
+        f"IST days (today in IST is {datetime.now(BUSINESS_TIMEZONE):%d %B %Y}). 'How many did I assign', or 'how "
+        "many did you assign' about the user's own work: assigned_by_me=true. If the user asks what the Assistant "
+        "itself did, say it can't assign pooled leads (assistant_assigned is 0). Give the count with its date, "
+        "time zone, who assigned and to whom, and the scope.\n"
+        "- Never turn a missing answer into 0: if a tool returns an error, or no tool covers the question, say you "
+        "can't tell. Answer 0 only when a tool returned 0 for exactly that question.\n"
         "- The CRM never emails leads or customers automatically; only the salesperson sends emails, from Send Email.\n"
         "- If a tool returns an error, explain it plainly (e.g. missing permission) and suggest what to do.\n"
         "- Answer briefly. Use short lists for several records. Dates like 5 Nov 2026, 3:00 PM. Amounts like 25,000.\n"

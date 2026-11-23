@@ -50,7 +50,7 @@ from html import escape
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import mailer
+from app import mailer, tracking
 from app.models import Campaign, CampaignRecipient, EmailAddress, Lead, User
 from app.security import may_campaign_to, user_permissions
 from app.services import log_activity, notify, now
@@ -286,13 +286,18 @@ def _button(href: str, label: str, primary: bool) -> str:
             f'font-weight:600;color:{fg};text-decoration:none">{label}</a>')
 
 
-def email_html(body: str, lead_id: int | None = None, *, token: str | None = None, subscribe: bool = True) -> str:
+def email_html(body: str, lead_id: int | None = None, *, token: str | None = None, subscribe: bool = True,
+               links: dict[str, str] | None = None, pixel_token: str | None = None) -> str:
     """The email as HTML: the text as written, then a one-line footer with a small button.
     - Not subscribed yet: a Subscribe button (and a small Unsubscribe link: every campaign email must offer it).
     - Subscribed: an Unsubscribe button.
-    One click on either opens the page that makes the change (see routers/campaigns.py page(auto=True))."""
+    One click on either opens the page that makes the change (see routers/campaigns.py page(auto=True)).
+    Tracking (app/tracking.py), only when this email has it: links = the message's links -> their tracking addresses
+    (shown as the original address); pixel_token = the transparent open image. The footer's links are never tracked."""
     paragraphs = [p for p in re.split(r"\n\s*\n", body.strip()) if p.strip()]
-    text = "".join(f'<p style="margin:0 0 14px">{escape(p).replace(chr(10), "<br>")}</p>' for p in paragraphs)
+    text = "".join(f'<p style="margin:0 0 14px">'
+                   f'{tracking.paragraph_html(p, links) if links else escape(p).replace(chr(10), "<br>")}</p>'
+                   for p in paragraphs)
     company = escape(mailer.company_name())
     unsubscribe = unsubscribe_link(lead_id, token=token)
     small = "font-family:Segoe UI,Arial,sans-serif;font-size:12px;line-height:16px;color:#706e6b"
@@ -309,7 +314,7 @@ def email_html(body: str, lead_id: int | None = None, *, token: str | None = Non
             f'max-width:640px">{text}'
             f'<div style="margin-top:24px;padding-top:14px;border-top:1px solid #e5e5e5">'
             f'<p style="margin:0 0 10px;{small}">{note}</p><p style="margin:0;{small}">{action}</p></div></div>'
-            f'</body></html>')
+            f'{tracking.pixel_html(pixel_token) if pixel_token else ""}</body></html>')
 
 
 @dataclass
@@ -528,6 +533,7 @@ def _run(db: Session, budget: int | None, pause_seconds: float | None) -> dict:
     ).all()
     touched = set()
     rights: dict = {}  # each sender's role and permissions, read once per round
+    tracking_allowed = tracking.enabled(db)  # the Admin's setting (app/tracking.py), read once per round
     for i, row in enumerate(rows):
         campaign = row.campaign
         db.refresh(campaign)
@@ -558,15 +564,24 @@ def _run(db: Session, budget: int | None, pause_seconds: float | None) -> dict:
         token = row_token(row)
         subscribe = not is_subscribed(db, row.email)
         text = fill(campaign.body, person, sender)
+        # tracking only when the Admin allows it now AND the campaign asked for it; the same token and links on a
+        # retry (saved before the email goes, so every sent email's links work)
+        opens = tracking_allowed and campaign.track_opens
+        links = tracking.tracked_links(db, row, text) if tracking_allowed and campaign.track_clicks else {}
+        pixel = tracking.ensure_token(row) if opens else None
+        if opens or links:
+            db.commit()
         result = send_one(row.email, fill(campaign.subject, person, sender),
-                          text + footer(row.lead_id, token=token, subscribe=subscribe),
+                          tracking.rewrite_text(text, links) + footer(row.lead_id, token=token, subscribe=subscribe),
                           sender_name=sender.full_name, reply_to=sender.email,
                           unsubscribe=unsubscribe_link(row.lead_id, token=token),
-                          html=email_html(text, row.lead_id, token=token, subscribe=subscribe),
+                          html=email_html(text, row.lead_id, token=token, subscribe=subscribe, links=links,
+                                          pixel_token=pixel),
                           cc=cc_list(campaign.cc))
         row.attempts += 1
         if result.outcome == "sent":
             row.status, row.sent_at, row.error = "Sent", now(), None
+            row.opens_tracked, row.clicks_tracked = bool(opens), bool(links)  # what this email carried
             done["sent"] += 1
         elif result.outcome == "invalid":
             row.status, row.error = "Invalid", result.detail
@@ -625,6 +640,7 @@ async def loop(session_factory) -> None:
         try:
             def work():
                 with session_factory() as db:
+                    tracking.purge(db)  # signals older than TRACKING_RETENTION_DAYS (at most once an hour)
                     return run(db)
             await asyncio.to_thread(work)
         except Exception:  # keep the loop alive; the next round tries again

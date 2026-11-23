@@ -17,7 +17,8 @@ export function BrandMark({ size = 40 }) {
 
 // Log in. There is no sign up: the Admin creates every account (Users page) and gives you
 // your email and password. The backend checks the password (bcrypt) and returns a login token.
-export default function Login({ onLogin, sessionExpired = false }) {
+// destination: the record a link opened while signed out ("lead"): after signing in, SalesTrack goes straight to it.
+export default function Login({ onLogin, sessionExpired = false, destination = null }) {
   const [values, setValues] = useState({ email: "", password: "" });
   const [error, setError] = useState("");
   const [problems, setProblems] = useState({}); // per field: "Enter your email address."
@@ -88,6 +89,7 @@ export default function Login({ onLogin, sessionExpired = false }) {
           <div className="signin-card">
             <h2 id="signin-title">Sign in</h2>
             <p className="signin-intro">Enter your credentials to access the portal</p>
+            {destination && <p className="signin-destination" role="status">Sign in to open the {destination} from your link. You&apos;ll go straight to it.</p>}
             <form className="signin-form" onSubmit={submit} aria-busy={busy} noValidate>
               {(error || sessionExpired) && <div id="signin-error" className="signin-error" role="alert">{error || "Your session expired. Please sign in again."}</div>}
               <div className="signin-control">

@@ -32,6 +32,56 @@ export function ExternalLink({ href, children }) {
 
 const headcount = (n) => (n == null ? "" : Number(n).toLocaleString());
 
+// A lead or opportunity opened from a link (an assignment email's "Open in SalesTrack", a bookmark) that the server
+// answered but didn't return. "denied": this account can't open it. The server answers the same whether the record
+// doesn't exist or belongs to someone else (now: it may have been reassigned after the email was sent), so the page
+// doesn't tell those apart. It names the signed-in account and offers to sign in with another one: after signing in,
+// SalesTrack comes back to this same link (nothing in the link signs anyone in). Any other error says what the server
+// said, with Try again. A server that didn't answer is not this page: that is "Can't reach the server" (App.jsx).
+export function RecordUnavailable({ collection, problem, user, onSwitchAccount, onRetry }) {
+  const noun = collection === "opportunities" ? "opportunity" : "lead";
+  const list = collection === "opportunities" ? "Opportunities" : "Leads";
+  const denied = problem.kind === "denied";
+  return (
+    <div className="page">
+      <Card title={denied ? `You can't open this ${noun} with this account` : `This ${noun} couldn't be loaded`}>
+        <div className="pad record-unavailable" role="alert">
+          {denied ? (
+            <>
+              <p>
+                You&apos;re signed in as <b>{user.full_name}</b> ({user.email}). This {noun} doesn&apos;t exist, or this
+                account doesn&apos;t have access to it.
+              </p>
+              <p className="muted">
+                If the link was sent to a different account, sign in with that account. If the {noun} was reassigned
+                after the email was sent, ask its new owner or your Manager.
+              </p>
+            </>
+          ) : (
+            <p>
+              The server answered: {problem.message} {problem.status ? `(${problem.status})` : ""}
+            </p>
+          )}
+          <div className="record-unavailable-actions">
+            {denied ? (
+              <button type="button" className="sf-button brand" onClick={onSwitchAccount}>
+                Sign in with a different account
+              </button>
+            ) : (
+              <button type="button" className="sf-button brand" onClick={onRetry}>
+                Try again
+              </button>
+            )}
+            <a className="sf-button" href={`#/${collection}`}>
+              Go to {list}
+            </a>
+          </div>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
 function Field({ label, children, onEdit }) {
   return (
     <div className="field-row">

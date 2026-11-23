@@ -231,6 +231,38 @@ def upgrade_database() -> None:
                           "REFERENCES lead_transfer_requests(id) ON DELETE SET NULL"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_leads_unassigned ON leads (created_at DESC) "
                           "WHERE owner_id IS NULL"))
+        # Campaign open / click tracking (app/tracking.py): new tables and new columns only. Every new column has a
+        # default (off / 0 / empty), so no existing row is updated: campaigns made before keep tracking off and no
+        # engagement is invented. Times are TIMESTAMPTZ (UTC), unlike the older columns' server time.
+        conn.execute(text("""CREATE TABLE IF NOT EXISTS app_settings (
+            key VARCHAR(60) PRIMARY KEY, value TEXT, updated_by_id INT REFERENCES users(id), updated_at TIMESTAMPTZ)"""))
+        for column, kind in (("track_opens", "BOOLEAN NOT NULL DEFAULT FALSE"),
+                             ("track_clicks", "BOOLEAN NOT NULL DEFAULT FALSE")):
+            conn.execute(text(f"ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS {column} {kind}"))
+        for column, kind in (("tracking_token", "VARCHAR(64)"),
+                             ("opens_tracked", "BOOLEAN NOT NULL DEFAULT FALSE"),
+                             ("clicks_tracked", "BOOLEAN NOT NULL DEFAULT FALSE"),
+                             ("first_open_at", "TIMESTAMPTZ"), ("last_open_at", "TIMESTAMPTZ"),
+                             ("open_events", "INT NOT NULL DEFAULT 0"),
+                             ("first_click_at", "TIMESTAMPTZ"), ("last_click_at", "TIMESTAMPTZ"),
+                             ("click_events", "INT NOT NULL DEFAULT 0")):
+            conn.execute(text(f"ALTER TABLE campaign_recipients ADD COLUMN IF NOT EXISTS {column} {kind}"))
+        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_campaign_recipients_tracking_token "
+                          "ON campaign_recipients (tracking_token) WHERE tracking_token IS NOT NULL"))
+        conn.execute(text("""CREATE TABLE IF NOT EXISTS campaign_links (
+            id SERIAL PRIMARY KEY, campaign_id INT NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+            url TEXT NOT NULL, link_key VARCHAR(32) NOT NULL UNIQUE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP)"""))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_campaign_links_campaign ON campaign_links (campaign_id)"))
+        conn.execute(text("""CREATE TABLE IF NOT EXISTS campaign_events (
+            id SERIAL PRIMARY KEY, campaign_id INT NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+            recipient_id INT NOT NULL REFERENCES campaign_recipients(id) ON DELETE CASCADE,
+            kind VARCHAR(5) NOT NULL CHECK (kind IN ('open','click')),
+            link_id INT REFERENCES campaign_links(id) ON DELETE SET NULL,
+            occurred_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, automated_hint VARCHAR(60))"""))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_campaign_events_campaign ON campaign_events (campaign_id, kind)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_campaign_events_recipient ON campaign_events (recipient_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_campaign_events_time ON campaign_events (occurred_at)"))
 
 
 @asynccontextmanager
