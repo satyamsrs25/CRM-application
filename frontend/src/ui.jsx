@@ -176,11 +176,12 @@ export function Ring({ segments, size = 150, stroke = 9, children, label }) {
   );
 }
 
-// Salesforce-style path: chevrons, completed steps get a check
-export function PathBar({ stages, current, closed, onSelect, lostLabel, skipped = [], notReached = [], stepState = () => undefined }) {
+// Salesforce-style path: chevrons, completed steps get a check. currentNote: a short line under the current step's
+// name (the lead page: how long it has been there), the steps a little taller so they stay the same height
+export function PathBar({ stages, current, closed, onSelect, lostLabel, skipped = [], notReached = [], stepState = () => undefined, currentNote }) {
   const index = stages.indexOf(current);
   return (
-    <ol className="path">
+    <ol className={currentNote ? "path with-note" : "path"}>
       {stages.map((stage, i) => {
         const state =
           stepState(stage) ??
@@ -201,10 +202,17 @@ export function PathBar({ stages, current, closed, onSelect, lostLabel, skipped 
               type="button"
               disabled={closed || !onSelect}
               onClick={() => onSelect?.(stage)}
-              title={state === "skipped" ? `${stage} (skipped)` : stage}
+              title={state === "skipped" ? `${stage} (skipped)` : state === "current" && currentNote ? `${stage} (${currentNote})` : stage}
             >
               {state === "complete" && <Icon name="check" size={14} className="path-check" />}
-              <span className="path-label">{lostLabel && i === stages.length - 1 ? lostLabel : stage}</span>
+              {state === "current" && currentNote ? (
+                <span className="path-text">
+                  <span className="path-label">{stage}</span>
+                  <span className="path-note">{currentNote}</span>
+                </span>
+              ) : (
+                <span className="path-label">{lostLabel && i === stages.length - 1 ? lostLabel : stage}</span>
+              )}
             </button>
           </li>
         );

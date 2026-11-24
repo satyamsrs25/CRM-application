@@ -445,6 +445,18 @@ class LeadUpdate(LeadLinks):
     confirm_shared_phone: bool = False  # not saved: the phone is shared with other records (see LeadCreate)
 
 
+class StageClockOut(BaseModel):
+    """In stage on the Leads list (app/stage_clock.py): how long the lead has been at its current Lead Status."""
+    state: str  # timed, not_started (in the Unassigned Pool), not_recorded (the history can't say) or closed
+    since: datetime | None = None  # when the clock started (timed only)
+    seconds: int | None = None  # elapsed real time from since to the response's one reference time
+    category: str | None = None  # on_track, attention or stalled (timed only)
+
+    @field_serializer("since")
+    def _recorded(self, value):
+        return server_instant(value)
+
+
 class LeadOut(Out):
     id: int
     salutation: str | None
@@ -496,6 +508,7 @@ class LeadOut(Out):
     email_invalid_at: datetime | None = None
     email_invalid_reason: str | None = None
     unsubscribed_at: datetime | None = None
+    in_stage: StageClockOut | None = None  # the Leads list (GET /api/leads/page) and the lead page (LeadDetail)
 
     @computed_field
     @property

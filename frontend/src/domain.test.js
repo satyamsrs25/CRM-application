@@ -115,6 +115,10 @@ import {
   dateRangeBounds,
   dateFilterOffered,
   defaultSortDirection,
+  elapsedText,
+  inStageBadge,
+  IN_STAGE_FILTERS,
+  stageClockSummary,
 } from "./listHelpers.js";
 import { demoEvent, foldIcsLine, googleCalendarUrl, icsContent, icsText, outlookCalendarUrl } from "./calendarLinks.js";
 import { addressProblem, draftForCopy, mailtoUri, OUTLOOK_COMPOSE_URL, OUTLOOK_URL_LIMIT, outlookComposeUrl, outlookHandoff, readComposeUrl, splitAddresses } from "./outlookDraft.js";
@@ -3170,4 +3174,97 @@ test("Leads > Deleted Leads: restorable for 90 days, with the days left on each 
   assert.match(source("./LeadsTable.jsx"), /You can restore \{count === 1 \? "it" : "them"\} from Deleted Leads within 90 days\. Converted leads are skipped\./);
   assert.match(page, /\{selected\.size === 1 \? "It'll" : "They'll"\} move to <b>Unassigned Leads<\/b>, with \{selected\.size === 1 \? "its" : "their"\} notes\./);
   assert.match(page, /Restore within \{KEEP_DAYS\} days\. Restored leads go to Unassigned Leads\./);
+});
+
+test("In stage badge: under an hour, whole hours under a day, then whole days, singular and plural", () => {
+  const text = (seconds) => elapsedText(seconds).text;
+  assert.deepEqual([0, 59, 3599].map(text), ["< 1 hour", "< 1 hour", "< 1 hour"]);
+  assert.deepEqual([3600, 7199, 7200, 86399].map(text), ["1 hour", "1 hour", "2 hours", "23 hours"]);
+  assert.deepEqual([86400, 172799, 172800, 30 * 86400].map(text), ["1 day", "1 day", "2 days", "30 days"]);
+  assert.equal(text(-5), "< 1 hour"); // a clock a little ahead never shows a negative time
+  assert.equal(elapsedText(1800).words, "less than an hour");
+});
+
+test("In stage badge: green, amber and red by rating, neutral when not timed, a dash when closed", () => {
+  const timed = (category, seconds = 3 * 86400) => inStageBadge({ state: "timed", seconds, category, since: "2026-11-17T10:00:00-05:00" }, "New");
+  assert.deepEqual(timed("on_track"), { text: "3 days", tone: "on-track", label: "In New for 3 days: On track" });
+  assert.deepEqual(timed("attention"), { text: "3 days", tone: "attention", label: "In New for 3 days: Needs attention" });
+  assert.deepEqual(timed("stalled", 86400), { text: "1 day", tone: "stalled", label: "In New for 1 day: Stalled" });
+  assert.deepEqual([inStageBadge({ state: "not_started" }, "New", true).text, inStageBadge({ state: "not_started" }, "New", true).tone], ["Not started", "neutral"]);
+  assert.match(inStageBadge({ state: "not_started" }, "New", true).label, /in the Unassigned Pool/);
+  // an Admin's or a Manager's own lead: owned, but not with a Salesperson yet
+  assert.match(inStageBadge({ state: "not_started" }, "New", false).label, /not assigned to a Salesperson yet/);
+  assert.deepEqual([inStageBadge({ state: "not_recorded" }, "Nurturing").text, inStageBadge({ state: "not_recorded" }, "Nurturing").tone], ["Not recorded", "neutral"]);
+  assert.deepEqual(inStageBadge({ state: "closed" }, "Converted"), { text: "—", tone: "closed", label: "Not timed: Converted is a closed status" });
+  assert.equal(inStageBadge(null, "New"), null); // a list answer without it (nothing is worked out in the browser)
+  assert.deepEqual(IN_STAGE_FILTERS, [["on_track", "On track"], ["attention", "Needs attention"], ["stalled", "Stalled"]]);
+  // the sort: longest first to start with in the Kanban's Sort by; both ways in the List
+  assert.equal(defaultSortDirection("in_stage"), "desc");
+  assert.equal(sortText("In stage", "in_stage", "desc"), "Sorted by In stage, longest first");
+  assert.equal(sortText("In stage", "in_stage", "asc"), "Sorted by In stage, shortest first");
+});
+
+test("In stage column: after Status, filtered from its header arrow on the server, no buttons above the table", () => {
+  const table = source("./LeadsTable.jsx");
+  assert.match(table, /\["Status", "stage", 124\],\s*(\/\/[^\n]*\s*)*\["In stage", "in_stage", 116\],/);
+  assert.match(table, /<StageBadge stage=\{l\.stage\} \/>\s*<\/td>\s*<td className="cell">\s*<InStage clock=\{l\.in_stage\} stage=\{l\.stage\} pooled=\{l\.in_pool\} \/>/);
+  assert.match(table, /if \(filters\.in_stage\) params\.set\("in_stage", filters\.in_stage\);/); // List and Kanban columns
+  assert.match(table, /<span className="sr-only">\{label\}<\/span>/); // the full wording for screen readers
+  assert.doesNotMatch(table, /IN_STAGE_FILTERS/); // no category buttons: only the header filter (and the Kanban's button)
+  assert.doesNotMatch(table, /Lead Age|lead_age/);
+  // a new filter starts on the first page with nothing ticked (the filters' key)
+  assert.match(table, /useEffect\(\(\) => setPage\(0\), \[view, stage, filterKey\]\);/);
+  assert.match(table, /useEffect\(\(\) => setSelected\(new Set\(\)\), \[view, stage, filterKey, term, kanban\]\);/);
+  const list = source("./ListView.jsx");
+  assert.match(list, /\{ key: "in_stage", label: "In stage", allLabel: "All", options: IN_STAGE_FILTERS \}/);
+  // not offered where nothing is timed (a choice left from another list is dropped there, so nothing filters unseen)
+  assert.match(list, /\/\^\(Converted\|Lost\|Unqualified\|Unassigned\) Leads\$\/\.test\(viewName\)/);
+  const css = source("./styles.css");
+  for (const tone of ["on-track", "attention", "stalled", "neutral"]) assert.match(css, new RegExp(`\\.stage-badge\\.in-stage\\.${tone} \\{`));
+});
+
+test("Lead page In stage: the list's clock in words, a rating badge, and a notice only when it needs attention or stalled", () => {
+  const timed = (category, seconds) => stageClockSummary({ state: "timed", since: "2026-11-10T09:00:00-05:00", seconds, category }, "New");
+  assert.deepEqual(timed("on_track", 3600), { state: "timed", duration: "1 hour", text: "In New for 1 hour", badge: "On track", tone: "on-track", notice: null });
+  const attention = timed("attention", 3 * 86400);
+  assert.deepEqual([attention.duration, attention.text, attention.badge, attention.tone], ["3 days", "In New for 3 days", "Needs attention", "attention"]);
+  assert.equal(attention.notice, "This lead has been in New for 3 days. Plan a follow-up or review its status.");
+  const stalled = timed("stalled", 13 * 86400);
+  assert.deepEqual([stalled.text, stalled.badge, stalled.tone], ["In New for 13 days", "Stalled", "stalled"]);
+  assert.match(stalled.notice, /in New for 13 days\. Plan a follow-up or review its status\./);
+  // not timed: a badge and why, never "In New for Not recorded"; no duration in the path and no notice
+  for (const [clock, pooled, badge, why] of [
+    [{ state: "not_started" }, true, "Not started", /assigned from the Unassigned Pool/],
+    [{ state: "not_started" }, false, "Not started", /when a Salesperson gets the lead/],
+    [{ state: "not_recorded" }, false, "Not recorded", /history doesn't show/],
+  ]) {
+    const line = stageClockSummary(clock, "New", pooled);
+    assert.equal(line.badge, badge);
+    assert.match(line.text, why);
+    assert.doesNotMatch(line.text, /^In New for/);
+    assert.equal(line.duration, undefined);
+    assert.equal(line.notice, undefined);
+  }
+  // closed: not timed, frozen, no warning
+  assert.deepEqual(stageClockSummary({ state: "closed" }, "Converted"), { state: "closed", text: "Not timed: Converted is a closed status", tone: "closed" });
+  assert.equal(stageClockSummary(null, "New"), null);
+});
+
+test("Lead page In stage: the server's in_stage under the path, New Task only where tasks may be added", () => {
+  const page = source("./RecordPage.jsx");
+  assert.match(page, /const stageClock = lead \? stageClockSummary\(item\.in_stage, item\.stage, pooled\) : null;/); // leads only, from the server
+  assert.match(page, /currentNote=\{stageClock\?\.duration\}/); // the time under the current status in the path
+  assert.match(page, /\{stageClock && <StageClockLine clock=\{stageClock\} since=\{item\.in_stage\?\.since\} \/>\}/);
+  // the notice's New Task: the existing task form (openTask), with the same rule as the Activity tab's
+  assert.match(page, /\{stageClock\?\.notice && \(/);
+  assert.match(page, /\{canAddTask && \(\s*<button type="button" className="sf-button small" onClick=\{\(\) => openTask\(item\.id, collection\)\}>/);
+  assert.match(page, /const canAddTask = !pooled;/);
+  assert.match(page, /canAddTask=\{canAddTask\}/);
+  assert.doesNotMatch(page, /Lead Age|Days since assigned|api\.createTask|addTask\(/); // nothing added for it, no task made
+  const ui = source("./ui.jsx");
+  assert.match(ui, /<ol className=\{currentNote \? "path with-note" : "path"\}>/); // other pages' paths unchanged
+  assert.match(ui, /state === "current" && currentNote \?/);
+  const css = source("./styles.css");
+  assert.match(css, /\.path\.with-note \.path-step button \{\s*height: 42px;/);
+  assert.match(css, /\.stage-clock-notice\.stalled \{/);
 });

@@ -172,13 +172,93 @@ export const clampPage = (page, total, size) => Math.max(0, Math.min(page, Math.
 
 // "Sorted by Created, newest first"
 const DATE_SORTS = new Set(["created", "modified"]);
+const DURATION_SORTS = new Set(["in_stage"]); // In stage: desc = longest first (untimed leads last either way)
 // The order a sort field starts with when it is chosen in the Leads Kanban's "Sort by" (the board has no direction
-// control): dates newest first, as the page opens; names and other text A–Z
-export const defaultSortDirection = (col) => (DATE_SORTS.has(col) ? "desc" : "asc");
+// control): dates newest first, as the page opens; In stage longest first; names and other text A–Z
+export const defaultSortDirection = (col) => (DATE_SORTS.has(col) || DURATION_SORTS.has(col) ? "desc" : "asc");
 export function sortText(label, col, dir) {
   if (!label) return "";
-  const way = DATE_SORTS.has(col) ? (dir === "asc" ? "oldest first" : "newest first") : dir === "asc" ? "A–Z" : "Z–A";
+  const way = DATE_SORTS.has(col)
+    ? dir === "asc" ? "oldest first" : "newest first"
+    : DURATION_SORTS.has(col)
+      ? dir === "asc" ? "shortest first" : "longest first"
+      : dir === "asc" ? "A–Z" : "Z–A";
   return `Sorted by ${label}, ${way}`;
+}
+
+// In stage on the Leads list: how long a lead has been at its current Lead Status. The server works it out from the
+// lead's history with one reference time per response (backend app/stage_clock.py) and sends in_stage: { state,
+// since, seconds, category }. The header filter's choices (List and Kanban, filtered on the server before paging):
+export const IN_STAGE_FILTERS = [
+  ["on_track", "On track"],
+  ["attention", "Needs attention"],
+  ["stalled", "Stalled"],
+];
+const IN_STAGE_RATING = Object.fromEntries(IN_STAGE_FILTERS);
+const IN_STAGE_TONE = { on_track: "on-track", attention: "attention", stalled: "stalled" };
+
+// Elapsed real time, compact: under an hour, then whole hours under a day, then whole days ("1 day", "3 days")
+export function elapsedText(seconds) {
+  const s = Math.max(0, Number(seconds) || 0);
+  const count = (n, unit) => `${n} ${unit}${n === 1 ? "" : "s"}`;
+  if (s < 3600) return { text: "< 1 hour", words: "less than an hour" };
+  if (s < 86400) return { text: count(Math.floor(s / 3600), "hour"), words: count(Math.floor(s / 3600), "hour") };
+  return { text: count(Math.floor(s / 86400), "day"), words: count(Math.floor(s / 86400), "day") };
+}
+
+// The In stage badge: its text, its colour (tone) and what it says in full (tooltip and screen readers). pooled: the
+// lead is in the Unassigned Pool (Not started there means not assigned yet; elsewhere, not with a Salesperson yet)
+export function inStageBadge(clock, stage, pooled = false) {
+  if (!clock) return null;
+  if (clock.state === "timed") {
+    const { text, words } = elapsedText(clock.seconds);
+    const rating = IN_STAGE_RATING[clock.category];
+    return { text, tone: IN_STAGE_TONE[clock.category] || "neutral", label: `In ${stage} for ${words}${rating ? `: ${rating}` : ""}` };
+  }
+  if (clock.state === "not_started")
+    return {
+      text: "Not started",
+      tone: "neutral",
+      label: pooled
+        ? "Not started: in the Unassigned Pool. The clock starts when the lead is assigned"
+        : "Not started: not assigned to a Salesperson yet. The clock starts when a Salesperson gets the lead",
+    };
+  if (clock.state === "closed") return { text: "—", tone: "closed", label: `Not timed: ${stage} is a closed status` };
+  return {
+    text: "Not recorded",
+    tone: "neutral",
+    label: "Not recorded: the lead's history doesn't show when a Salesperson got it or when this status started",
+  };
+}
+
+// The lead page: the same in_stage as the list (GET /leads/{id} gives it; nothing is worked out here), in words for the
+// line under the status path. duration: under the current status in the path (timed only). notice: a lead that
+// needs attention or is stalled (open and timed only: never for a closed, not started or not recorded lead).
+export function stageClockSummary(clock, stage, pooled = false) {
+  if (!clock) return null;
+  if (clock.state === "timed") {
+    const { text, words } = elapsedText(clock.seconds);
+    const rating = IN_STAGE_RATING[clock.category];
+    const late = clock.category === "attention" || clock.category === "stalled";
+    return {
+      state: "timed",
+      duration: text,
+      text: `In ${stage} for ${words}`,
+      badge: rating || null,
+      tone: IN_STAGE_TONE[clock.category] || "neutral",
+      notice: late
+        ? `This lead has been in ${stage} for ${words}. Plan a follow-up or review its status.`
+        : null,
+    };
+  }
+  if (clock.state === "closed") return { state: "closed", text: `Not timed: ${stage} is a closed status`, tone: "closed" };
+  const text =
+    clock.state === "not_started"
+      ? pooled
+        ? "The clock starts when the lead is assigned from the Unassigned Pool."
+        : "The clock starts when a Salesperson gets the lead."
+      : "The history doesn't show when a Salesperson got this lead or when this status started.";
+  return { state: clock.state, badge: inStageBadge(clock, stage, pooled).text, tone: "neutral", text };
 }
 
 // How the ticked rows relate to the page on screen. "Select all" ticks only the rows on this page, and ticks stay

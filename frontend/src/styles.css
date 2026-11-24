@@ -548,6 +548,35 @@ p {
   border-color: #f8c6c9;
   color: #b3001b;
 }
+/* In stage on the Leads list, in the status badges' colours: on track (green), needs attention (amber), stalled (red),
+   not timed (grey, no dot); a closed lead shows a dash */
+.stage-badge.in-stage.on-track {
+  background: #ebf7ee;
+  border-color: #b9e3c4;
+  color: #19703a;
+}
+.stage-badge.in-stage.attention {
+  background: #fff6e5;
+  border-color: #fbdca8;
+  color: #8a4b00;
+}
+.stage-badge.in-stage.stalled {
+  background: #fef1f1;
+  border-color: #f8c6c9;
+  color: #b3001b;
+}
+.stage-badge.in-stage.neutral {
+  background: #f3f4f6;
+  border-color: #d5d9de;
+  color: #4b5563;
+  font-weight: 500;
+}
+.stage-badge.in-stage.neutral::before {
+  display: none;
+}
+.in-stage-none {
+  color: var(--text-weak);
+}
 .empty-state {
   display: grid;
   place-items: center;
@@ -663,6 +692,70 @@ p {
 .path-result.won {
   background: #cdefc4;
   color: #194e31;
+}
+/* the lead page: In stage under the status path (the list's clock and colours) */
+.path-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.path.with-note .path-step button {
+  height: 42px;
+}
+.path-text {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+  line-height: 1.2;
+}
+.path-note {
+  font-size: 11px;
+  font-weight: 500;
+  opacity: 0.9;
+  white-space: nowrap;
+}
+.stage-clock {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 13px;
+}
+.stage-clock-text {
+  font-weight: 600;
+}
+.stage-clock-text.muted,
+.stage-clock.muted {
+  font-weight: 400;
+  color: var(--text-weak);
+}
+.stage-clock-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  padding: 8px 12px;
+  border: 1px solid #fbdca8;
+  border-radius: 8px;
+  background: #fff6e5;
+  color: #8a4b00;
+}
+.stage-clock-notice.stalled {
+  border-color: #f8c6c9;
+  background: #fef1f1;
+  color: #b3001b;
+}
+.stage-clock-notice > span {
+  flex: 1;
+  min-width: 200px;
+  color: var(--text);
+}
+.stage-clock-notice .sf-button {
+  margin-left: auto;
 }
 .path-result.lost {
   background: #fddde3;

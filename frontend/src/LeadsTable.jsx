@@ -22,6 +22,7 @@ import {
   clampPage,
   defaultSortDirection,
   filterChips,
+  inStageBadge,
   latestRequests,
   leadSelectionActions,
   leadsEmptyMessage,
@@ -43,6 +44,9 @@ const COLUMNS = [
   // its header arrow filters by it, like Status (All Regions, Not specified, every country, searchable)
   ["Region", "region", 132, false],
   ["Status", "stage", 124],
+  // In stage: how long the lead has been at its Status (from its history, on the server); its header arrow filters by
+  // On track / Needs attention / Stalled, and it sorts longest or shortest first, untimed leads last
+  ["In stage", "in_stage", 116],
   ["Source", "source", 104],
   ["Owner", "owner", 144], // "Unassigned" for a lead in the Unassigned Pool
   // who the lead was last transferred to, and when (empty when it never changed owner)
@@ -60,6 +64,20 @@ const Cell = ({ children, title, className = "" }) => (
     {children}
   </td>
 );
+
+// The In stage badge: green on track, amber needs attention, red stalled, grey when not timed (Not started, Not
+// recorded); a dash for a closed lead. The full wording is the tooltip and what a screen reader says.
+function InStage({ clock, stage, pooled }) {
+  const badge = inStageBadge(clock, stage, pooled);
+  if (!badge) return null;
+  const label = clock.since ? `${badge.label} (since ${dateTime(clock.since)})` : badge.label;
+  return (
+    <span className={badge.tone === "closed" ? "in-stage-none" : `stage-badge in-stage ${badge.tone}`} title={label}>
+      <span aria-hidden="true">{badge.text}</span>
+      <span className="sr-only">{label}</span>
+    </span>
+  );
+}
 
 const plural = (n, word = "lead") => `${Number(n).toLocaleString()} ${word}${n === 1 ? "" : "s"}`;
 
@@ -274,6 +292,7 @@ export default function LeadsTable({
     if (filters.source) params.set("source", filters.source);
     if (filters.owner) params.set("owner", filters.owner);
     if (filters.region) params.set("region", filters.region); // filtered on the server, before paging (List and Kanban)
+    if (filters.in_stage) params.set("in_stage", filters.in_stage); // the same: On track, Needs attention or Stalled
     for (const key of ["created", "modified"]) {
       if (!filters[key]) continue;
       const [from, to] = rangeBounds(filters[key], filters[`${key}_from`], filters[`${key}_to`]);
@@ -726,6 +745,9 @@ export default function LeadsTable({
                       </Cell>
                       <td className="cell">
                         <StageBadge stage={l.stage} />
+                      </td>
+                      <td className="cell">
+                        <InStage clock={l.in_stage} stage={l.stage} pooled={l.in_pool} />
                       </td>
                       <Cell title={l.uploaded_from ? `Uploaded from ${l.uploaded_from}` : l.source}>{l.source}</Cell>
                       {/* Owner (the full name on hover, focus or ⋯): "Unassigned" while the lead is in the Unassigned

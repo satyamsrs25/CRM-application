@@ -3,7 +3,7 @@ import { can, canCreateOpportunity, canCreateSales } from "./permissions";
 import DeletedLeads from "./DeletedLeads";
 import LeadsTable from "./LeadsTable";
 import { applyFilters, filterSummary, opts, ownerOptions, Th, useFilters } from "./Filters";
-import { dateFilterOffered, LEAD_DATE_RANGES, REGION_NONE } from "./listHelpers";
+import { dateFilterOffered, IN_STAGE_FILTERS, LEAD_DATE_RANGES, REGION_NONE } from "./listHelpers";
 import { PHONE_COUNTRIES } from "./phone";
 import {
   isPooledLead,
@@ -185,9 +185,16 @@ function filterDefs(collection, data, user, viewName, fixedStage) {
       options: [[REGION_NONE, "Not specified"], ...PHONE_COUNTRIES.map((c) => [c.code, c.name])],
       search: { placeholder: "Search countries", none: "No country matches" },
     };
+    // In stage: the In stage column's filter arrow (an In stage button in the Kanban's filter bar), filtered on the
+    // server before paging. Leads that aren't timed (Not started, Not recorded, closed) are in All only, so it isn't
+    // offered on lists that hold only those (a choice left over from another list is dropped there: validFilters).
+    const inStage = /^(Converted|Lost|Unqualified|Unassigned) Leads$/.test(viewName)
+      ? []
+      : [{ key: "in_stage", label: "In stage", allLabel: "All", options: IN_STAGE_FILTERS }];
     // Created and Last Modified: Any time, Today, Last week, Last month or a custom range (List and Kanban)
     return [
       ...(st ? [{ key: "stage", label: "Lead Status", options: opts(st) }] : []),
+      ...inStage,
       { key: "source", label: "Lead Source", options: opts([...LEAD_SOURCES, UPLOAD_SOURCE]) },
       ...leadOwner,
       region,

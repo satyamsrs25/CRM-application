@@ -10,6 +10,7 @@ import { regionName } from "./phone";
 import { ActionMenu, Card, Icon, ObjectIcon, PathBar, PhoneReveal, StageBadge } from "./ui";
 import { AssignLeadDialog, RequestTransferDialog, TransferRequestList } from "./TransferRequests";
 import { api } from "./api";
+import { stageClockSummary } from "./listHelpers";
 
 import { ATTACHMENT_UPLOAD_STAGES, isPooledLead, LEAD_FLOW, LEAD_OPTIONAL_STAGES, OPPORTUNITY_FLOW } from "./domain";
 
@@ -212,6 +213,19 @@ function ActivityTab({ item, tasks, toggleTask, setModal, openTask, collection, 
   );
 }
 
+// In stage under the status path: "In New for 13 days" with its rating, or a plain badge and a line saying why a
+// lead isn't timed (Not started, Not recorded) or that closed leads aren't
+function StageClockLine({ clock, since }) {
+  if (clock.state === "closed") return <p className="stage-clock muted">{clock.text}</p>;
+  return (
+    <p className="stage-clock" title={since ? `Since ${dateTime(since)}` : undefined}>
+      {clock.state === "timed" && <span className="stage-clock-text">{clock.text}</span>}
+      {clock.badge && <span className={`stage-badge in-stage ${clock.tone}`}>{clock.badge}</span>}
+      {clock.state !== "timed" && <span className="stage-clock-text muted">{clock.text}</span>}
+    </p>
+  );
+}
+
 export default function RecordPage({ collection, item, data, user, openLead, openTask, toggleTask, convert, setModal, openEmail, emailVersion, reload }) {
   const lead = collection === "leads";
   const [tab, setTab] = useState("activity");
@@ -256,6 +270,10 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
   const canAssign = pooled && !closed && canAssignPool(user);
   const canAskForPool = pooled && !closed && canRequestPool(user) && !askedAlready;
   const tasks = data.tasks.filter((t) => t.relatedId === item.id && t.relatedType === collection);
+  // New Task: anyone who can open the record, except on a pooled lead (nobody to do it yet; the backend says the same)
+  const canAddTask = !pooled;
+  // In stage (leads): the Leads list's clock from the server (item.in_stage), the same start, time and rating
+  const stageClock = lead ? stageClockSummary(item.in_stage, item.stage, pooled) : null;
   const edit = () => (lead ? openLead(item) : setModal({ type: "opportunity", record: item }));
   // the pencils on the Details tab follow the same rule as Actions > Edit (none for a view-only user)
   const editField = canEdit ? edit : undefined;
@@ -440,16 +458,33 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
       </section>
 
       <section className="card path-card">
-        <PathBar
-          stages={pathStages}
-          skipped={skippedStages}
-          notReached={notReached}
-          stepState={stepState}
-          current={item.stage}
-          closed={closed}
-          onSelect={canWork ? selectStage : () => {}}
-          lostLabel={item.stage === "Lost" ? (lead ? "Lost" : "Closed Lost") : null}
-        />
+        <div className="path-main">
+          <PathBar
+            stages={pathStages}
+            skipped={skippedStages}
+            notReached={notReached}
+            stepState={stepState}
+            current={item.stage}
+            closed={closed}
+            onSelect={canWork ? selectStage : () => {}}
+            lostLabel={item.stage === "Lost" ? (lead ? "Lost" : "Closed Lost") : null}
+            currentNote={stageClock?.duration}
+          />
+          {stageClock && <StageClockLine clock={stageClock} since={item.in_stage?.since} />}
+          {stageClock?.notice && (
+            <div className={`stage-clock-notice ${stageClock.tone}`}>
+              <Icon name="warn" size={16} />
+              <span>
+                <b>{stageClock.badge}.</b> {stageClock.notice}
+              </span>
+              {canAddTask && (
+                <button type="button" className="sf-button small" onClick={() => openTask(item.id, collection)}>
+                  <ObjectIcon type="task" size={16} /> New Task
+                </button>
+              )}
+            </div>
+          )}
+        </div>
         {pooled && !closed && (
           <span className="read-only-note pool-note">
             <Icon name="lock" size={14} /> In the Unassigned Pool: no owner yet.{" "}
@@ -505,7 +540,7 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
               collection={collection}
               emails={emails}
               sendEmail={sendEmail}
-              canAddTask={!pooled}
+              canAddTask={canAddTask}
               canEmail={!summaryOnly}
               addFiles={
                 !lead && canEdit && ATTACHMENT_UPLOAD_STAGES.includes(item.stage)
