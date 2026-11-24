@@ -21,6 +21,7 @@ from app.security import (acting_user, acting_user_id, can_view, manages_pool, o
                           require_transfer, require_view, visible)
 from app.models import (Account, Contact, Email, EmailAttachment, Lead, LeadTransfer, LeadTransferRequest, Note,
                         Notification, Opportunity, StageHistory, Task, User)
+from app.routers.deleted_leads import keep_copy
 from app.phone_matches import check_lead_phone, find_phone_matches, phone_key, phone_message
 from app.regions import phone_region_problem
 from app.text_rules import person_name_problem, text_problem
@@ -987,7 +988,8 @@ def delete_lead(lead_id: int, db: Session = Depends(get_db)):
 
 
 def delete_one(db: Session, lead: Lead, actor_id: int) -> tuple[str, str, int]:
-    """Deletes a lead that is not converted, with its tasks, notes, emails and history, and logs it.
+    """Deletes a lead that is not converted, with its tasks, notes, emails and history, and logs it. A copy of the lead
+    and its notes is kept in Deleted Leads (app/routers/deleted_leads.py), to restore it to the Unassigned Pool.
     Permission is checked by the caller. Returns (name, summary, owner id) for the notifications."""
     if lead.stage == "Converted" or lead.opportunity is not None:
         raise HTTPException(status_code=400, detail="A converted lead can't be deleted: it has an opportunity.")
@@ -995,6 +997,7 @@ def delete_one(db: Session, lead: Lead, actor_id: int) -> tuple[str, str, int]:
     summary = " • ".join(x for x in (lead.company, lead.email, f"Owner: {owner}", f"Stage: {lead.stage}") if x)
     name = lead.name
     owner_id = lead.owner_id
+    keep_copy(db, lead, owner, actor_id)  # Leads > Deleted Leads can restore it
     email_ids = select(Email.id).where(Email.lead_id == lead.id)
     db.execute(delete(EmailAttachment).where(EmailAttachment.email_id.in_(email_ids)))
     db.execute(delete(Email).where(Email.lead_id == lead.id))

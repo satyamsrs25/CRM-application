@@ -3,6 +3,7 @@
 - Reminder: when a task's reminder time is reached, the owner gets a bell reminder and an email (once).
             This covers follow-ups, demo reminders ("Conduct demo", "Prepare for demo") and close-date reminders.
 - Overdue:  once a day, the owner of each open task that is past its due date gets an email and a bell reminder.
+- Deleted Leads: a deleted lead's copy is deleted for good after 90 days (app/routers/deleted_leads.py).
 Reminders stay on the bell until the task is done (see GET /api/notifications).
 """
 import asyncio
@@ -14,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Notification, Task
+from app.routers.deleted_leads import purge_expired
 from app.services import notify, now, record_link, start_of_today
 
 log = logging.getLogger("crm.scheduler")
@@ -47,7 +49,10 @@ def run_checks(db: Session) -> dict:
                f"{task.title} was due {task.due_date:%d %b %Y} ({days} day{'s' if days != 1 else ''} ago).",
                task_id=task.id, link=record_link(lead_id=task.lead_id, opportunity_id=task.opportunity_id), kind="reminder")
         count += 1
+    expired = purge_expired(db)
     db.commit()
+    if expired:
+        log.info("Deleted Leads older than 90 days removed for good: %s", expired)
     return {"reminders": len(reminders), "overdue": count}
 
 

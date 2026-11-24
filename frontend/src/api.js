@@ -467,6 +467,9 @@ export const api = {
   bulkTransferLeads: (lead_ids, to_user_id, note) =>
     apiRequest("/leads/bulk-transfer", { method: "POST", body: { lead_ids, to_user_id, note: note || null } }),
   bulkDeleteLeads: (lead_ids) => apiRequest("/leads/bulk-delete", { method: "POST", body: { lead_ids } }),
+  // Leads > Deleted Leads (Admin and Managers): restore ticked leads to the Unassigned Pool
+  deletedLeads: (params) => apiRequest(`/deleted-leads?${new URLSearchParams(params)}`),
+  restoreLeads: (ids) => apiRequest("/deleted-leads/restore", { method: "POST", body: { ids } }),
   // email campaigns (see backend/app/campaigns.py)
   // the account page's Leads: converted into the account, or the same company name / website
   accountLeads: (id) => apiRequest(`/accounts/${id}/leads`),

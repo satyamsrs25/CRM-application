@@ -1226,11 +1226,8 @@ export default function Modal({ modal, close, data, run, notify, user }) {
             <div className="delete-box" role="alert">
               <Icon name="warn" size={18} />
               <div>
-                <b>This lead will be deleted permanently.</b>
-                <p>
-                  Its tasks, notes, emails and stage history are deleted too. The Admin and Managers are notified, and
-                  the deletion is recorded in the Activity Log.
-                </p>
+                <b>Delete this lead?</b>
+                <p>You can restore it from Deleted Leads within 90 days.</p>
               </div>
             </div>
           )}

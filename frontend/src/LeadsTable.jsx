@@ -180,9 +180,8 @@ function BulkDialog({ action, count, users, me, onClose, onDone }) {
                 </label>
               </>
             ) : (
-              <p className="modal-subtitle">
-                Delete {plural(count)} with their tasks, notes and history? This can't be undone. Converted leads, and leads you can't
-                change, are skipped.
+              <p className="modal-subtitle confirm-text">
+                You can restore {count === 1 ? "it" : "them"} from Deleted Leads within 90 days. Converted leads are skipped.
               </p>
             )}
             {error && (
