@@ -8539,3 +8539,32 @@ p.list-state {
 .campaign-recipients.tracked td {
   vertical-align: top;
 }
+
+/* Leads > Deleted Leads (DeletedLeads.jsx): tick leads and Restore them to the Unassigned Pool */
+.deleted-leads-hint {
+  margin: 0;
+  color: var(--text-weak);
+  font-size: 13px;
+}
+.deleted-leads .sf-table td {
+  white-space: nowrap;
+}
+/* short confirm messages (Delete leads, Restore leads): centred, easy to read */
+.bulk-form .modal-subtitle.confirm-text {
+  padding: 6px 0;
+  color: var(--text);
+  font-size: 14px;
+  text-align: center;
+}
+.days-left {
+  color: var(--text-weak);
+}
+.days-left.urgent {
+  color: #ba0517; /* 7 days or less to restore */
+  font-weight: 600;
+}
+.deleted-leads .selection-actions .sf-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}

@@ -3147,6 +3147,35 @@ test("Campaign tracking: off by default, the Admin's switch, separate Track open
   assert.match(source("./api.js"), /setTracking: \(enabled\) => apiRequest\("\/campaigns\/tracking", \{ method: "PUT", body: \{ enabled \} \}\)/);
 });
 
+test("Leads > Deleted Leads: Admin and Managers tick deleted leads and Restore them to Unassigned Leads", () => {
+  const list = source("./ListView.jsx");
+  assert.match(list, /\.\.\.\(user\.role === "Admin" \|\| user\.role === "Manager" \? \[\[DELETED_LEADS, \(\) => false\]\] : \[\]\)/);
+  assert.match(list, /viewName === DELETED_LEADS \? \(\s*<DeletedLeads notify=\{notify\} reload=\{reload\} onSummary=\{setLeadSummary\} \/>/);
+  const page = source("./DeletedLeads.jsx");
+  assert.match(page, /api\s*\.deletedLeads\(\{ search: term, page: page \+ 1, page_size: size \}\)/);
+  assert.match(page, /const res = await api\.restoreLeads\(\[\.\.\.selected\]\);/);
+  assert.match(page, /aria-label=\{`Select all \$\{pageIds\.length\} deleted leads on this page`\}/);
+  assert.match(page, /`Select all \$\{plural\(Math\.min\(total, 1000\)\)\}`/);
+  assert.match(page, /restored to Unassigned Leads\./);
+  const api = source("./api.js");
+  assert.match(api, /restoreLeads: \(ids\) => apiRequest\("\/deleted-leads\/restore", \{ method: "POST", body: \{ ids \} \}\)/);
+  // deleting says the lead can be restored, not that it is gone for good
+  assert.doesNotMatch(source("./LeadsTable.jsx"), /This can't be undone/);
+  assert.doesNotMatch(source("./Modal.jsx"), /deleted permanently/);
+});
+
+test("Leads > Deleted Leads: restorable for 90 days, with the days left on each lead", () => {
+  const page = source("./DeletedLeads.jsx");
+  assert.match(page, /export const KEEP_DAYS = 90;/);
+  assert.match(page, /<DaysLeft days=\{r\.days_left\} expiresAt=\{r\.expires_at\} \/>/);
+  assert.match(page, /Days Left<\/th>/);
+  // short delete and restore messages
+  assert.match(source("./Modal.jsx"), /<b>Delete this lead\?<\/b>\s*<p>You can restore it from Deleted Leads within 90 days\.<\/p>/);
+  assert.match(source("./LeadsTable.jsx"), /You can restore \{count === 1 \? "it" : "them"\} from Deleted Leads within 90 days\. Converted leads are skipped\./);
+  assert.match(page, /\{selected\.size === 1 \? "It'll" : "They'll"\} move to <b>Unassigned Leads<\/b>, with \{selected\.size === 1 \? "its" : "their"\} notes\./);
+  assert.match(page, /Restore within \{KEEP_DAYS\} days\. Restored leads go to Unassigned Leads\./);
+});
+
 test("In stage badge: under an hour, whole hours under a day, then whole days, singular and plural", () => {
   const text = (seconds) => elapsedText(seconds).text;
   assert.deepEqual([0, 59, 3599].map(text), ["< 1 hour", "< 1 hour", "< 1 hour"]);

@@ -18,9 +18,9 @@ from app.constants import LEAD_SOURCES, LEAD_STAGES, LEAD_START, OPPORTUNITY_STA
 from app.database import Base, SessionLocal, engine, get_db
 from app import mailer, scheduler, schemas
 from app.security import authenticate, ensure_default_admin, require_admin
-from app.routers import (accounts, activity, analytics, assistant, attachments, auth, campaigns, emails, home,
-                         lead_enrichment, lead_files, leads, opportunities, opportunity_files, tasks, transfer_requests,
-                         user_files)
+from app.routers import (accounts, activity, analytics, assistant, attachments, auth, campaigns, deleted_leads, emails,
+                         home, lead_enrichment, lead_files, leads, opportunities, opportunity_files, tasks,
+                         transfer_requests, user_files)
 from app import campaigns as campaign_sender
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:     %(name)s - %(message)s")
@@ -51,6 +51,12 @@ def upgrade_database() -> None:
             transferred_by_id INT NOT NULL REFERENCES users(id), note VARCHAR(300),
             transferred_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)"""))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_lead_transfers_lead ON lead_transfers (lead_id)"))
+        # Leads > Deleted Leads: a copy of each deleted lead, to restore it to the Unassigned Pool
+        conn.execute(text("""CREATE TABLE IF NOT EXISTS deleted_leads (
+            id SERIAL PRIMARY KEY, lead_id INT NOT NULL, name VARCHAR(101) NOT NULL, company VARCHAR(200),
+            email VARCHAR(255), stage VARCHAR(20), owner_id INT REFERENCES users(id), owner_name VARCHAR(100),
+            deleted_by_id INT REFERENCES users(id), deleted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, data TEXT NOT NULL)"""))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_deleted_leads_deleted_at ON deleted_leads (deleted_at DESC)"))
         # who added each lead (older leads: their first owner) and requests to have someone else's lead transferred
         conn.execute(text("ALTER TABLE leads ADD COLUMN IF NOT EXISTS created_by_id INT REFERENCES users(id)"))
         # Filling in created_by_id must not change a lead's Last Modified: the leads updated_at trigger is switched off
@@ -304,7 +310,7 @@ app.include_router(campaigns.public)
 for router in (user_files.router, emails.router, home.router, lead_files.router, lead_enrichment.router,
                lead_enrichment.contacts_router, campaigns.router, campaigns.leads_router, leads.router, opportunity_files.router,
                opportunities.router, attachments.router, tasks.router, accounts.router, activity.router, assistant.router,
-               transfer_requests.router, analytics.router):
+               transfer_requests.router, analytics.router, deleted_leads.router):
     app.include_router(router, dependencies=[Depends(authenticate)])
 
 

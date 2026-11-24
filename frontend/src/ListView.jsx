@@ -1,5 +1,6 @@
 import { DownloadLeads, TransferHistory, UploadLeads } from "./LeadFiles";
 import { can, canCreateOpportunity, canCreateSales } from "./permissions";
+import DeletedLeads from "./DeletedLeads";
 import LeadsTable from "./LeadsTable";
 import { applyFilters, filterSummary, opts, ownerOptions, Th, useFilters } from "./Filters";
 import { dateFilterOffered, IN_STAGE_FILTERS, LEAD_DATE_RANGES, REGION_NONE } from "./listHelpers";
@@ -49,6 +50,8 @@ const LEAD_VIEWS = {
   "No Email": "no_email",
 };
 
+const DELETED_LEADS = "Deleted Leads";
+
 // List views per object, like the Salesforce "list view" picker
 function views(collection, user) {
   const mine = (r) => r.owner_id === user.id;
@@ -69,6 +72,8 @@ function views(collection, user) {
       ["Unsubscribed Leads", (r) => !!r.unsubscribed_at],
       ["Working Emails", (r) => !!r.email && !r.email_invalid_at && !r.unsubscribed_at],
       ["No Email", (r) => !r.email],
+      // the Admin and Managers restore deleted leads to the Unassigned Pool (DeletedLeads.jsx)
+      ...(user.role === "Admin" || user.role === "Manager" ? [[DELETED_LEADS, () => false]] : []),
     ],
     opportunities: [
       ["All Opportunities", () => true],
@@ -578,7 +583,9 @@ export default function ListView({ collection, data, user, openNew, setModal, qu
         )}
       </section>
 
-      {collection === "leads" ? (
+      {collection === "leads" && viewName === DELETED_LEADS ? (
+        <DeletedLeads notify={notify} reload={reload} onSummary={setLeadSummary} />
+      ) : collection === "leads" ? (
         <LeadsTable
           view={LEAD_VIEWS[viewName] || "all"}
           activity={activity}

@@ -338,6 +338,26 @@ class StageHistory(Base):
     opportunity: Mapped[Opportunity | None] = relationship(back_populates="history")
 
 
+class DeletedLead(Base):
+    """A copy of a deleted lead (Leads > Deleted Leads): every field of the lead and its notes, so the Admin or a
+    Manager can restore it. Restoring puts it back in the Unassigned Pool and removes this copy."""
+    __tablename__ = "deleted_leads"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    lead_id: Mapped[int]  # the lead's id (it gets it back when restored, if still free)
+    name: Mapped[str] = mapped_column(String(101))
+    company: Mapped[str | None] = mapped_column(String(200))
+    email: Mapped[str | None] = mapped_column(String(255))
+    stage: Mapped[str | None] = mapped_column(String(20))
+    owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))  # its owner when it was deleted
+    owner_name: Mapped[str | None] = mapped_column(String(100))
+    deleted_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    deleted_at: Mapped[datetime | None] = mapped_column(server_default=func.now())
+    data: Mapped[str] = mapped_column(Text)  # JSON: {"lead": {column: value}, "notes": [{body, created_by_id, created_at}]}
+
+    deleted_by: Mapped[User | None] = relationship(foreign_keys=[deleted_by_id])
+
+
 class Note(Base):
     __tablename__ = "notes"
 
