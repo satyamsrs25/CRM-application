@@ -7,11 +7,33 @@
 // The Unassigned column (first, before Unqualified) holds the leads in the Unassigned Pool, which are in no stage
 // column too. Its cards never move and nothing can be dropped on it: dragging is not a way to claim or assign a lead.
 // The Admin or a Manager assigns it, and a Salesperson requests it, from the lead's page.
+// Each card shows its time at its status (coloured by its rating; a pooled lead's waiting time is neutral), a red border
+// when an open lead is stalled, and its details (LeadCardDetails) on a resting mouse, keyboard focus or a tap. A stage
+// column's header counts its stalled leads (all of them, every page: from the server).
 import React, { useState } from "react";
+import { dateTime } from "./format";
 import { initials, isPooledLead, leadStageAction, POOL_LABEL } from "./domain";
-import { columnRange } from "./listHelpers";
-import { can, canCreateSales } from "./permissions";
+import { columnRange, inStageBadge } from "./listHelpers";
+import { LeadCardDetails, useCardDetails } from "./OpportunityTools";
+import { can, canCreateSales, seesPoolContacts } from "./permissions";
 import { Icon } from "./ui";
+
+// a rated open lead past its status's Stalled limit (pooled waiting time, closed and untimed leads never are)
+const isStalled = (lead) => lead.in_stage?.state === "timed" && lead.in_stage.category === "stalled";
+
+function CardAge({ lead }) {
+  const badge = inStageBadge(lead.in_stage, lead.stage, isPooledLead(lead));
+  if (!badge || badge.tone === "closed") return null;
+  const label = lead.in_stage?.since ? `${badge.label} (since ${dateTime(lead.in_stage.since)})` : badge.label;
+  return (
+    <div className="kanban-age">
+      <span className={`stage-badge in-stage ${badge.tone}`} title={label}>
+        <span aria-hidden="true">{badge.text}</span>
+        <span className="sr-only">{label}</span>
+      </span>
+    </div>
+  );
+}
 
 // why a column has no cards on this board, and what brings it back
 const EXCLUDED_HELP = {
@@ -20,8 +42,28 @@ const EXCLUDED_HELP = {
   "Hidden by the Owner filter": "Clear the Owner filter to see this column.",
 };
 
-export default function LeadsKanban({ columns, board, user, setModal, size, pages = {}, busy = {}, onPage }) {
+export default function LeadsKanban({ columns, board, user, setModal, size, pages = {}, busy = {}, onPage, tasks = [], limits, openTask, openEmail, onRequest }) {
   const [over, setOver] = useState(null);
+  const { openId, close, cardProps, infoProps } = useCardDetails();
+  // what a card's details offer: the app's own forms, nothing done until they are submitted. A pooled lead has no
+  // follow-ups or calls yet; one whose contact details this user may not see shows none (the server never sent them).
+  const actionsFor = (lead) => {
+    const pooled = isPooledLead(lead);
+    const hidden = !!lead.contact_hidden;
+    return {
+      addTask: !pooled && openTask ? () => (close(), openTask(lead.id, "leads")) : null,
+      logCall: !hidden && (!pooled || seesPoolContacts(user)) ? () => (close(), setModal({ type: "call", collection: "leads", record: lead, contactName: lead.name })) : null,
+      email:
+        !hidden && openEmail
+          ? () => (
+              close(),
+              openEmail({ type: "lead", field: "lead_id", id: lead.id, name: lead.name, email: lead.email, firstName: lead.first_name, stage: lead.stage,
+                noEmail: "This lead has no email address." })
+            )
+          : null,
+      request: pooled && onRequest ? () => (close(), onRequest(lead)) : null,
+    };
+  };
   // Salespeople change only their own leads, Managers and Admins any; converting follows the same rule (as on the lead page)
   const rights = (lead) => {
     const canEdit = lead.owner_id === user?.id || can(user, "edit_team_records");
@@ -76,6 +118,10 @@ export default function LeadsKanban({ columns, board, user, setModal, size, page
                   {excluded || (pool ? "No owner yet" : closed ? "Closed" : "Open")}
                   {range && range.pages > 1 && ` • ${range.range.split(" of ")[0]}`}
                 </p>
+                {/* every stalled lead in the column, not only this page's */}
+                {!pool && !closed && column && column.stalled != null && (
+                  <p className={`kanban-stalled${column.stalled ? " on" : ""}`}>{column.stalled.toLocaleString()} stalled</p>
+                )}
               </div>
               {/* an excluded column has no count: its leads aren't part of this board */}
               {!excluded && (
@@ -90,11 +136,14 @@ export default function LeadsKanban({ columns, board, user, setModal, size, page
                 return (
                   <article
                     key={lead.id}
-                    className="kanban-card"
+                    {...cardProps(lead.id)}
+                    className={`kanban-card${isStalled(lead) ? " stalled" : ""}`}
                     aria-labelledby={`lead-card-${lead.id}`}
                     draggable={canMove}
                     title={canMove ? "Drag to another column to change its stage" : undefined}
                     onDragStart={(e) => {
+                      if (e.target.closest?.(".card-details")) return e.preventDefault(); // selecting text in the details
+                      close();
                       e.dataTransfer.setData("text/plain", String(lead.id));
                       e.dataTransfer.effectAllowed = "move";
                     }}
@@ -105,6 +154,9 @@ export default function LeadsKanban({ columns, board, user, setModal, size, page
                       <a id={`lead-card-${lead.id}`} href={`#/leads/${lead.id}`}>
                         {lead.name}
                       </a>
+                      <button {...infoProps(lead.id, lead.name)}>
+                        <Icon name="info" size={15} />
+                      </button>
                     </div>
                     <p className={`kanban-line${lead.company ? "" : " none"}`} title="Company">
                       <Icon name="building" size={13} /> <span>{lead.company || "No company"}</span>
@@ -118,6 +170,10 @@ export default function LeadsKanban({ columns, board, user, setModal, size, page
                       </span>
                       {lead.source && <small>{lead.source}{pool ? " (locked)" : ""}</small>}
                     </div>
+                    <CardAge lead={lead} />
+                    {openId === lead.id && (
+                      <LeadCardDetails id={`card-details-${lead.id}`} lead={lead} tasks={tasks} limits={limits} actions={actionsFor(lead)} />
+                    )}
                   </article>
                 );
               })}

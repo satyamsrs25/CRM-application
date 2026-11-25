@@ -32,7 +32,7 @@ import { amount, compactMoneyMix, CURRENCIES, dateTime, DEFAULT_CURRENCY, maskPh
 import { ActionMenu, DateCell, Icon, ObjectIcon, Pagination, PhoneReveal, StageBadge, usePaged } from "./ui";
 import { bulkResultMessage, OpportunityBulkDialog } from "./OpportunityBulk";
 import { api } from "./api";
-import { CardDetails, OpportunityFilterRow, SavedViewDialog, StageLimitsDialog } from "./OpportunityTools";
+import { CardDetails, LeadFilterRow, OpportunityFilterRow, SavedViewDialog, StageLimitsDialog } from "./OpportunityTools";
 
 const OPEN_LEAD = LEAD_OPEN_STAGES;
 const OPEN_OPP = OPPORTUNITY_OPEN_STAGES;
@@ -192,18 +192,15 @@ function filterDefs(collection, data, user, viewName, fixedStage) {
   const distinct = (list) => [...new Set(list.filter(Boolean))].sort((a, b) => a.localeCompare(b));
   if (collection === "leads") {
     const st = stages(LEAD_STAGES, OPEN_LEAD);
-    // Owner, with Unassigned (the Unassigned Pool) for everyone: people who see only their own leads get Me and
-    // Unassigned. Not on "My ..." views (only the user's own) or Unassigned Leads (the pool already)
+    // Owner: several people and Unassigned (the Unassigned Pool) for everyone, in the filter row above the List and the
+    // Kanban (one control: no column arrow or board button). People who see only their own leads get Me and
+    // Unassigned. Not on "My ..." views (only the user's own) or Unassigned Leads (the pool already). Filtered on the
+    // server before paging, where the list view still decides whose leads (and whether the pool) this user sees.
+    const leadGroups = [...ownerChoiceGroups(data.users || [], user, team), { label: "Unassigned Pool", options: [[POOL_OWNER, POOL_LABEL]] }];
     const leadOwner =
       viewName.startsWith("My ") || viewName === "Unassigned Leads"
         ? []
-        : [{
-            key: "owner",
-            column: "Owner",
-            label: "Owner",
-            options: [...(team ? ownerOptions(data.users || [], user) : [[String(user.id), "Me"]]), [POOL_OWNER, POOL_LABEL]],
-            get: (r) => (isPooledLead(r) ? POOL_OWNER : String(r.owner_id)),
-          }];
+        : [{ key: "owner", label: "Owner", multi: true, groups: leadGroups, options: leadGroups.flatMap((g) => g.options) }];
     // Region (the country chosen beside the phone; not the Location's state): the Region column's filter arrow, like
     // Status (a Region button in the Kanban's filter bar), filtered on the server. All Regions, Not specified, then
     // every country of the phone's country list by name (never a code or calling code), in a menu searchable by name.
@@ -471,19 +468,29 @@ export default function ListView({ collection, data, user, openNew, setModal, qu
   const ticks = collection === "opportunities";
   const opps = collection === "opportunities";
   const dataList = collection === "leads" || collection === "opportunities";
-  // Opportunities: this user's own saved views (beside the standard ones), the one chosen, its dialogs, and the In stage
-  // limits (the card details show them; the Admin changes them)
+  // Opportunities and Leads: this user's own saved views of this list (beside the standard ones), the one chosen, its
+  // dialogs, and this list's In stage limits (the card details show them; the Admin changes them)
+  const savable = opps || collection === "leads";
   const [savedViews, setSavedViews] = useState([]);
+  const [viewsLoaded, setViewsLoaded] = useState(false);
   const [savedId, setSavedId] = useState(null);
   const [viewDialog, setViewDialog] = useState(null); // "save" | "rename" | "delete"
   const [limits, setLimits] = useState(null);
   const [limitsOpen, setLimitsOpen] = useState(false);
   useEffect(() => {
-    if (!opps) return;
-    api.savedViews("opportunities").then(setSavedViews).catch(() => setSavedViews([]));
-    api.opportunityStageLimits().then(setLimits).catch(() => setLimits(null));
-  }, [opps]);
+    if (!savable) return;
+    api
+      .savedViews(collection)
+      .then(setSavedViews)
+      .catch(() => setSavedViews([]))
+      .finally(() => setViewsLoaded(true));
+    (opps ? api.opportunityStageLimits() : api.leadStageLimits()).then(setLimits).catch(() => setLimits(null));
+  }, [collection]); // eslint-disable-line react-hooks/exhaustive-deps
   const savedView = savedViews.find((v) => v.id === savedId) || null;
+  // Leads: the table keeps its own search and sort (LeadsTable.jsx); it tells them here (leadState), and a saved view
+  // or Clear All sets them there (leadPreset)
+  const [leadState, setLeadState] = useState({ search: "", sort: { col: "created", dir: "desc" } });
+  const [leadPreset, setLeadPreset] = useState(null);
   const [uploads, setUploads] = useState(0); // reloads the Leads list after an upload
   const params = new URLSearchParams(query);
   const stageFilter = params.get("stage");
@@ -595,45 +602,101 @@ export default function ListView({ collection, data, user, openNew, setModal, qu
     setFilterValues({});
     setSearch("");
   };
-  // a saved view: its standard view, filters, search and sort (owners no longer allowed were left out by the server)
-  const applySaved = (v) => {
+  // the list as it is now: its search and sort (Leads: the table's), in the form a saved view keeps them
+  const leads = collection === "leads";
+  const currentSearch = leads ? leadState.search : search.trim();
+  const currentSort = leads ? { column: leadState.sort.col, dir: leadState.sort.dir } : { column: cols[sort.col][0], dir: sort.dir };
+  const currentFilters = fixedStage ? { ...active, stage: fixedStage } : active;
+  // a saved view: its standard view, filters, search and sort (owners no longer allowed were left out by the server).
+  // keep: after a reload, the filters, search and sort as they were left (unsaved changes stay unsaved, not lost)
+  const applySaved = (v, keep = null) => {
     setSavedId(v.id);
     setViewName(v.base_view);
-    setFilterValues(v.filters);
-    setSearch(v.search || "");
-    const col = cols.findIndex(([label]) => label === v.sort?.column);
-    setSort({ col: col >= 0 ? col : 0, dir: v.sort?.dir === -1 ? -1 : 1 });
+    if (!keep) setFilterValues(v.filters);
+    const state = keep || { search: v.search || "", sort: v.sort };
+    if (leads) {
+      setLeadPreset({ search: state.search, sort: { col: state.sort.column, dir: state.sort.dir }, nonce: Date.now() });
+    } else {
+      setSearch(state.search);
+      const col = cols.findIndex(([label]) => label === state.sort?.column);
+      setSort({ col: col >= 0 ? col : 0, dir: state.sort?.dir === -1 ? -1 : 1 });
+    }
     if (v.adjusted) notify?.(`Some of "${v.name}"'s choices don't apply to your access now, so they were left out.`);
   };
   const ordered = (o) => JSON.stringify(Object.entries(o).sort(([a], [b]) => a.localeCompare(b)));
+  // unsaved changes: the filters, search or sort differ from what the chosen view saved (nothing is saved by itself)
   const savedChanged =
     !!savedView &&
-    (ordered(active) !== ordered(savedView.filters) || search.trim() !== (savedView.search || "") ||
-      cols[sort.col][0] !== savedView.sort.column || sort.dir !== savedView.sort.dir);
+    (ordered(currentFilters) !== ordered(savedView.filters) || currentSearch !== (savedView.search || "") ||
+      currentSort.column !== savedView.sort.column || currentSort.dir !== savedView.sort.dir);
+  // the chosen saved view and its unsaved search and sort are remembered in this browser, so a reload comes back to them
+  // (the filters are remembered already: useFilters)
+  const memoryKey = `salestrack.savedView.${user?.id}.${collection}`;
+  const restored = useRef(false);
+  useEffect(() => {
+    if (!savable || !viewsLoaded || restored.current) return;
+    restored.current = true;
+    let memo = null;
+    try {
+      memo = JSON.parse(localStorage.getItem(memoryKey));
+    } catch {
+      memo = null;
+    }
+    const v = memo && savedViews.find((x) => x.id === memo.id);
+    if (v && !listParam && !stageFilter) applySaved(v, { search: memo.search || "", sort: memo.sort || v.sort });
+  }, [viewsLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!savable || !restored.current) return;
+    try {
+      if (savedId) localStorage.setItem(memoryKey, JSON.stringify({ id: savedId, search: currentSearch, sort: currentSort }));
+      else localStorage.removeItem(memoryKey);
+    } catch {
+      /* private window: not remembered */
+    }
+  }, [savedId, currentSearch, currentSort.column, currentSort.dir]); // eslint-disable-line react-hooks/exhaustive-deps
+  const noun = leads ? "lead" : "opportunity";
   const submitView = async (name) => {
     if (viewDialog === "save") {
       const created = await api.createSavedView({
-        collection: "opportunities",
+        collection,
         name,
-        base_view: allViews.some(([n]) => n === viewName) ? viewName : allViews[0][0],
-        filters: fixedStage ? { ...active, stage: fixedStage } : active,
-        search: search.trim(),
-        sort: { column: cols[sort.col][0], dir: sort.dir },
+        base_view: allViews.some(([n]) => n === viewName) && viewName !== DELETED_LEADS ? viewName : leads ? "All Open Leads" : allViews[0][0],
+        filters: currentFilters,
+        search: currentSearch,
+        sort: currentSort,
       });
       setSavedViews((list) => [...list, created].sort((a, b) => a.name.localeCompare(b.name)));
-      applySaved(created);
+      applySaved(created); // chosen at once: Manage View replaces Save as View
       notify?.(`View "${created.name}" saved. Only you see it.`);
     } else if (viewDialog === "rename") {
-      const renamed = await api.renameSavedView(savedView.id, name);
+      const renamed = await api.renameSavedView(savedView.id, name, collection);
       setSavedViews((list) => list.map((v) => (v.id === renamed.id ? renamed : v)).sort((a, b) => a.name.localeCompare(b.name)));
       notify?.(`View renamed to "${renamed.name}".`);
     } else {
-      await api.deleteSavedView(savedView.id);
+      await api.deleteSavedView(savedView.id, collection);
       setSavedViews((list) => list.filter((v) => v.id !== savedView.id));
-      setSavedId(null);
-      notify?.(`View "${savedView.name}" deleted. No opportunity changed.`);
+      setSavedId(null); // back to the standard view it was made from
+      notify?.(`View "${savedView.name}" deleted. No ${noun} changed.`);
     }
     setViewDialog(null);
+  };
+  // Update View: the chosen view takes the list's current filters, search and sort (only when something changed)
+  const updateView = async () => {
+    try {
+      const updated = await api.updateSavedView(savedView.id, { collection, filters: currentFilters, search: currentSearch, sort: currentSort });
+      setSavedViews((list) => list.map((v) => (v.id === updated.id ? updated : v)));
+      notify?.(`View "${updated.name}" updated.`);
+    } catch (err) {
+      notify?.(err.message);
+    }
+  };
+  const viewControls = {
+    savedView,
+    changed: savedChanged,
+    onSave: () => setViewDialog("save"),
+    onUpdate: updateView,
+    onRename: () => setViewDialog("rename"),
+    onDelete: () => setViewDialog("delete"),
   };
 
   const pickerViews = stageFilter ? [[`${stageFilter} ${LABEL[collection]}`], ...allViews] : allViews;
@@ -682,7 +745,7 @@ export default function ListView({ collection, data, user, openNew, setModal, qu
                       </button>
                     </li>
                   ))}
-                  {opps && savedViews.length > 0 && (
+                  {savable && savedViews.length > 0 && (
                     <>
                       <li className="menu-label" role="presentation" aria-hidden="true">
                         MY VIEWS
@@ -767,8 +830,8 @@ export default function ListView({ collection, data, user, openNew, setModal, qu
                 History
               </button>
             )}
-            {opps && user.role === "Admin" && limits && (
-              <button className="sf-button" onClick={() => setLimitsOpen(true)} title="When open opportunities need attention or are stalled">
+            {savable && user.role === "Admin" && limits && (
+              <button className="sf-button" onClick={() => setLimitsOpen(true)} title={`When open ${leads ? "leads" : "opportunities"} need attention or are stalled`}>
                 Stage Limits
               </button>
             )}
@@ -808,7 +871,6 @@ export default function ListView({ collection, data, user, openNew, setModal, qu
           <span>
             {rows.length} item{rows.length === 1 ? "" : "s"} • Sorted by {cols[sort.col][0]}
             {search.trim() ? " • Filtered by search" : ""}
-            {savedChanged ? " • Changed from the saved view" : ""}
             {filterSummary(defs, active) && (
               <>
                 {" • "}
@@ -845,10 +907,22 @@ export default function ListView({ collection, data, user, openNew, setModal, qu
             overdueStuck={flagCount}
             canClear={canClearAll}
             onClearAll={clearAll}
-            onSave={() => setViewDialog("save")}
-            savedView={savedView}
-            onRename={() => setViewDialog("rename")}
-            onDelete={() => setViewDialog("delete")}
+            views={viewControls}
+          />
+        )}
+        {leads && viewName !== DELETED_LEADS && (
+          <LeadFilterRow
+            defs={defs}
+            values={active}
+            onChange={setFilterValues}
+            stalled={leadSummary?.stalled}
+            canClear={Object.keys(active).length > 0 || !!leadState.search}
+            onClearAll={() => {
+              // the filters and the search; the list view (its scope) stays
+              setFilterValues({});
+              setLeadPreset({ search: "", nonce: Date.now() });
+            }}
+            views={viewControls}
           />
         )}
       </section>
@@ -875,6 +949,12 @@ export default function ListView({ collection, data, user, openNew, setModal, qu
           users={data.users || []}
           notify={notify}
           reload={reload}
+          preset={leadPreset}
+          onState={setLeadState}
+          tasks={data.tasks || []}
+          limits={limits}
+          openTask={openTask}
+          openEmail={openEmail}
         />
       ) : mode === "kanban" && collection === "opportunities" ? (
         <Kanban
@@ -1005,6 +1085,12 @@ export default function ListView({ collection, data, user, openNew, setModal, qu
       {limitsOpen && limits && (
         <StageLimitsDialog
           limits={limits}
+          onSubmit={leads ? api.setLeadStageLimits : api.setOpportunityStageLimits}
+          note={
+            leads
+              ? "Days at an open Lead Status before a lead needs attention and when it is stalled. The list, its filters and counts, the board and each lead's page use these. A pooled lead's waiting time is never rated, and closed leads aren't timed."
+              : undefined
+          }
           onClose={() => setLimitsOpen(false)}
           onSaved={(saved) => {
             setLimits(saved);

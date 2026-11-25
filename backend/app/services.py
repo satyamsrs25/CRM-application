@@ -576,20 +576,21 @@ EMAIL_SETTING = {"stage": "email_stage_updates", "assignment": "email_assignment
 
 def notify(db: Session, user_id: int, title: str, message: str, *, task_id: int | None = None,
            link: str | None = None, bell: bool = True, kind: str = "update", category: str | None = None,
-           why: str = "You get this email because you are the owner in SalesTrack CRM.") -> None:
+           why: str = "You get this email because you are the owner in SalesTrack CRM.", email: bool = True) -> None:
     """Puts a notification on the user's bell and, if their settings say so, emails it (after the save is committed).
 
     category: "stage" (lead/deal moved on), "assignment" (assigned to you) or "reminder";
               default: "reminder" for kind="reminder", otherwise "stage".
     bell=False: saved as already read (no badge), the email still follows the settings.
     why: the email's last line, saying why this person gets it.
+    email=False: the bell only, whatever the settings (lead deletions: they are in the Activity Log and Deleted Leads).
     """
     # stamped by the API's clock (TZ), the zone server_instant sends it with, whatever the database's own time zone
     db.add(Notification(user_id=user_id, task_id=task_id, title=title, message=message[:500], link=link,
                         kind=kind, is_read=not bell, created_at=now()))
     user = db.get(User, user_id)
     category = category or ("reminder" if kind == "reminder" else "stage")
-    if user and user.email and getattr(user, EMAIL_SETTING[category], True):
+    if email and user and user.email and getattr(user, EMAIL_SETTING[category], True):
         first = user.full_name.split()[0]
         mailer.queue(
             db,

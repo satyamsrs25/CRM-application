@@ -495,8 +495,13 @@ export const api = {
   setOpportunityStageLimits: (limits) => apiRequest("/opportunities/stage-limits", { method: "PUT", body: { limits } }),
   savedViews: (collection) => apiRequest(`/saved-views?collection=${encodeURIComponent(collection)}`),
   createSavedView: (view) => apiRequest("/saved-views", { method: "POST", body: view }),
-  renameSavedView: (id, name) => apiRequest(`/saved-views/${id}`, { method: "PATCH", body: { name } }),
-  deleteSavedView: (id) => apiRequest(`/saved-views/${id}`, { method: "DELETE" }),
+  // collection: the list the change comes from (the server refuses another list's view)
+  renameSavedView: (id, name, collection) => apiRequest(`/saved-views/${id}`, { method: "PATCH", body: { name, collection } }),
+  updateSavedView: (id, view) => apiRequest(`/saved-views/${id}`, { method: "PATCH", body: view }),
+  deleteSavedView: (id, collection) =>
+    apiRequest(`/saved-views/${id}${collection ? `?collection=${encodeURIComponent(collection)}` : ""}`, { method: "DELETE" }),
+  leadStageLimits: () => apiRequest("/leads/stage-limits"),
+  setLeadStageLimits: (limits) => apiRequest("/leads/stage-limits", { method: "PUT", body: { limits } }),
   setLeadEmailStatus: (id, status, reason) =>
     apiRequest(`/leads/${id}/email-status`, { method: "POST", body: { status, reason: reason || null } }),
   bulkTransferOpportunities: (opportunity_ids, to_user_id, note) =>

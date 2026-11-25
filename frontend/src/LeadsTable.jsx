@@ -242,6 +242,12 @@ export default function LeadsTable({
   users = [],
   notify = () => {},
   reload = () => Promise.resolve(),
+  preset = null, // a saved view or Clear All sets the search (and the sort): { search, sort?, nonce }
+  onState, // tells the page the search and sort in use (Save as View, Update View, unsaved changes)
+  tasks = [], // the tasks this user can see (the board cards' next task; nothing is asked for per card)
+  limits = null, // the Lead Status limits in use (the board cards' details)
+  openTask,
+  openEmail,
 }) {
   const [search, setSearch] = useState("");
   const [term, setTerm] = useState("");
@@ -279,6 +285,16 @@ export default function LeadsTable({
     const t = setTimeout(() => (setTerm(search.trim()), setPage(0)), 350); // search after typing stops
     return () => clearTimeout(t);
   }, [search]);
+  useEffect(() => {
+    if (!preset) return;
+    if (preset.search !== undefined) {
+      setSearch(preset.search);
+      setTerm(preset.search.trim());
+    }
+    if (preset.sort) setSort(preset.sort);
+    setPage(0);
+  }, [preset?.nonce]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => onState?.({ search: term, sort }), [term, sort.col, sort.dir]); // eslint-disable-line react-hooks/exhaustive-deps
   const filterKey = JSON.stringify(filters);
   useEffect(() => setPage(0), [view, stage, filterKey]);
   useEffect(() => setSelected(new Set()), [view, stage, filterKey, term, kanban]); // a new list starts with nothing ticked
@@ -309,7 +325,7 @@ export default function LeadsTable({
     let current = true;
     setLoading(true);
     // a failed load shows the error with Try again, not the previous list's rows or an empty-list message
-    load({ ...(stage || filters.stage ? { stage: stage || filters.stage } : {}), offset: page * size, limit: size })
+    load({ ...(stage || filters.stage ? { stage: stage || filters.stage } : {}), offset: page * size, limit: size, with_stalled: "true" })
       .then((r) => current && (setResult(r), setError(""), setLoading(false)))
       .catch((err) => current && (setError(err.message), setLoading(false), setResult(null)));
     return () => {
@@ -350,7 +366,9 @@ export default function LeadsTable({
       const at = pagesNow[column] || 0;
       const id = requests.current.start(column);
       setBusyCols((b) => ({ ...b, [column]: true }));
-      load({ ...columnQuery(col), offset: at * cardSize, limit: cardSize })
+      // the stage columns also count their stalled leads (the column header and the Stalled toggle); the Unassigned
+      // column's waiting time is never rated
+      load({ ...columnQuery(col), offset: at * cardSize, limit: cardSize, ...(col.pool ? {} : { with_stalled: "true" }) })
         .then((r) => {
           if (!requests.current.isLatest(column, id)) return;
           const fixed = clampPage(at, r.total, cardSize);
@@ -375,6 +393,12 @@ export default function LeadsTable({
     ? shownColumns.reduce((sum, c) => sum + (board?.[c.stage]?.total || 0), 0)
     : result?.total ?? 0;
   const pages = Math.max(1, Math.ceil(total / size));
+  // Stalled (the filter row's toggle): every filter but In stage, before paging; on the board, its stage columns together
+  const stalled = kanban
+    ? boardLoaded
+      ? shownColumns.reduce((sum, c) => sum + (board?.[c.stage]?.stalled || 0), 0)
+      : null
+    : result?.stalled ?? null;
   // fewer leads than before (a delete, a transfer, another page size): a page past the end moves back to the last one
   useEffect(() => {
     if (!kanban && result) setPage((p) => clampPage(p, result.total, size));
@@ -386,8 +410,8 @@ export default function LeadsTable({
   const sortLabel = COLUMNS.find(([, c]) => c === sort.col)?.[0];
   // the count and sort order are shown under the list title (ListView)
   useEffect(() => {
-    onSummary?.({ loaded: !!loaded, failed: !loaded && !!error, total, sort: sortText(sortLabel, sort.col, sort.dir) });
-  }, [!!loaded, !!error, total, sortLabel, sort.col, sort.dir]); // eslint-disable-line react-hooks/exhaustive-deps
+    onSummary?.({ loaded: !!loaded, failed: !loaded && !!error, total, stalled, sort: sortText(sortLabel, sort.col, sort.dir) });
+  }, [!!loaded, !!error, total, stalled, sortLabel, sort.col, sort.dir]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Selection: ticks stay when you change pages, so you can pick leads from several pages
   const items = result?.items || [];
@@ -607,9 +631,11 @@ export default function LeadsTable({
             <div className="board-filters">
               <span className="board-bar-label">Filter</span>
               {/* Region included: the same searchable menu as its column header in the List */}
-              {defs.map((def) => (
-                <FilterButton key={def.key} def={def} values={filters} onChange={onFilter} />
-              ))}
+              {defs
+                .filter((def) => !def.multi)
+                .map((def) => (
+                  <FilterButton key={def.key} def={def} values={filters} onChange={onFilter} />
+                ))}
               {chips.length > 0 && (
                 <button type="button" className="link board-clear" onClick={() => onFilter({})}>
                   Clear filters
@@ -652,6 +678,11 @@ export default function LeadsTable({
             pages={pagesNow}
             busy={busyCols}
             onPage={goToColumnPage}
+            tasks={tasks}
+            limits={limits}
+            openTask={openTask}
+            openEmail={openEmail}
+            onRequest={canRequestPool(user) ? (lead) => setPoolRequest({ ids: [lead.id], others: 0 }) : null}
           />
         ) : (
           <>
@@ -697,7 +728,7 @@ export default function LeadsTable({
                         sorted={sort.col === col}
                         flip={sort.dir === "asc"}
                         onSort={sortable === false ? undefined : () => sortBy(col)}
-                        filter={defs.find((f) => f.key === col)}
+                        filter={defs.find((f) => f.key === col && !f.multi)}
                         values={filters}
                         onChange={onFilter}
                       />
