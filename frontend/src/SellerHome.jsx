@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from "react";
+import React, { createContext, useContext, useEffect, useState } from "react";
 import { api } from "./api";
 import { homeDescription } from "./domain";
-import { compactMoney, compactMoneyMix, dateTime, greeting, shortDate, time } from "./format";
+import { amount, compactMoney, currencySymbol, dateTime, greeting, shortDate, time } from "./format";
+import { DISPLAY_CURRENCIES, convert, moneyIn, ratesNote, total } from "./currencyConvert";
 import { Card, EmptyState, Icon, ObjectIcon, Ring, StageBadge } from "./ui";
 import { formatBusiness, formatBusinessTime } from "./businessTime";
 import { can } from "./permissions";
@@ -18,11 +19,38 @@ import AnalyticsPage, { HomeTabs } from "./Analytics";
 // - Admin (every record): Overall Value, Win/Loss Analysis, Lead Sources, Closing Soon, Follow-up Radar,
 //   Recent Activity
 // The period (top right) applies to every card except Active Tasks, Scheduled Demos, Closing Soon and Recent Activity,
-// which are about now.
+// which are about now. Every amount is shown in the currency chosen next to it (Currency: USD, INR...): deals in other
+// currencies are converted at fixed rates (currencyConvert.js), so totals never mix "$" and "₹".
 
 const COLORS = { open: "#06a59a", won: "#1b96ff", lost: "#ea001e" };
 const list = (collection, view) => `#/${collection}?list=${encodeURIComponent(view)}`;
-const money = (values) => compactMoneyMix(values);
+// The dashboard's currency (the Currency drop-down), remembered in this browser
+const DisplayCurrency = createContext("USD");
+const CURRENCY_KEY = "salestrack.homeCurrency";
+function useDisplayCurrency() {
+  const [currency, setCurrency] = useState(() => {
+    try {
+      const saved = window.localStorage.getItem(CURRENCY_KEY);
+      return DISPLAY_CURRENCIES.includes(saved) ? saved : "USD";
+    } catch {
+      return "USD";
+    }
+  });
+  const choose = (value) => {
+    setCurrency(value);
+    try {
+      window.localStorage.setItem(CURRENCY_KEY, value);
+    } catch {
+      // private window: the choice lasts until the page is left
+    }
+  };
+  return [currency, choose];
+}
+// {"USD": 15000, "INR": 200000} -> "$17K" in the dashboard's currency
+function useMoney() {
+  const currency = useContext(DisplayCurrency);
+  return { currency, money: (values) => moneyIn(values, currency), sum: (values) => total(values, currency) };
+}
 const percent = (value) => (value === null || value === undefined ? "–" : `${value}%`);
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const ROUTE = { Lead: "leads", Opportunity: "opportunities", Account: "accounts", Contact: "contacts" };
@@ -139,6 +167,7 @@ function EventRows({ events, showDay, empty }) {
 
 // Overall Value: open, won and lost amounts of the opportunities created in the period (pills open the lists)
 function PipelineCard({ pipeline, views, range }) {
+  const { money, sum } = useMoney();
   const show = (key) => money(pipeline.by_currency?.[key]);
   return (
     <Card title="Overall Value" className="home-card" footer={<ViewButton href={`${list("opportunities", views.all)}${range}`}>View Opportunities</ViewButton>}>
@@ -146,12 +175,12 @@ function PipelineCard({ pipeline, views, range }) {
         <Ring
           label={`Total pipeline ${show("total_pipeline")}`}
           segments={[
-            { value: pipeline.open, color: COLORS.open },
-            { value: pipeline.won, color: COLORS.won },
-            { value: pipeline.lost, color: COLORS.lost },
+            { value: sum(pipeline.by_currency?.open), color: COLORS.open },
+            { value: sum(pipeline.by_currency?.won), color: COLORS.won },
+            { value: sum(pipeline.by_currency?.lost), color: COLORS.lost },
           ]}
         >
-          {/* two or more currencies ("$85M + ₹42M") get a smaller line so they stay inside the ring */}
+          {/* a long amount ("AED 12.5M") gets a smaller line so it stays inside the ring */}
           <strong className={show("total_pipeline").length > 8 ? "ring-long" : ""}>{show("total_pipeline")}</strong>
           <span>Total Pipeline</span>
         </Ring>
@@ -169,6 +198,7 @@ function PipelineCard({ pipeline, views, range }) {
 
 // Won and Lost side by side (count and amount): My Scorecard and Win/Loss Analysis
 function Outcomes({ won, wonValues, lost, lostValues }) {
+  const { money } = useMoney();
   return (
     <div className="home-score-outcomes">
       <div className="home-score-won">
@@ -205,6 +235,7 @@ function WinLossCard({ results, range }) {
 
 // Closing Soon (Admin): open opportunities closing in the next 30 days (or late), with their owner
 function ClosingSoonCard({ deals }) {
+  const { currency } = useMoney();
   return (
     <Card title="Closing Soon" className="home-card" footer={<ViewButton href={list("opportunities", "Open Opportunities")}>View Opportunities</ViewButton>}>
       {deals.length ? (
@@ -220,7 +251,10 @@ function ClosingSoonCard({ deals }) {
                 {d.owner_name && <small>{d.owner_name}</small>}
               </div>
               <div className="deal-amount">
-                <b>{compactMoney(d.amount, d.currency)}</b>
+                {/* in the dashboard's currency; the deal's own amount on hover */}
+                <b title={d.currency && d.currency !== currency ? `${amount(d.amount, d.currency)} (deal currency)` : undefined}>
+                  {compactMoney(convert(d.amount, d.currency || "USD", currency), currency)}
+                </b>
                 <StageBadge stage={d.stage} />
               </div>
             </li>
@@ -314,14 +348,16 @@ function SourcesCard({ sources, range }) {
 
 // Team Performance: each salesperson ranked by deals won, then converted leads, then open pipeline
 function LeaderboardCard({ people }) {
+  const { money, sum } = useMoney();
+  const pipeline = (p) => sum(p.open_pipeline_values);
   const ranked = [...people].sort(
     (a, b) =>
       b.won_count - a.won_count ||
       b.converted_this_month - a.converted_this_month ||
-      b.open_pipeline - a.open_pipeline ||
+      pipeline(b) - pipeline(a) ||
       a.name.localeCompare(b.name),
   );
-  const top = Math.max(...ranked.map((p) => p.open_pipeline), 0);
+  const top = Math.max(...ranked.map(pipeline), 0);
   return (
     <Card title="Team Performance" className="home-card home-wide">
       <div className="table-scroll">
@@ -348,7 +384,7 @@ function LeaderboardCard({ people }) {
                 <td className="num">{p.converted_this_month}</td>
                 <td>
                   <span className="team-inline-bar">
-                    <span style={{ width: `${top ? (p.open_pipeline / top) * 100 : 0}%` }} />
+                    <span style={{ width: `${top ? (pipeline(p) / top) * 100 : 0}%` }} />
                     <b>{money(p.open_pipeline_values)}</b>
                   </span>
                 </td>
@@ -402,6 +438,7 @@ export default function SellerHome({
   const dashboard = can(user, "home_dashboard");
   const teamView = isAdmin || (teamDashboard && scope === "team");
   const { charts, error } = useTeamCharts(dashboard && teamView, period);
+  const [currency, setCurrency] = useDisplayCurrency();
   if (!dashboard) return <AnalyticsPage user={user} />; // its own message when Analytics is off too
   const home = data.home?.seller_home;
   if (!home) return null;
@@ -471,7 +508,7 @@ export default function SellerHome({
             </div>
             <div>
               <dt>Average deal</dt>
-              <dd>{money(score.average_deal)}</dd>
+              <dd>{score.won ? moneyIn({ [currency]: total(score.won_values, currency) / score.won }, currency) : moneyIn({}, currency)}</dd>
             </div>
           </dl>
         </Card>
@@ -504,6 +541,16 @@ export default function SellerHome({
         </div>
         <div className="home-controls">
           <PeriodPicker period={period} setPeriod={setPeriod} shown={shown} />
+          <label className="home-currency" title={ratesNote(currency)}>
+            <span>Currency</span>
+            <select value={currency} onChange={(e) => setCurrency(e.target.value)} aria-label="Show amounts in">
+              {DISPLAY_CURRENCIES.map((c) => (
+                <option key={c} value={c}>
+                  {c} ({currencySymbol(c)})
+                </option>
+              ))}
+            </select>
+          </label>
           {teamDashboard && !isAdmin && (
             <div className="home-scope" role="group" aria-label="Show records">
               <button className={scope === "team" ? "on" : ""} aria-pressed={scope === "team"} onClick={() => setScope("team")}>
@@ -521,7 +568,9 @@ export default function SellerHome({
       {teamView && !charts && !error ? (
         <p className="table-empty">Loading the dashboard…</p>
       ) : cards.length ? (
-        <div className="home-grid">{cards}</div>
+        <DisplayCurrency.Provider value={currency}>
+          <div className="home-grid">{cards}</div>
+        </DisplayCurrency.Provider>
       ) : (
         !error && <EmptyState text="Nothing to show yet." />
       )}

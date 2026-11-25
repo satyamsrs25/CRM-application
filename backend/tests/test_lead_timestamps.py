@@ -140,3 +140,34 @@ def test_daylight_saving_edges_are_read_as_documented(client, server_zone):
     stored(lead_id, created_at=datetime(2026, 3, 8, 2, 30))  # doesn't exist on a New York clock
     got = login_as(client, RAVI).get(f"/api/leads/{lead_id}").json()["created_at"]
     assert instant(got) == datetime(2026, 3, 8, 7, 30, tzinfo=timezone.utc)  # = 02:30 standard time = 03:30 daylight
+
+
+def test_bell_notifications_carry_the_server_offset(client, server_zone):
+    """A Manager approves a pooled-lead request at 8:33 PM in New York: the Salesperson's bell gets that moment with
+    New York's offset, so a browser in India shows "Just now", not "11 h ago"."""
+    from app.models import Notification
+
+    server_zone("America/New_York")
+    with db() as s:
+        s.add(Notification(user_id=RAVI, title="Lead assigned to you", message="Synthetic approval", kind="update",
+                           created_at=CREATED))
+        s.commit()
+    items = login_as(client, RAVI).get("/api/notifications").json()
+    sent = next(n for n in items if n["message"] == "Synthetic approval")["created_at"]
+    assert sent == "2026-11-18T20:33:20-05:00"
+    assert instant(sent) == datetime(2026, 11, 19, 1, 33, 20, tzinfo=timezone.utc)
+
+
+def test_a_notification_is_stamped_by_the_api_clock(client, server_zone, monkeypatch):
+    """notify() stamps the time itself (the API's TZ), not the database's clock, so the offset sent is always right."""
+    from app import services
+    from app.models import Notification
+
+    server_zone("America/New_York")
+    monkeypatch.setattr(services, "now", lambda: datetime(2026, 11, 24, 21, 51, 0))
+    with db() as s:
+        services.notify(s, RAVI, "Lead assigned to you", "Synthetic stamp")
+        s.commit()
+        assert s.query(Notification).filter_by(message="Synthetic stamp").one().created_at == datetime(2026, 11, 24, 21, 51)
+    sent = next(n for n in login_as(client, RAVI).get("/api/notifications").json() if n["message"] == "Synthetic stamp")
+    assert sent["created_at"] == "2026-11-24T21:51:00-05:00"

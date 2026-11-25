@@ -1179,6 +1179,10 @@ class NotificationOut(Out):
     is_read: bool
     created_at: datetime | None
 
+    @field_serializer("created_at")
+    def _recorded(self, value):  # with the server's offset, so "5 min ago" is right in India and the US alike
+        return server_instant(value)
+
 
 # ---------- Emails ----------
 
