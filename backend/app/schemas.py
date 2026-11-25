@@ -447,7 +447,7 @@ class LeadUpdate(LeadLinks):
 
 class StageClockOut(BaseModel):
     """In stage on the Leads list (app/stage_clock.py): how long the lead has been at its current Lead Status."""
-    state: str  # timed, not_started (in the Unassigned Pool), not_recorded (the history can't say) or closed
+    state: str  # timed, unassigned (waiting in the pool), not_started, not_recorded (the history can't say) or closed
     since: datetime | None = None  # when the clock started (timed only)
     seconds: int | None = None  # elapsed real time from since to the response's one reference time
     category: str | None = None  # on_track, attention or stalled (timed only)
@@ -1048,6 +1048,7 @@ class OpportunityOut(Out):
     owner_name: str | None = None
     created_at: datetime | None
     updated_at: datetime | None
+    in_stage: StageClockOut | None = None  # the Opportunities list and the opportunity's page (stage_clock.py)
 
     @field_serializer("expected_value", "final_value")
     def _money(self, value):

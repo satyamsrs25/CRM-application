@@ -595,3 +595,22 @@ class AssistantFile(Base):
     text: Mapped[str | None] = mapped_column(Text)              # the readable text (documents)
     data: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)  # images only
     created_at: Mapped[datetime | None] = mapped_column(server_default=func.now())
+
+
+class SavedView(Base):
+    """A user's own named list view (the Opportunities list for now): the built-in view it starts from, its filters, search
+    and sort. Only its owner lists, renames or deletes it. It never widens what anyone sees: the records always come from
+    the permission-checked list, and the owners it names are checked again against the user's access when it is read."""
+
+    __tablename__ = "saved_views"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    collection: Mapped[str] = mapped_column(String(20))   # "opportunities"
+    name: Mapped[str] = mapped_column(String(60))
+    base_view: Mapped[str] = mapped_column(String(60))    # a built-in view ("My Open Opportunities"): its scope stays
+    filters: Mapped[str] = mapped_column(Text)            # JSON: {"owner": "2,7", "close": "month", ...} (choices, not dates)
+    search: Mapped[str | None] = mapped_column(String(100))
+    sort: Mapped[str | None] = mapped_column(Text)        # JSON: {"column": "Amount", "dir": -1}
+    created_at: Mapped[datetime | None] = mapped_column(server_default=func.now())
+    updated_at: Mapped[datetime | None] = mapped_column(server_default=func.now(), onupdate=func.now())

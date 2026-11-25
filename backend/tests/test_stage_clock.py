@@ -45,14 +45,16 @@ def own_lead(client, user_id, first="Omar", **extra) -> int:
 
 
 def set_times(lead_id, created=None, change=None, transfer=None):
-    """Move the lead's recorded moments: its creation row, its latest status change row, its latest hand-over, and
-    assigned_at with them as the app stamps it (when the lead was added, then at each Assign or Transfer)."""
+    """Move the lead's recorded moments: its creation row (and created_at, set together when a lead is added), its
+    latest status change row, its latest hand-over, and assigned_at with them as the app stamps it (when the lead was
+    added, then at each Assign or Transfer)."""
     with db() as s:
         lead = s.get(Lead, lead_id)
         rows = s.query(StageHistory).filter_by(lead_id=lead_id).order_by(StageHistory.id).all()
         moved = s.query(LeadTransfer).filter_by(lead_id=lead_id).order_by(LeadTransfer.id.desc()).first()
         if created is not None:
             next(r for r in rows if r.from_stage is None).changed_at = created
+            lead.created_at = created
             if moved is None and lead.assigned_at is not None:
                 lead.assigned_at = created
         if change is not None:
@@ -143,13 +145,28 @@ def move(client, lead_id, stage, **extra):
 
 # ---------- when it starts: the first assignment to a Salesperson ----------
 
-def test_an_upload_into_the_pool_is_not_started_and_is_in_no_category(client, team):
-    upload(login_as(client, ASHA), pool_rows(2))
-    for lead_id in pooled_ids(client):
-        set_times(lead_id, created=ago(days=40))  # uploaded long ago: still not started
-        assert clock(client, lead_id) == {"state": "not_started", **UNTIMED}
-    for category in ("on_track", "attention", "stalled"):
+def test_a_pooled_lead_shows_how_long_it_has_waited_unrated(client, team):
+    upload(login_as(client, ASHA), pool_rows(3))
+    waited, fresh, unknown = sorted(pooled_ids(client))
+    set_times(waited, created=ago(days=40))  # far past every status limit: still not rated
+    set_times(fresh, created=ago(minutes=20))
+    with db() as s:  # no creation time: unknown, not made up
+        s.get(Lead, unknown).created_at = None
+        s.commit()
+    c = clock(client, waited)
+    assert (c["state"], c["seconds"], c["category"], since(c)) == ("unassigned", 40 * DAY, None, REF - timedelta(days=40))
+    assert (clock(client, fresh)["state"], clock(client, fresh)["seconds"]) == ("unassigned", 20 * 60)
+    assert clock(client, unknown) == {"state": "not_started", **UNTIMED}
+    for category in ("on_track", "attention", "stalled"):  # never in the ratings
         assert page(client, in_stage=category)["total"] == 0
+    assert {l["id"] for l in page(client)["items"]} >= {waited, fresh, unknown}  # but in All
+    # the lead page says the same; assigning starts the stage clock (from the assignment, not the creation)
+    assert detail(client, waited) == clock(client, waited)
+    assert login_as(client, PRIYA).post(f"/api/leads/{waited}/assign", json={"to_user_id": RAVI}).status_code == 200
+    set_times(waited, transfer=ago(hours=3))
+    assert timed(client, waited) == (3 * 3600, "on_track")
+    with db() as s:  # nothing was written for any of this but the assignment itself
+        assert s.get(Lead, fresh).owner_id is None
 
 
 def test_single_bulk_and_approved_assignments_start_the_clock_at_the_assignment(client, team):
@@ -370,7 +387,8 @@ def test_a_lead_back_in_the_pool_is_not_started_and_its_next_assignment_starts_i
     with db() as s:  # no code does this today; if something did:
         s.get(Lead, lead_id).owner_id = None
         s.commit()
-    assert clock(client, lead_id)["state"] == "not_started"
+    assert clock(client, lead_id)["state"] == "unassigned"  # back in the pool: its waiting time since creation
+    assert clock(client, lead_id)["seconds"] == 25 * DAY
     hand_over(lead_id, None, team["tara"], ago(days=2))
     assert clock(client, lead_id)["seconds"] == 2 * DAY
 
@@ -438,7 +456,9 @@ def mixed(client, team):
             add_history(lead_id, "New", stage, ago(days=days), stage=stage)
         leads[first] = lead_id
     upload(login_as(client, ASHA), pool_rows(2))
-    leads["pool"] = pooled_ids(client)
+    leads["pool"] = sorted(pooled_ids(client))
+    for lead_id, days in zip(leads["pool"], (4, 2)):  # waiting in the pool 4 and 2 days
+        set_times(lead_id, created=ago(days=days))
     leads["legacy"] = legacy_upload(owner_id=RAVI)  # not recorded
     leads["closed"] = own_lead(client, RAVI, "Cla")
     with db() as s:
@@ -467,11 +487,11 @@ def test_the_filter_counts_and_pages_the_whole_list(client, mixed):
 
 def test_the_sort_goes_both_ways_with_untimed_leads_last(client, mixed):
     longest = ["Rne", "Rnc", "Rnd", "Tna", "Rnb", "Tnb", "Rna"]  # 31, 9, 8, 6, 3, 2, 1 days
-    # not started (newest first), not recorded, closed
-    untimed = [mixed["manager"], *sorted(mixed["pool"], reverse=True), mixed["legacy"], mixed["closed"]]
-    for direction, order in (("desc", longest), ("asc", longest[::-1])):
+    pool = mixed["pool"]  # waited 4 and 2 days: after every timed lead, by their own waiting time
+    untimed = [mixed["manager"], mixed["legacy"], mixed["closed"]]  # not started, not recorded, closed
+    for direction, order, waiting in (("desc", longest, pool), ("asc", longest[::-1], pool[::-1])):
         ids = [l["id"] for l in page(client, view="all", sort="in_stage", direction=direction)["items"]]
-        assert ids == [mixed[n] for n in order] + untimed, direction
+        assert ids == [mixed[n] for n in order] + waiting + untimed, direction
         paged = []
         for offset in range(0, len(ids), 3):
             paged += [l["id"] for l in page(client, view="all", sort="in_stage", direction=direction, limit=3,
@@ -498,7 +518,7 @@ def test_the_filter_combines_with_views_filters_search_and_roles(client, mixed, 
     assert sorted(l["id"] for l in ravi_stalled) == sorted([mixed["Rnc"], mixed["Rne"]])  # not Tara's
     # a Salesperson sees the pool in All Open Leads, as Not started with its contacts still hidden
     pooled = [l for l in page(client, RAVI, view="all_open")["items"] if l["id"] in mixed["pool"]]
-    assert pooled and all(l["in_stage"]["state"] == "not_started" and l["email"] is None for l in pooled)
+    assert pooled and all(l["in_stage"]["state"] == "unassigned" and l["email"] is None for l in pooled)
 
 
 def test_listing_writes_nothing_and_leaves_last_modified_alone(client, mixed):
@@ -537,11 +557,12 @@ def test_the_lead_page_shows_the_same_clock_as_the_list(client, mixed, team):
     for lead_id, clock_listed in listed.items():
         assert detail(client, lead_id) == clock_listed, lead_id  # same start, seconds, rating and state
         states.add((clock_listed["state"], clock_listed["category"]))
-    assert states >= {("timed", "on_track"), ("timed", "attention"), ("timed", "stalled"), ("not_started", None),
-                      ("not_recorded", None), ("closed", None)}
-    # a Salesperson opening a pooled lead (contacts hidden): Not started there too
+    assert states >= {("timed", "on_track"), ("timed", "attention"), ("timed", "stalled"), ("unassigned", None),
+                      ("not_started", None), ("not_recorded", None), ("closed", None)}
+    # a Salesperson opening a pooled lead (contacts hidden): the same waiting time there too
     pooled = mixed["pool"][0]
-    assert detail(client, pooled, RAVI) == {"state": "not_started", **UNTIMED}
+    assert detail(client, pooled, RAVI) == listed[pooled]
+    assert (listed[pooled]["state"], listed[pooled]["seconds"], listed[pooled]["category"]) == ("unassigned", 4 * DAY, None)
 
 
 def test_the_lead_page_follows_status_changes_and_not_transfers(client, team):
@@ -560,4 +581,3 @@ def test_the_lead_page_follows_status_changes_and_not_transfers(client, team):
     res = login_as(client, ASHA).post(f"/api/leads/{lead_id}/transfer", json={"to_user_id": team["tara"], "note": "Cover"})
     assert res.status_code == 200 and res.json()["in_stage"] == before  # the transfer's answer: the same clock
     assert detail(client, lead_id) == before
-

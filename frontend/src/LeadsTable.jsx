@@ -46,7 +46,7 @@ const COLUMNS = [
   ["Status", "stage", 124],
   // In stage: how long the lead has been at its Status (from its history, on the server); its header arrow filters by
   // On track / Needs attention / Stalled, and it sorts longest or shortest first, untimed leads last
-  ["In stage", "in_stage", 116],
+  ["In stage", "in_stage", 172],
   ["Source", "source", 104],
   ["Owner", "owner", 144], // "Unassigned" for a lead in the Unassigned Pool
   // who the lead was last transferred to, and when (empty when it never changed owner)

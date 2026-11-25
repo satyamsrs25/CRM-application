@@ -5,7 +5,7 @@ from app import schemas
 from app.models import Account, Contact, Lead, Note, Opportunity, StageHistory, Task
 from app.security import sees_pool_contacts
 from app.services import demo_instant, is_date_reminder, start_of_today, task_related
-from app.stage_clock import Clock, stage_clocks
+from app.stage_clock import Clock, opportunity_clocks, stage_clocks
 
 # A pooled lead (no owner) seen by someone who can't assign it: everything but how to reach the person
 # hidden on a pooled lead from users who can only request it. Its Region (phone_country, the country only) stays
@@ -118,6 +118,8 @@ def opportunity_out(o: Opportunity) -> schemas.OpportunityOut:
 
 def opportunity_detail(o: Opportunity) -> schemas.OpportunityDetail:
     base = opportunity_out(o).model_dump()
+    session = object_session(o)  # In stage: the Opportunities list's clock, its own reference time for this answer
+    base["in_stage"] = opportunity_clocks(session, Clock(), [o.id]).get(o.id) if session is not None else None
     return schemas.OpportunityDetail(
         **base,
         tasks=[task_out(t) for t in sorted(o.tasks, key=lambda t: (t.status != "Open", t.due_date))],

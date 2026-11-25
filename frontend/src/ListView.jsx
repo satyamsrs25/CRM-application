@@ -3,7 +3,17 @@ import { can, canCreateOpportunity, canCreateSales } from "./permissions";
 import DeletedLeads from "./DeletedLeads";
 import LeadsTable from "./LeadsTable";
 import { applyFilters, filterSummary, opts, ownerOptions, Th, useFilters } from "./Filters";
-import { dateFilterOffered, IN_STAGE_FILTERS, LEAD_DATE_RANGES, REGION_NONE } from "./listHelpers";
+import {
+  boardColumns,
+  dateFilterOffered,
+  IN_STAGE_FILTERS,
+  LEAD_DATE_RANGES,
+  opportunityClockSummary,
+  overdueOrStuck,
+  ownerChoiceGroups,
+  REGION_NONE,
+  toggleCount,
+} from "./listHelpers";
 import { PHONE_COUNTRIES } from "./phone";
 import {
   isPooledLead,
@@ -18,15 +28,33 @@ import {
   initials,
 } from "./domain";
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { amount, compact, maskPhone, shortDate } from "./format";
+import { amount, compactMoneyMix, CURRENCIES, dateTime, DEFAULT_CURRENCY, maskPhone, shortDate } from "./format";
 import { ActionMenu, DateCell, Icon, ObjectIcon, Pagination, PhoneReveal, StageBadge, usePaged } from "./ui";
 import { bulkResultMessage, OpportunityBulkDialog } from "./OpportunityBulk";
+import { api } from "./api";
+import { CardDetails, OpportunityFilterRow, SavedViewDialog, StageLimitsDialog } from "./OpportunityTools";
 
 const OPEN_LEAD = LEAD_OPEN_STAGES;
 const OPEN_OPP = OPPORTUNITY_OPEN_STAGES;
 const KANBAN_STAGES = OPPORTUNITY_STAGES;
 
 const ownerName = (data, id) => data.users.find((u) => u.id === id)?.full_name || "";
+
+// In stage on the Opportunities list: the server's time in the current stage (in_stage), coloured by its rating like
+// the Leads list (Won, Lost and Not recorded neutral); the full wording is the tooltip and what a screen reader says
+function OpportunityInStage({ clock, stage }) {
+  const s = opportunityClockSummary(clock, stage);
+  if (!s) return <span className="muted">—</span>;
+  const label = clock.since ? `${s.text}${s.badge ? `: ${s.badge}` : ""} (since ${dateTime(clock.since)})` : `Not recorded: ${s.text}`;
+  return (
+    <span className={`stage-badge in-stage ${s.tone}`} title={label}>
+      <span aria-hidden="true">{s.short}</span>
+      <span className="sr-only">{label}</span>
+    </span>
+  );
+}
+// the In stage column's sort value: seconds when timed; "duration" columns keep untimed ones last either way
+const inStageSeconds = (r) => (r.in_stage?.state === "timed" ? r.in_stage.seconds : null);
 
 // Leads list views and their server-side filter (the Leads list is loaded page by page, see LeadsTable.jsx)
 const LEAD_VIEWS = {
@@ -120,6 +148,7 @@ function columns(collection, data) {
       ["Amount", (r) => Number(r.value ?? -1), (r) => amount(r.value, r.currency), "num"],
       ["Close Date", (r) => r.expected_close_date || "", (r) => shortDate(r.expected_close_date)],
       ["Stage", (r) => r.stage, (r) => <StageBadge stage={r.stage} />],
+      ["In stage", inStageSeconds, (r) => <OpportunityInStage clock={r.in_stage} stage={r.stage} />, "duration"],
       ["Owner", (r) => r.owner || ""],
       ["Created", (r) => r.created_at || "", (r) => <DateCell value={r.created_at} />, "date"],
       ["Last Modified", (r) => r.updated_at || "", (r) => <DateCell value={r.updated_at} />, "date"],
@@ -204,9 +233,28 @@ function filterDefs(collection, data, user, viewName, fixedStage) {
   }
   if (collection === "opportunities") {
     const st = stages(OPPORTUNITY_STAGES, OPEN_OPP);
+    // In stage: the In stage column's arrow (the server's rating; Won, Lost and Not recorded are in All only), so not
+    // offered on the Won / Lost lists. Filtered before paging, List and Kanban alike (the line above says so).
+    const inStage = /(Won|Lost) Opportunities$/.test(viewName)
+      ? []
+      : [{ key: "in_stage", column: "In stage", label: "In stage", allLabel: "All", options: IN_STAGE_FILTERS, get: (r) => r.in_stage?.category || "" }];
+    // the filter row above the List and the Kanban (OpportunityTools.jsx): Owner (several people; only those whose deals
+    // this user sees, and not on "My ..." views), Currency, and Overdue / Stuck (open deals only, so not on Won / Lost).
+    // Closing This Month is the Close Date filter's This month. One value per filter: the row, the column arrows and
+    // the line under the title show the same choices.
+    const groups = ownerChoiceGroups(data.users || [], user, team);
+    const ownerMulti = viewName.startsWith("My ")
+      ? []
+      : [{ key: "owner", label: "Owner", multi: true, groups, options: groups.flatMap((g) => g.options), get: (r) => String(r.owner_id) }];
+    const flagged = /(Won|Lost) Opportunities$/.test(viewName)
+      ? []
+      : [{ key: "overdue_stuck", label: "Overdue / Stuck", toggle: true, options: [["1", "Overdue / Stuck"]], test: (r, v, now) => overdueOrStuck(r, now) }];
     return [
       ...(st ? [{ key: "stage", column: "Stage", label: "Stage", options: opts(st), get: (r) => r.stage }] : []),
-      ...owner,
+      ...inStage,
+      ...ownerMulti,
+      { key: "currency", label: "Currency", options: opts(CURRENCIES), get: (r) => r.currency || DEFAULT_CURRENCY },
+      ...flagged,
       { key: "close", column: "Close Date", label: "Close Date", type: "date", future: true, get: (r) => r.expected_close_date },
       created,
       modified,
@@ -226,6 +274,12 @@ function validFilters(defs, values) {
   const out = {};
   for (const f of defs) {
     const v = values[f.key];
+    if (v && f.multi) {
+      // several people: only those still on offer (someone outside this user's access is never kept)
+      const kept = String(v).split(",").filter((id) => f.options.some(([o]) => o === id));
+      if (kept.length) out[f.key] = kept.join(",");
+      continue;
+    }
     if (!v || (f.options && !f.options.some(([o]) => o === v))) continue;
     if (f.type === "date" && !dateFilterOffered(f, values)) continue;
     out[f.key] = v;
@@ -238,8 +292,72 @@ const LABEL = { leads: "Leads", opportunities: "Opportunities", accounts: "Accou
 const NEW_TYPE = { leads: "lead", opportunities: "newOpportunity", accounts: "account", contacts: "contact" };
 const NEW_LABEL = { leads: "New Lead", opportunities: "New Opportunity", accounts: "New Account", contacts: "New Contact" };
 
-function Kanban({ records, setModal }) {
+const CARD_BATCH = 50; // cards drawn per column at first (Show more draws the next ones); counts and totals cover all
+const HOVER_OPEN = 350; // ms: a pointer passing over the board doesn't open every card's details
+const HOVER_CLOSE = 250;
+// a red border: an open opportunity the server rates Stalled (Won and Lost never are)
+const isStalled = (r) => OPEN_OPP.includes(r.stage) && r.in_stage?.state === "timed" && r.in_stage.category === "stalled";
+
+function Kanban({ records, setModal, contacts = [], tasks = [], limits, openTask, openEmail }) {
   const [over, setOver] = useState(null);
+  const [drawn, setDrawn] = useState({}); // stage -> how many cards are drawn
+  const [details, setDetails] = useState(null); // the card whose details are open: { id, by: "hover" | "focus" | "tap" }
+  const cards = useRef({});
+  const timer = useRef(null);
+  // every column over the whole filtered list: its count, stalled count and amounts per currency
+  const columns = boardColumns(records, KANBAN_STAGES, OPEN_OPP);
+  useEffect(() => setDrawn({}), [records]);
+  useEffect(() => () => clearTimeout(timer.current), []);
+  const later = (fn, ms) => {
+    clearTimeout(timer.current);
+    timer.current = setTimeout(fn, ms);
+  };
+  useEffect(() => {
+    // open details close with Esc (the keyboard goes back to the card's details button), a click or tap anywhere
+    // else, a scroll of the page or the board (not of the details themselves) or a resize
+    if (!details) return;
+    const card = () => cards.current[details.id];
+    const key = (e) => {
+      if (e.key !== "Escape") return;
+      if (card()?.contains(document.activeElement)) card().querySelector(".kanban-info")?.focus({ preventScroll: true });
+      setDetails(null);
+    };
+    const away = (e) => !card()?.contains(e.target) && setDetails(null);
+    const scroll = (e) => !card()?.querySelector(".card-details")?.contains(e.target) && setDetails(null);
+    const resize = () => setDetails(null);
+    document.addEventListener("keydown", key);
+    document.addEventListener("mousedown", away);
+    document.addEventListener("touchstart", away, { passive: true });
+    window.addEventListener("scroll", scroll, true);
+    window.addEventListener("resize", resize);
+    return () => {
+      document.removeEventListener("keydown", key);
+      document.removeEventListener("mousedown", away);
+      document.removeEventListener("touchstart", away);
+      window.removeEventListener("scroll", scroll, true);
+      window.removeEventListener("resize", resize);
+    };
+  }, [details]);
+  // the details' actions open the app's own forms (nothing happens until they are submitted)
+  const actionsFor = (r) => ({
+    addTask: openTask ? () => (setDetails(null), openTask(r.id, "opportunities")) : null,
+    logCall: (contactName) => (setDetails(null), setModal({ type: "call", collection: "opportunities", record: r, contactName })),
+    email: openEmail
+      ? (poc) => (
+          setDetails(null),
+          openEmail({
+            type: "opportunity",
+            field: "opportunity_id",
+            id: r.id,
+            name: r.name,
+            email: poc.email,
+            firstName: poc.contact?.first_name,
+            stage: r.stage,
+            noEmail: poc.missing || "The primary contact has no email address.",
+          })
+        )
+      : null,
+  });
   const drop = (stage, id) => {
     setOver(null);
     const record = records.find((r) => r.id === id);
@@ -250,9 +368,8 @@ function Kanban({ records, setModal }) {
   };
   return (
     <div className="kanban opportunity-board">
-      {KANBAN_STAGES.map((stage) => {
-        const items = records.filter((r) => r.stage === stage);
-        const sum = items.reduce((s, r) => s + Number(r.value || 0), 0);
+      {columns.map(({ stage, open, items, count, stalled, totals }) => {
+        const shown = drawn[stage] || CARD_BATCH;
         return (
           <section
             key={stage}
@@ -267,26 +384,52 @@ function Kanban({ records, setModal }) {
             <header>
               <div>
                 <h3 className={`kanban-stage k-${stage.toLowerCase()}`}>{stage}</h3>
+                {/* the amounts of every card in the column, per currency (never added across currencies) */}
                 <p>
-                  {OPEN_OPP.includes(stage) ? "Open" : "Closed"} • {compact(sum)}
+                  {open ? "Open" : "Closed"} • {compactMoneyMix(totals)}
                 </p>
+                {open && <p className={`kanban-stalled${stalled ? " on" : ""}`}>{stalled.toLocaleString()} stalled</p>}
               </div>
-              <span className="kanban-count" aria-label={`${items.length} opportunities`}>
-                {items.length}
+              <span className="kanban-count" aria-label={`${count} opportunities`}>
+                {count}
               </span>
             </header>
             <div className="kanban-cards">
-              {items.map((r) => (
+              {items.slice(0, shown).map((r) => (
                 <article
                   key={r.id}
-                  className="kanban-card"
+                  ref={(el) => {
+                    if (el) cards.current[r.id] = el;
+                    else delete cards.current[r.id];
+                  }}
+                  className={`kanban-card${isStalled(r) ? " stalled" : ""}`}
                   draggable={OPEN_OPP.includes(r.stage)}
                   title={OPEN_OPP.includes(r.stage) ? "Drag to another column to change its stage" : undefined}
-                  onDragStart={(e) => e.dataTransfer.setData("text/plain", r.id)}
+                  onDragStart={(e) => {
+                    if (e.target.closest?.(".card-details")) return e.preventDefault(); // selecting text in the details
+                    setDetails(null);
+                    e.dataTransfer.setData("text/plain", r.id);
+                  }}
+                  // a mouse resting on the card opens its details; leaving the card and its details closes them
+                  onPointerEnter={(e) => e.pointerType === "mouse" && later(() => setDetails((d) => (d && d.by !== "hover" ? d : { id: r.id, by: "hover" })), HOVER_OPEN)}
+                  onPointerLeave={(e) => e.pointerType === "mouse" && later(() => setDetails((d) => (d?.id === r.id && d.by === "hover" ? null : d)), HOVER_CLOSE)}
+                  onBlur={(e) => !e.currentTarget.contains(e.relatedTarget) && setDetails((d) => (d?.id === r.id && d.by === "focus" ? null : d))}
                 >
                   <div className="kanban-card-head">
                     <span className="kanban-initials" aria-hidden="true">{initials(r.name)}</span>
                     <a href={`#/opportunities/${r.id}`}>{r.name}</a>
+                    {/* the keyboard (focus) and a tap open the details too */}
+                    <button
+                      type="button"
+                      className="kanban-info"
+                      aria-label={`Details: ${r.name}`}
+                      aria-expanded={details?.id === r.id}
+                      aria-controls={details?.id === r.id ? `card-details-${r.id}` : undefined}
+                      onFocus={(e) => e.currentTarget.matches(":focus-visible") && setDetails({ id: r.id, by: "focus" })}
+                      onClick={() => setDetails((d) => (d?.id === r.id && d.by !== "hover" ? null : { id: r.id, by: "tap" }))}
+                    >
+                      <Icon name="info" size={15} />
+                    </button>
                   </div>
                   <p className={`kanban-line${r.account_name ? "" : " none"}`} title="Account Name">
                     <Icon name="building" size={13} /> <span>{r.account_name || "No account"}</span>
@@ -294,12 +437,24 @@ function Kanban({ records, setModal }) {
                   <p className={`kanban-line${r.expected_close_date ? "" : " none"}`}>
                     <Icon name="calendar" size={13} /> <span>{r.expected_close_date ? `Closes ${shortDate(r.expected_close_date)}` : "No close date"}</span>
                   </p>
+                  {/* time in the stage, coloured by its rating (Won, Lost and Not recorded neutral) */}
+                  <div className="kanban-age">
+                    <OpportunityInStage clock={r.in_stage} stage={r.stage} />
+                  </div>
                   <div className="kanban-card-foot">
                     <span className="kanban-owner">{r.owner || "No owner"}</span>
                     <b className="kanban-amount">{amount(r.value, r.currency) || "—"}</b>
                   </div>
+                  {details?.id === r.id && (
+                    <CardDetails id={`card-details-${r.id}`} record={r} contacts={contacts} tasks={tasks} limits={limits} actions={actionsFor(r)} />
+                  )}
                 </article>
               ))}
+              {count > shown && (
+                <button type="button" className="link kanban-more" onClick={() => setDrawn((d) => ({ ...d, [stage]: shown + CARD_BATCH }))}>
+                  Show {Math.min(CARD_BATCH, count - shown)} more of {count.toLocaleString()}
+                </button>
+              )}
             </div>
           </section>
         );
@@ -308,13 +463,27 @@ function Kanban({ records, setModal }) {
   );
 }
 
-export default function ListView({ collection, data, user, openNew, setModal, query, notify, reload }) {
+export default function ListView({ collection, data, user, openNew, setModal, query, notify, reload, openTask, openEmail }) {
   const [files, setFiles] = useState(null); // "upload" | "download" | "history" (Leads and Opportunities; History: Admin and Managers only)
   // Opportunities: the deals ticked in the list, and the Actions dialog open for them ({ type: "owner" | "lost", ids })
   const [picked, setPicked] = useState(() => new Set());
   const [oppBulk, setOppBulk] = useState(null);
   const ticks = collection === "opportunities";
+  const opps = collection === "opportunities";
   const dataList = collection === "leads" || collection === "opportunities";
+  // Opportunities: this user's own saved views (beside the standard ones), the one chosen, its dialogs, and the In stage
+  // limits (the card details show them; the Admin changes them)
+  const [savedViews, setSavedViews] = useState([]);
+  const [savedId, setSavedId] = useState(null);
+  const [viewDialog, setViewDialog] = useState(null); // "save" | "rename" | "delete"
+  const [limits, setLimits] = useState(null);
+  const [limitsOpen, setLimitsOpen] = useState(false);
+  useEffect(() => {
+    if (!opps) return;
+    api.savedViews("opportunities").then(setSavedViews).catch(() => setSavedViews([]));
+    api.opportunityStageLimits().then(setLimits).catch(() => setLimits(null));
+  }, [opps]);
+  const savedView = savedViews.find((v) => v.id === savedId) || null;
   const [uploads, setUploads] = useState(0); // reloads the Leads list after an upload
   const params = new URLSearchParams(query);
   const stageFilter = params.get("stage");
@@ -393,21 +562,79 @@ export default function ListView({ collection, data, user, openNew, setModal, qu
     ? (r) => r.stage === stageFilter
     : allViews.find(([name]) => name === viewName)?.[1] || (() => true);
 
-  const rows = useMemo(() => {
+  // the records this list view holds (the server already sent only what this user may see), searched; then the
+  // filters, all before paging
+  const base = useMemo(() => {
     const term = search.trim().toLowerCase();
     const [after, before] = [createdFrom && new Date(createdFrom).getTime(), createdTo && new Date(createdTo).getTime()];
     const fromHome = (r) => {
       const at = new Date(r.created_at).getTime();
       return (!activity || r.activity === activity) && (!after || at >= after) && (!before || at < before);
     };
-    const list = (collection === "leads" ? data.leads : applyFilters(data[collection].filter(filter), defs, active).filter(fromHome)).filter((r) => !term || cols.some(([, get]) => String(get(r)).toLowerCase().includes(term)));
+    return (collection === "leads" ? data.leads : data[collection].filter(filter).filter(fromHome)).filter((r) => !term || cols.some(([, get]) => String(get(r)).toLowerCase().includes(term)));
+  }, [data, collection, search, viewName]); // eslint-disable-line react-hooks/exhaustive-deps
+  const rows = useMemo(() => {
+    const list = collection === "leads" ? base : applyFilters(base, defs, active);
     const get = cols[sort.col][1];
+    const kind = cols[sort.col][3];
     return [...list].sort((a, b) => {
       const x = get(a), y = get(b);
+      if (kind === "duration") return x === y ? 0 : x === null ? 1 : y === null ? -1 : (x - y) * sort.dir; // untimed last
       return (typeof x === "number" && typeof y === "number" ? x - y : String(x).localeCompare(String(y))) * sort.dir;
     });
-  }, [data, collection, search, sort, viewName, JSON.stringify(active)]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [base, sort, JSON.stringify(active)]); // eslint-disable-line react-hooks/exhaustive-deps
   const { pageRows, start, pager } = usePaged(rows, `${collection}|${viewName}|${search}|${JSON.stringify(active)}`);
+  // a different view, search or filter starts again from page 1 (above) with nothing ticked
+  const filterKey = `${viewName}|${savedId}|${search}|${JSON.stringify(active)}`;
+  useEffect(() => setPicked(new Set()), [filterKey]);
+  // Overdue / Stuck's number: with every other choice as it is (each opportunity once)
+  const flagCount = useMemo(() => (opps ? toggleCount(base, defs, active, "overdue_stuck") : 0), [base, JSON.stringify(active)]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Clear All: the filters and the search. The list view (its scope) stays, and the server's access rules always apply.
+  const canClearAll = Object.keys(active).length > 0 || !!search.trim();
+  const clearAll = () => {
+    setFilterValues({});
+    setSearch("");
+  };
+  // a saved view: its standard view, filters, search and sort (owners no longer allowed were left out by the server)
+  const applySaved = (v) => {
+    setSavedId(v.id);
+    setViewName(v.base_view);
+    setFilterValues(v.filters);
+    setSearch(v.search || "");
+    const col = cols.findIndex(([label]) => label === v.sort?.column);
+    setSort({ col: col >= 0 ? col : 0, dir: v.sort?.dir === -1 ? -1 : 1 });
+    if (v.adjusted) notify?.(`Some of "${v.name}"'s choices don't apply to your access now, so they were left out.`);
+  };
+  const ordered = (o) => JSON.stringify(Object.entries(o).sort(([a], [b]) => a.localeCompare(b)));
+  const savedChanged =
+    !!savedView &&
+    (ordered(active) !== ordered(savedView.filters) || search.trim() !== (savedView.search || "") ||
+      cols[sort.col][0] !== savedView.sort.column || sort.dir !== savedView.sort.dir);
+  const submitView = async (name) => {
+    if (viewDialog === "save") {
+      const created = await api.createSavedView({
+        collection: "opportunities",
+        name,
+        base_view: allViews.some(([n]) => n === viewName) ? viewName : allViews[0][0],
+        filters: fixedStage ? { ...active, stage: fixedStage } : active,
+        search: search.trim(),
+        sort: { column: cols[sort.col][0], dir: sort.dir },
+      });
+      setSavedViews((list) => [...list, created].sort((a, b) => a.name.localeCompare(b.name)));
+      applySaved(created);
+      notify?.(`View "${created.name}" saved. Only you see it.`);
+    } else if (viewDialog === "rename") {
+      const renamed = await api.renameSavedView(savedView.id, name);
+      setSavedViews((list) => list.map((v) => (v.id === renamed.id ? renamed : v)).sort((a, b) => a.name.localeCompare(b.name)));
+      notify?.(`View renamed to "${renamed.name}".`);
+    } else {
+      await api.deleteSavedView(savedView.id);
+      setSavedViews((list) => list.filter((v) => v.id !== savedView.id));
+      setSavedId(null);
+      notify?.(`View "${savedView.name}" deleted. No opportunity changed.`);
+    }
+    setViewDialog(null);
+  };
 
   const pickerViews = stageFilter ? [[`${stageFilter} ${LABEL[collection]}`], ...allViews] : allViews;
 
@@ -430,7 +657,7 @@ export default function ListView({ collection, data, user, openNew, setModal, qu
                   aria-expanded={pickerOpen}
                   title="Choose a list view"
                 >
-                  {viewName}
+                  {savedView ? savedView.name : viewName}
                   <Icon name="down" size={14} />
                 </button>
               </h1>
@@ -444,16 +671,39 @@ export default function ListView({ collection, data, user, openNew, setModal, qu
                       <button
                         type="button"
                         role="option"
-                        aria-selected={name === viewName}
+                        aria-selected={!savedView && name === viewName}
                         onClick={() => {
+                          setSavedId(null);
                           setViewName(name);
                           closePicker();
                         }}
                       >
-                        {name === viewName && <Icon name="check" size={13} />} {name}
+                        {!savedView && name === viewName && <Icon name="check" size={13} />} {name}
                       </button>
                     </li>
                   ))}
+                  {opps && savedViews.length > 0 && (
+                    <>
+                      <li className="menu-label" role="presentation" aria-hidden="true">
+                        MY VIEWS
+                      </li>
+                      {savedViews.map((v) => (
+                        <li key={`saved-${v.id}`} role="none">
+                          <button
+                            type="button"
+                            role="option"
+                            aria-selected={savedId === v.id}
+                            onClick={() => {
+                              applySaved(v);
+                              closePicker();
+                            }}
+                          >
+                            {savedId === v.id && <Icon name="check" size={13} />} {v.name}
+                          </button>
+                        </li>
+                      ))}
+                    </>
+                  )}
                 </ul>
               )}
             </div>
@@ -517,6 +767,11 @@ export default function ListView({ collection, data, user, openNew, setModal, qu
                 History
               </button>
             )}
+            {opps && user.role === "Admin" && limits && (
+              <button className="sf-button" onClick={() => setLimitsOpen(true)} title="When open opportunities need attention or are stalled">
+                Stage Limits
+              </button>
+            )}
             {collection === "accounts" && canCreateOpportunity(user) && (
               <button className="sf-button" onClick={() => openNew("newOpportunity")}>
                 New Opportunity
@@ -553,6 +808,7 @@ export default function ListView({ collection, data, user, openNew, setModal, qu
           <span>
             {rows.length} item{rows.length === 1 ? "" : "s"} • Sorted by {cols[sort.col][0]}
             {search.trim() ? " • Filtered by search" : ""}
+            {savedChanged ? " • Changed from the saved view" : ""}
             {filterSummary(defs, active) && (
               <>
                 {" • "}
@@ -581,6 +837,20 @@ export default function ListView({ collection, data, user, openNew, setModal, qu
           </div>
         </div>
         )}
+        {opps && (
+          <OpportunityFilterRow
+            defs={defs}
+            values={active}
+            onChange={setFilterValues}
+            overdueStuck={flagCount}
+            canClear={canClearAll}
+            onClearAll={clearAll}
+            onSave={() => setViewDialog("save")}
+            savedView={savedView}
+            onRename={() => setViewDialog("rename")}
+            onDelete={() => setViewDialog("delete")}
+          />
+        )}
       </section>
 
       {collection === "leads" && viewName === DELETED_LEADS ? (
@@ -607,7 +877,15 @@ export default function ListView({ collection, data, user, openNew, setModal, qu
           reload={reload}
         />
       ) : mode === "kanban" && collection === "opportunities" ? (
-        <Kanban records={rows} setModal={setModal} />
+        <Kanban
+          records={rows}
+          setModal={setModal}
+          contacts={data.contacts || []}
+          tasks={data.tasks || []}
+          limits={limits}
+          openTask={openTask}
+          openEmail={openEmail}
+        />
       ) : (
         <section className="card table-card">
           <div className="table-scroll">
@@ -719,6 +997,19 @@ export default function ListView({ collection, data, user, openNew, setModal, qu
                   : `${res.closed} opportunit${res.closed === 1 ? "y" : "ies"} marked as Lost.`,
               ),
             );
+            reload?.().catch(() => {});
+          }}
+        />
+      )}
+      {viewDialog && <SavedViewDialog mode={viewDialog} view={savedView} onClose={() => setViewDialog(null)} onSubmit={submitView} />}
+      {limitsOpen && limits && (
+        <StageLimitsDialog
+          limits={limits}
+          onClose={() => setLimitsOpen(false)}
+          onSaved={(saved) => {
+            setLimits(saved);
+            setLimitsOpen(false);
+            notify?.("In stage limits saved. The ratings use them now.");
             reload?.().catch(() => {});
           }}
         />

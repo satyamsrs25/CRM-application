@@ -4,10 +4,10 @@ Opportunity -> Discovery -> Proposal -> Won, or Lost at any open stage. Opportun
 or from New Opportunity (Opportunities or Account page), which reuses the company's account and the person's contact.
 """
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import ValidationError
+from pydantic import BaseModel, StrictInt, ValidationError
 from sqlalchemy import insert, select
 from sqlalchemy.orm import Session, joinedload
 from starlette.datastructures import UploadFile
@@ -17,11 +17,13 @@ from app.constants import DEFAULT_CURRENCY, OPPORTUNITY_FLOW, OPPORTUNITY_OPEN_S
 from app.database import get_db
 from app.security import (acting_user, acting_user_id, check_owner_change, owner_for_new,
                           require_edit, require_view, visible)
-from app.models import Account, Contact, Lead, Opportunity, OpportunityAttachment, User
+from app.models import Account, AppSetting, Contact, Lead, Opportunity, OpportunityAttachment, User
 from app import opportunity_matches as matches
 from app.routers.attachments import (MAX_REQUEST_BYTES, checked_type, clean_filename, header_login_only,
                                      locked_opportunity, read_upload)
 from app.serializers import account_out, contact_out, history_out, opportunity_detail, opportunity_out, task_out
+from app.stage_clock import (MAX_LIMIT_DAYS, OPPORTUNITY_LIMITS_SETTING, OPPORTUNITY_STAGE_DAYS, Clock, custom_limits,
+                             opportunity_clocks, opportunity_limits, valid_limit)
 from app.services import (
     add_stage_task,
     confirm_skipped,
@@ -74,7 +76,11 @@ def list_opportunities(
     # the account, contact, lead and owner names come in the same query (not one query per opportunity)
     query = query.options(joinedload(Opportunity.account), joinedload(Opportunity.primary_contact),
                           joinedload(Opportunity.lead), joinedload(Opportunity.owner))
-    return [opportunity_out(o) for o in db.scalars(query.order_by(Opportunity.id.desc())).unique().all()]
+    rows = db.scalars(query.order_by(Opportunity.id.desc())).unique().all()
+    # In stage (one query for them all, one reference time): sorted in the browser with the rest of the list
+    clocks = opportunity_clocks(db, Clock(), [o.id for o in rows])
+    return [opportunity_out(o).model_copy(update={"in_stage": schemas.StageClockOut(**clocks[o.id])
+                                                  if o.id in clocks else None}) for o in rows]
 
 
 @router.get("/duplicate-check")
@@ -168,6 +174,57 @@ def create_opportunity(data: schemas.OpportunityCreate, db: Session = Depends(ge
     return {"opportunity": opportunity_out(opp), "account": account_out(account), "contact": contact_out(contact),
             "new_task": task_out(task) if task else None,
             "reused": {"account": reused_account, "contact": reused_contact}}
+
+
+# ---------- In stage limits (the Admin's setting; defaults in app/stage_clock.py) ----------
+
+class StageLimitsIn(BaseModel):
+    # an open stage -> [needs attention at, stalled at] in whole days; null or left out: the default
+    limits: dict[str, list[StrictInt] | None]
+
+
+def stage_limits_out(db: Session) -> dict:
+    row = db.get(AppSetting, OPPORTUNITY_LIMITS_SETTING)
+    who = db.get(User, row.updated_by_id) if row and row.updated_by_id else None
+    return {"limits": {stage: list(pair) for stage, pair in opportunity_limits(db).items()},
+            "defaults": {stage: list(pair) for stage, pair in OPPORTUNITY_STAGE_DAYS.items()},
+            "custom": sorted(custom_limits(db)), "max_days": MAX_LIMIT_DAYS,
+            "updated_by": who.full_name if who else None, "updated_at": row.updated_at if row else None}
+
+
+@router.get("/stage-limits")
+def get_stage_limits(db: Session = Depends(get_db)):
+    """When an open opportunity needs attention and when it is stalled (days in its stage): the same limits the list,
+    its page, the board and the filters use. Everyone reads them; Won and Lost have none."""
+    return stage_limits_out(db)
+
+
+@router.put("/stage-limits")
+def set_stage_limits(data: StageLimitsIn, db: Session = Depends(get_db)):
+    """The Admin changes the limits of the open stages (whole days, 0 <= needs attention < stalled). A stage sent as
+    null, or left out, goes back to its default. Nothing is saved on the opportunities: the ratings follow at once."""
+    me = acting_user()
+    if not me.is_admin:
+        raise HTTPException(status_code=403, detail="Only the Admin can change the In stage limits")
+    saved = {}
+    for stage, pair in data.limits.items():
+        if stage not in OPPORTUNITY_STAGE_DAYS:
+            raise HTTPException(status_code=400, detail=f"'{stage}' has no limits. Use: {', '.join(OPPORTUNITY_STAGE_DAYS)}")
+        if pair is None:
+            continue
+        if not valid_limit(pair):
+            raise HTTPException(status_code=400, detail=f"{stage}: Needs attention must be 0 or more and less than Stalled, "
+                                                        f"and Stalled at most {MAX_LIMIT_DAYS} days")
+        if tuple(pair) != OPPORTUNITY_STAGE_DAYS[stage]:
+            saved[stage] = list(pair)
+    row = db.get(AppSetting, OPPORTUNITY_LIMITS_SETTING) or AppSetting(key=OPPORTUNITY_LIMITS_SETTING)
+    row.value, row.updated_by_id, row.updated_at = json.dumps(saved), me.id, datetime.now(timezone.utc)
+    db.add(row)
+    effective = {**OPPORTUNITY_STAGE_DAYS, **{s: tuple(p) for s, p in saved.items()}}
+    log_activity(db, me.id, "In stage limits changed", "Opportunities",
+                 "; ".join(f"{s}: needs attention at {a} days, stalled at {b}" for s, (a, b) in effective.items()))
+    db.commit()
+    return stage_limits_out(db)
 
 
 @router.get("/{opportunity_id}", response_model=schemas.OpportunityDetail)

@@ -19,8 +19,8 @@ from app.database import Base, SessionLocal, engine, get_db
 from app import mailer, scheduler, schemas
 from app.security import authenticate, ensure_default_admin, require_admin
 from app.routers import (accounts, activity, analytics, assistant, attachments, auth, campaigns, deleted_leads, emails,
-                         home, lead_enrichment, lead_files, leads, opportunities, opportunity_files, tasks,
-                         transfer_requests, user_files)
+                         home, lead_enrichment, lead_files, leads, opportunities, opportunity_files, saved_views,
+                         tasks, transfer_requests, user_files)
 from app import campaigns as campaign_sender
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:     %(name)s - %(message)s")
@@ -269,6 +269,14 @@ def upgrade_database() -> None:
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_campaign_events_campaign ON campaign_events (campaign_id, kind)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_campaign_events_recipient ON campaign_events (recipient_id)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS idx_campaign_events_time ON campaign_events (occurred_at)"))
+        # Saved list views (Opportunities > Save as View): a new table only; no existing row changes
+        conn.execute(text("""CREATE TABLE IF NOT EXISTS saved_views (
+            id SERIAL PRIMARY KEY, user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            collection VARCHAR(20) NOT NULL, name VARCHAR(60) NOT NULL, base_view VARCHAR(60) NOT NULL,
+            filters TEXT NOT NULL, search VARCHAR(100), sort TEXT,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)"""))
+        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_saved_views_name "
+                          "ON saved_views (user_id, collection, lower(name))"))
 
 
 @asynccontextmanager
@@ -310,7 +318,7 @@ app.include_router(campaigns.public)
 for router in (user_files.router, emails.router, home.router, lead_files.router, lead_enrichment.router,
                lead_enrichment.contacts_router, campaigns.router, campaigns.leads_router, leads.router, opportunity_files.router,
                opportunities.router, attachments.router, tasks.router, accounts.router, activity.router, assistant.router,
-               transfer_requests.router, analytics.router, deleted_leads.router):
+               transfer_requests.router, analytics.router, deleted_leads.router, saved_views.router):
     app.include_router(router, dependencies=[Depends(authenticate)])
 
 

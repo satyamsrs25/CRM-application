@@ -490,6 +490,13 @@ export const api = {
   // open and click tracking: the Admin's setting (everyone reads it for New Campaign; only the Admin changes it)
   trackingSettings: () => apiRequest("/campaigns/tracking"),
   setTracking: (enabled) => apiRequest("/campaigns/tracking", { method: "PUT", body: { enabled } }),
+  // Opportunities: the In stage limits (everyone reads them; the Admin changes them) and each user's own saved views
+  opportunityStageLimits: () => apiRequest("/opportunities/stage-limits"),
+  setOpportunityStageLimits: (limits) => apiRequest("/opportunities/stage-limits", { method: "PUT", body: { limits } }),
+  savedViews: (collection) => apiRequest(`/saved-views?collection=${encodeURIComponent(collection)}`),
+  createSavedView: (view) => apiRequest("/saved-views", { method: "POST", body: view }),
+  renameSavedView: (id, name) => apiRequest(`/saved-views/${id}`, { method: "PATCH", body: { name } }),
+  deleteSavedView: (id) => apiRequest(`/saved-views/${id}`, { method: "DELETE" }),
   setLeadEmailStatus: (id, status, reason) =>
     apiRequest(`/leads/${id}/email-status`, { method: "POST", body: { status, reason: reason || null } }),
   bulkTransferOpportunities: (opportunity_ids, to_user_id, note) =>

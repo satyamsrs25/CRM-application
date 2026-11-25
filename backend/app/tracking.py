@@ -314,6 +314,17 @@ def _rate(part: int, whole: int) -> float | None:
     return round(100 * part / whole, 1) if whole else None
 
 
+# The engagement cards' recipient groups (Campaigns > a campaign): sent emails only, each kind only where that email
+# carried that tracking. They can overlap (a click doesn't imply an open: images may be blocked). Queued, failed,
+# bounced, not sent and cancelled recipients, and emails sent without open tracking, are never "No Open Detected".
+ENGAGEMENT_GROUPS = {
+    "opened": lambda r: (r.status == "Sent", r.opens_tracked.is_(True), r.first_open_at.is_not(None)),
+    "clicked": lambda r: (r.status == "Sent", r.clicks_tracked.is_(True), r.first_click_at.is_not(None)),
+    "no_open": lambda r: (r.status == "Sent", r.opens_tracked.is_(True), r.first_open_at.is_(None)),
+    "opens_not_tracked": lambda r: (r.status == "Sent", r.opens_tracked.is_(False)),
+}
+
+
 def engagement(db: Session, campaign) -> dict:
     """The campaign's engagement, kept apart from sending: recipients with signals (unique) and signals (repeated),
     with rates over the sent emails that carried that tracking."""
@@ -341,6 +352,9 @@ def engagement(db: Session, campaign) -> dict:
         "possibly_automated": {"open": flagged.get("open", 0), "click": flagged.get("click", 0)},
         "links": [{"url": url, "clicks": n, "recipients": people} for url, n, people in links],
         "retention_days": retention_days(),
+        # recipients (not signals) in each engagement group: the cards and the recipient filter
+        "groups": {key: db.scalar(select(func.count()).select_from(rows).where(
+            rows.campaign_id == campaign.id, *where(rows))) or 0 for key, where in ENGAGEMENT_GROUPS.items()},
     }
 
 

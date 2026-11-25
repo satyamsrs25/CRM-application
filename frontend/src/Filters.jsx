@@ -2,7 +2,7 @@
 // column header, like Salesforce/Excel. The chosen values are kept per list in this browser.
 import React, { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { Icon } from "./ui";
-import { dateRangeBounds, filterText, FUTURE_RANGES, matchChoices, PAST_RANGES } from "./listHelpers";
+import { applyFilters, dateRangeBounds, filterText, FUTURE_RANGES, matchChoices, PAST_RANGES } from "./listHelpers";
 
 // Date ranges. "past" fits created dates, "future" fits close and due dates (listHelpers.js, shared with the chips).
 const PAST = PAST_RANGES;
@@ -20,28 +20,8 @@ export const TASK_DUE_RANGES = [
 // [start, end) in local time for a range key; custom uses the two date inputs (yyyy-mm-dd). See listHelpers.js.
 export const rangeBounds = (range, from, to, now) => dateRangeBounds(range, from, to, now);
 
-const toDate = (value) => (!value ? null : String(value).length === 10 ? new Date(`${value}T12:00:00`) : new Date(value));
-
-// Client-side filtering for lists that are fully loaded (Opportunities, Accounts, Contacts, Tasks)
-export function applyFilters(rows, defs, values) {
-  const active = defs.filter((f) => values[f.key] && f.get); // filters without get() run on the server (Leads)
-  if (!active.length) return rows;
-  const tests = active.map((f) => {
-    if (f.type === "text") {
-      const needle = String(values[f.key]).trim().toLowerCase();
-      return (r) => String(f.get(r) ?? "").toLowerCase().includes(needle);
-    }
-    if (f.type === "date") {
-      const [start, end] = rangeBounds(values[f.key], values[`${f.key}_from`], values[`${f.key}_to`]);
-      return (r) => {
-        const d = toDate(f.get(r));
-        return !!d && (!start || d >= start) && (!end || d < end);
-      };
-    }
-    return (r) => String(f.get(r) ?? "") === values[f.key];
-  });
-  return rows.filter((r) => tests.every((t) => t(r)));
-}
+// Client-side filtering for lists that are fully loaded (Opportunities, Accounts, Contacts, Tasks): listHelpers.js
+export { applyFilters };
 
 // Values kept per list ("leads", "tasks"...) so a filter stays when you come back
 // Remembered per user (userId): filters chosen by someone who used this browser before (an Owner, a status) never hide

@@ -5,6 +5,8 @@ import { api } from "./api";
 import { StageFiles } from "./Attachments";
 import LinkedInField from "./LeadAutofill";
 import PhoneField from "./PhoneField";
+// Log a call (Opportunities board card details): a note on the opportunity, saved only when the form is submitted
+import { CALL_OUTCOMES, callNoteBody } from "./listHelpers";
 import { ConvertCheck, NewOpportunityFields, newOpportunityPayload } from "./NewOpportunity";
 import {
   ATTACHMENT_STAGES,
@@ -311,6 +313,7 @@ export default function Modal({ modal, close, data, run, notify, user }) {
     convert: `Convert Lead: ${record?.name}`,
     stage: `Change Stage to ${modal.stage}`,
     note: "New Note",
+    call: `Log a Call: ${record?.name}`,
     transfer: `Transfer Lead: ${record?.name}`,
     cancelDemo: `Cancel or Reschedule Demo: ${record?.name}`,
     delete: `Delete Lead: ${record?.name}`,
@@ -637,6 +640,7 @@ export default function Modal({ modal, close, data, run, notify, user }) {
     if (type === "reopen") return `"${name}" is open again at New, with your follow-up task.`;
     if (type === "task") return record ? "Task updated." : "Task created.";
     if (type === "note") return "Note added.";
+    if (type === "call") return "Call logged as a note on the opportunity.";
     if (type === "transfer") return `"${name}" was transferred to ${saved?.owner_name || "the new owner"}.`;
     if (type === "cancelDemo")
       return demoChoice === "reschedule"
@@ -836,6 +840,11 @@ export default function Modal({ modal, close, data, run, notify, user }) {
       if (type === "note") {
         if (!v.body.trim()) throw new Error("Note cannot be blank.");
         await run("note", modal.collection, record.id, v.body.trim());
+      }
+      if (type === "call") {
+        if (!CALL_OUTCOMES.includes(v.call_outcome)) throw new Error("Choose how the call went.");
+        if (!(v.call_notes || "").trim()) throw new Error("Notes cannot be blank.");
+        await run("note", modal.collection, record.id, callNoteBody(v.call_outcome, modal.contactName, v.call_notes));
       }
       if (type === "transfer")
         saved = await run("transferLead", record.id, { to_user_id: Number(v.to_user_id), note: v.note || null });
@@ -1396,6 +1405,35 @@ export default function Modal({ modal, close, data, run, notify, user }) {
               </span>
               <textarea name="body" required rows={5} />
             </label>
+          )}
+          {type === "call" && (
+            <>
+              <p className="field-hint">
+                Records a call you made{modal.contactName ? ` with ${modal.contactName}` : ""}, as a note on this opportunity. Nothing is saved until you
+                select Save; the stage, owner and tasks don&apos;t change.
+              </p>
+              <label className="field">
+                <span>
+                  Outcome <i>*</i>
+                </span>
+                <select name="call_outcome" required defaultValue="">
+                  <option value="" disabled>
+                    Select…
+                  </option>
+                  {CALL_OUTCOMES.map((o) => (
+                    <option key={o} value={o}>
+                      {o}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">
+                <span>
+                  Notes <i>*</i>
+                </span>
+                <textarea name="call_notes" required rows={4} placeholder="What was discussed and the next step" />
+              </label>
+            </>
           )}
           {error && (
             <p className="form-error" role="alert">

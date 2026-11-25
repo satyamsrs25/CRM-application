@@ -119,6 +119,7 @@ import {
   inStageBadge,
   IN_STAGE_FILTERS,
   stageClockSummary,
+  opportunityClockSummary,
 } from "./listHelpers.js";
 import { demoEvent, foldIcsLine, googleCalendarUrl, icsContent, icsText, outlookCalendarUrl } from "./calendarLinks.js";
 import { addressProblem, draftForCopy, mailtoUri, OUTLOOK_COMPOSE_URL, OUTLOOK_URL_LIMIT, outlookComposeUrl, outlookHandoff, readComposeUrl, splitAddresses } from "./outlookDraft.js";
@@ -3138,9 +3139,9 @@ test("Campaign tracking: off by default, the Admin's switch, separate Track open
   assert.match(page, /\{user\.role === "Admin" && \(\s*<button className="sf-button" onClick=\{\(\) => setTrackingOpen\(true\)\}>\s*Tracking settings/);
   assert.match(page, /const saved = await api\.setTracking\(on\);/);
   assert.match(page, /add a privacy\s+notice or ask for consent where the law requires it/);
-  // the report: recipients with signals vs signals, with the rate's definition, beside (not inside) sending
-  assert.match(page, /\{c\.tracking && <Engagement tracking=\{c\.tracking\} \/>\}/);
-  assert.match(page, /Rate = recipients with at least one signal ÷ emails sent with that tracking/);
+  // the report: recipients (once each) per engagement card, with what they count, beside (not inside) sending
+  assert.match(page, /\{c\.tracking && <Engagement tracking=\{c\.tracking\} group=\{group\} onGroup=\{\(g\) => \(setGroup\(g\), setPage\(0\)\)\} \/>\}/);
+  assert.match(page, /Each card counts people, once however many signals they have, among the emails sent with that tracking/);
   assert.match(page, /a signal never means delivered/);
   assert.match(page, /\{c\.tracking && <th>Opens<\/th>\}/);
   assert.match(page, /links=\{r\.engagement\.links\}/);
@@ -3206,7 +3207,7 @@ test("In stage badge: green, amber and red by rating, neutral when not timed, a 
 
 test("In stage column: after Status, filtered from its header arrow on the server, no buttons above the table", () => {
   const table = source("./LeadsTable.jsx");
-  assert.match(table, /\["Status", "stage", 124\],\s*(\/\/[^\n]*\s*)*\["In stage", "in_stage", 116\],/);
+  assert.match(table, /\["Status", "stage", 124\],\s*(\/\/[^\n]*\s*)*\["In stage", "in_stage", 172\],/); // room for "Unassigned for 3 days"
   assert.match(table, /<StageBadge stage=\{l\.stage\} \/>\s*<\/td>\s*<td className="cell">\s*<InStage clock=\{l\.in_stage\} stage=\{l\.stage\} pooled=\{l\.in_pool\} \/>/);
   assert.match(table, /if \(filters\.in_stage\) params\.set\("in_stage", filters\.in_stage\);/); // List and Kanban columns
   assert.match(table, /<span className="sr-only">\{label\}<\/span>/); // the full wording for screen readers
@@ -3252,7 +3253,7 @@ test("Lead page In stage: the list's clock in words, a rating badge, and a notic
 
 test("Lead page In stage: the server's in_stage under the path, New Task only where tasks may be added", () => {
   const page = source("./RecordPage.jsx");
-  assert.match(page, /const stageClock = lead \? stageClockSummary\(item\.in_stage, item\.stage, pooled\) : null;/); // leads only, from the server
+  assert.match(page, /const stageClock = lead \? stageClockSummary\(item\.in_stage, item\.stage, pooled\) : opportunityClockSummary\(item\.in_stage, item\.stage\);/); // from the server
   assert.match(page, /currentNote=\{stageClock\?\.duration\}/); // the time under the current status in the path
   assert.match(page, /\{stageClock && <StageClockLine clock=\{stageClock\} since=\{item\.in_stage\?\.since\} \/>\}/);
   // the notice's New Task: the existing task form (openTask), with the same rule as the Activity tab's
@@ -3267,4 +3268,254 @@ test("Lead page In stage: the server's in_stage under the path, New Task only wh
   const css = source("./styles.css");
   assert.match(css, /\.path\.with-note \.path-step button \{\s*height: 42px;/);
   assert.match(css, /\.stage-clock-notice\.stalled \{/);
+});
+
+test("Pooled leads: Unassigned for (time since creation), neutral and never rated, on the list and the lead page", () => {
+  const pooled = (seconds) => ({ state: "unassigned", since: "2026-11-20T10:00:00-05:00", seconds, category: null });
+  assert.deepEqual(inStageBadge(pooled(3 * 86400), "New", true), {
+    text: "Unassigned for 3 days",
+    tone: "neutral",
+    label: "Unassigned for 3 days: in the Unassigned Pool since it was created (not rated)",
+  });
+  assert.equal(inStageBadge(pooled(5 * 3600), "New", true).text, "Unassigned for 5 hours");
+  assert.equal(inStageBadge(pooled(600), "New", true).text, "Unassigned for < 1 hour");
+  assert.equal(inStageBadge(pooled(600), "New", true).label.startsWith("Unassigned for less than an hour"), true);
+  const page = stageClockSummary(pooled(3 * 86400), "New", true);
+  assert.deepEqual([page.state, page.badge, page.tone], ["unassigned", "Unassigned for 3 days", "neutral"]);
+  assert.equal(page.duration, undefined); // not the status clock: nothing under the path's current status
+  assert.equal(page.notice, undefined); // never a needs-attention or stalled notice
+  // no creation time: still Not started
+  assert.equal(inStageBadge({ state: "not_started" }, "New", true).text, "Not started");
+});
+
+test("Opportunity In stage: neutral time in the stage, Won/Lost for, Not recorded; no ratings or notices", () => {
+  const timed = (stage, seconds) => opportunityClockSummary({ state: "timed", since: "2026-11-20T10:00:00-05:00", seconds, category: null }, stage);
+  assert.deepEqual(timed("Discovery", 3 * 86400), { state: "timed", short: "3 days", duration: "3 days", text: "In Discovery for 3 days", badge: null, tone: "neutral" });
+  assert.deepEqual(timed("Won", 3 * 86400), { state: "timed", short: "3 days", duration: undefined, text: "Won for 3 days", badge: null, tone: "neutral" });
+  assert.equal(timed("Lost", 3600).text, "Lost for 1 hour");
+  assert.equal(timed("Proposal", 1200).text, "In Proposal for less than an hour");
+  const unknown = opportunityClockSummary({ state: "not_recorded" }, "Proposal");
+  assert.deepEqual([unknown.short, unknown.badge, unknown.tone, unknown.duration, unknown.notice], ["Not recorded", "Not recorded", "neutral", undefined, undefined]);
+  assert.equal(opportunityClockSummary(null, "Proposal"), null);
+  // the list: In stage right after Stage, sorted by seconds with untimed ones last either way; no category filter
+  const list = source("./ListView.jsx");
+  assert.match(list, /\["Stage", \(r\) => r\.stage, \(r\) => <StageBadge stage=\{r\.stage\} \/>\],\s*\["In stage", inStageSeconds, \(r\) => <OpportunityInStage clock=\{r\.in_stage\} stage=\{r\.stage\} \/>, "duration"\],/);
+  assert.match(list, /if \(kind === "duration"\) return x === y \? 0 : x === null \? 1 : y === null \? -1 : \(x - y\) \* sort\.dir;/);
+  assert.match(list, /const inStageSeconds = \(r\) => \(r\.in_stage\?\.state === "timed" \? r\.in_stage\.seconds : null\);/);
+  // the In stage arrow filter (the agreed ratings), not on the Won / Lost lists
+  assert.match(list, /\{ key: "in_stage", column: "In stage", label: "In stage", allLabel: "All", options: IN_STAGE_FILTERS, get: \(r\) => r\.in_stage\?\.category \|\| "" \}/);
+  assert.match(list, /const inStage = \/\(Won\|Lost\) Opportunities\$\/\.test\(viewName\)/);
+  assert.match(list, /<span className=\{`stage-badge in-stage \$\{s\.tone\}`\} title=\{label\}>/); // the Leads colours
+  // the page: the same clock, neutral (the lead rules and the notice stay leads-only)
+  const page = source("./RecordPage.jsx");
+  assert.match(page, /const stageClock = lead \? stageClockSummary\(item\.in_stage, item\.stage, pooled\) : opportunityClockSummary\(item\.in_stage, item\.stage\);/);
+});
+
+test("Campaign engagement: Unique Opens, Unique Clicks and No Open Detected count recipients and filter the table", () => {
+  const page = source("./CampaignsPage.jsx");
+  assert.match(page, /\["opened", "Unique Opens", "track_opens"\],\s*\["clicked", "Unique Clicks", "track_clicks"\],\s*\["no_open", "No Open Detected", "track_opens"\],/);
+  assert.match(page, /<b>\{n\(groups\[key\]\)\}<\/b>/); // recipients, from the server's groups
+  assert.match(page, /aria-pressed=\{group === key\}/);
+  assert.match(page, /onClick=\{\(\) => onGroup\(group === key \? "" : key\)\}/);
+  assert.match(page, />\s*All Recipients\s*<\/button>/);
+  assert.match(page, /Opens not tracked \(\{n\(groups\.opens_not_tracked\)\}\)/);
+  // filtered on the server with the Status filter, from the first page
+  assert.match(page, /\.campaign\(id, \{ status, engagement: group, offset: page \* 100, limit: 100 \}\)/);
+  assert.match(page, /onGroup=\{\(g\) => \(setGroup\(g\), setPage\(0\)\)\}/);
+  assert.match(page, /Detected activity doesn&apos;t prove\s*anyone read the email\./);
+  assert.match(page, /possibly automated:/); // kept, out of the three cards
+  assert.doesNotMatch(page, /<span>Possibly automated<\/span>/);
+  assert.match(source("./styles.css"), /button\.engagement-tile\[aria-pressed="true"\] \{/);
+});
+
+test("Opportunity ratings: the Leads colours for the open stages, Won/Lost and Not recorded neutral", () => {
+  const timed = (stage, category, seconds = 8 * 86400) => opportunityClockSummary({ state: "timed", since: "2026-11-20T10:00:00-05:00", seconds, category }, stage);
+  assert.deepEqual([timed("Discovery", "attention").badge, timed("Discovery", "attention").tone], ["Needs attention", "attention"]);
+  assert.deepEqual([timed("Opportunity", "stalled").badge, timed("Opportunity", "stalled").tone], ["Stalled", "stalled"]);
+  assert.deepEqual([timed("Proposal", "on_track").badge, timed("Proposal", "on_track").tone], ["On track", "on-track"]);
+  assert.equal(timed("Proposal", "stalled").notice, undefined); // no notice or task for opportunities
+  assert.deepEqual([timed("Won", null).badge, timed("Won", null).tone, timed("Won", null).text], [null, "neutral", "Won for 8 days"]);
+  assert.deepEqual([timed("Lost", "stalled").badge, timed("Lost", "stalled").tone], [null, "neutral"]); // never rated
+  assert.equal(opportunityClockSummary({ state: "not_recorded" }, "Proposal").tone, "neutral");
+});
+
+test("Campaign engagement: no explanation block under the cards; the same facts in a Help popover", () => {
+  const page = source("./CampaignsPage.jsx");
+  assert.doesNotMatch(page, /className="engagement-definition"/);
+  assert.doesNotMatch(page, /className="tracking-facts compact"/);
+  assert.match(page, /<EngagementHelp e=\{e\} \/>/);
+  assert.match(page, /aria-label="About engagement"\s*aria-expanded=\{open\}\s*aria-controls="engagement-help"/);
+  assert.match(page, /\{open && \(\s*<div id="engagement-help" className="engagement-help-pop" role="dialog"/);
+  assert.match(page, /const ref = useDismiss\(open, setOpen\);/); // closes on a click outside or Escape
+  assert.match(source("./Header.jsx"), /export function useDismiss\(open, setOpen\) \{/);
+  // still there: the cards, All Recipients, the totals and the clicked links
+  assert.match(page, /<b>\{n\(groups\[key\]\)\}<\/b>/);
+  assert.match(page, />\s*All Recipients\s*<\/button>/);
+  assert.match(page, /Signals in total:/);
+  assert.match(page, /<table className="sf-table engagement-links">/);
+});
+
+// ---------- vikram-engagement-stage-updates: Opportunities filter row, saved views, board ageing and card details ----------
+
+test("Opportunities filters: AND across filters, any of several owners, currency, dynamic dates, Overdue / Stuck once", async () => {
+  const { applyFilters, toggleCount, overdueOrStuck, opportunityFlags, localDay } = await import("./listHelpers.js");
+  const now = new Date(2026, 10, 24, 10, 0); // 24 Nov 2026, the computer's local time (close dates are calendar days)
+  const stalled = { state: "timed", seconds: 9e6, category: "stalled" };
+  const rows = [
+    { id: "1", stage: "Proposal", owner_id: 1, currency: "USD", expected_close_date: "2026-11-23", in_stage: stalled }, // overdue and stuck
+    { id: "2", stage: "Discovery", owner_id: 2, currency: "INR", expected_close_date: "2026-11-24", in_stage: { state: "timed", seconds: 60, category: "on_track" } },
+    { id: "3", stage: "Opportunity", owner_id: 3, currency: "USD", expected_close_date: "2026-12-05", in_stage: stalled }, // stuck only
+    { id: "4", stage: "Won", owner_id: 1, currency: "USD", expected_close_date: "2026-11-01", in_stage: { state: "timed", seconds: 9e6, category: null } },
+    { id: "5", stage: "Lost", owner_id: 2, currency: "INR", expected_close_date: "2026-10-01", in_stage: stalled }, // closed: never
+    { id: "6", stage: "Proposal", owner_id: 2, currency: "INR", expected_close_date: "2026-11-02", in_stage: { state: "not_recorded" } }, // overdue only
+  ];
+  const defs = [
+    { key: "owner", label: "Owner", multi: true, options: [["1", "Me"], ["2", "Ravi"], ["3", "Asha"]], get: (r) => String(r.owner_id) },
+    { key: "currency", label: "Currency", options: [["USD", "USD"], ["INR", "INR"]], get: (r) => r.currency },
+    { key: "overdue_stuck", label: "Overdue / Stuck", toggle: true, options: [["1", "Overdue / Stuck"]], test: (r, v, at) => overdueOrStuck(r, at) },
+    { key: "close", label: "Close Date", type: "date", future: true, get: (r) => r.expected_close_date },
+  ];
+  const ids = (values, at = now) => applyFilters(rows, defs, values, at).map((r) => r.id);
+  assert.equal(localDay(now), "2026-11-24");
+  assert.deepEqual(opportunityFlags(rows[0], now), { overdue: true, stuck: true });
+  assert.deepEqual(opportunityFlags(rows[1], now), { overdue: false, stuck: false }); // due today isn't overdue
+  assert.deepEqual([opportunityFlags(rows[3], now), opportunityFlags(rows[4], now)], [{ overdue: false, stuck: false }, { overdue: false, stuck: false }]);
+  assert.deepEqual(ids({ overdue_stuck: "1" }), ["1", "3", "6"]);
+  assert.equal(toggleCount(rows, defs, {}, "overdue_stuck", now), 3); // 1 is overdue and stuck: counted once
+  assert.deepEqual(ids({ owner: "1,3" }), ["1", "3", "4"]); // any of the chosen owners
+  assert.deepEqual(ids({ owner: "1,3", currency: "USD", overdue_stuck: "1" }), ["1", "3"]); // every filter (AND)
+  // the count uses the other filters, never its own
+  assert.equal(toggleCount(rows, defs, { owner: "2", overdue_stuck: "1" }, "overdue_stuck", now), 1);
+  assert.equal(toggleCount(rows, defs, { currency: "USD" }, "overdue_stuck", now), 2);
+  // Closing This Month is Close Date: This month, worked out from today each time
+  assert.deepEqual(ids({ close: "month" }), ["1", "2", "4", "6"]);
+  assert.deepEqual(ids({ close: "month" }, new Date(2026, 11, 3)), ["3"]);
+});
+
+test("Opportunities Owner: grouped choices within the user's access, several at once in the summary", async () => {
+  const { ownerChoiceGroups, filterText } = await import("./listHelpers.js");
+  const users = [
+    { id: 1, full_name: "Priya Sharma", role: "Manager" },
+    { id: 2, full_name: "Ravi Kumar", role: "Salesperson" },
+    { id: 4, full_name: "Bea Seller", role: "Salesperson" },
+    { id: 3, full_name: "Asha Rao", role: "Admin" },
+  ];
+  assert.deepEqual(ownerChoiceGroups(users, users[1], false), [{ label: "You", options: [["2", "Me"]] }]); // own records only
+  assert.deepEqual(ownerChoiceGroups(users, users[0], true), [
+    { label: "Managers", options: [["1", "Priya Sharma (me)"]] },
+    { label: "Salespeople", options: [["4", "Bea Seller"], ["2", "Ravi Kumar"]] },
+    { label: "Admins", options: [["3", "Asha Rao"]] },
+  ]);
+  const def = { key: "owner", label: "Owner", multi: true, options: [["1", "Priya"], ["2", "Ravi"], ["3", "Asha"]] };
+  assert.equal(filterText(def, { owner: "2" }), "Owner: Ravi");
+  assert.equal(filterText(def, { owner: "1,2" }), "Owner: Priya, Ravi");
+  assert.equal(filterText(def, { owner: "1,2,3" }), "Owner: 3 selected");
+  assert.equal(filterText({ key: "overdue_stuck", label: "Overdue / Stuck", toggle: true, options: [["1", "x"]] }, { overdue_stuck: "1" }), "Overdue / Stuck");
+  const list = source("./ListView.jsx");
+  // only owners still on offer are applied (never someone outside the user's access); none on "My ..." views
+  assert.match(list, /const kept = String\(v\)\.split\(","\)\.filter\(\(id\) => f\.options\.some\(\(\[o\]\) => o === id\)\);/);
+  assert.match(list, /const groups = ownerChoiceGroups\(data\.users \|\| \[\], user, team\);/);
+  assert.match(list, /const ownerMulti = viewName\.startsWith\("My "\)/);
+  const opportunityDefs = list.slice(list.indexOf('if (collection === "opportunities") {'), list.indexOf('if (collection === "accounts") {'));
+  assert.doesNotMatch(opportunityDefs, /\.\.\.owner,/); // one Owner control (the row's), not a second column arrow
+});
+
+test("Opportunities board: counts, stalled counts and per-currency totals cover every filtered card", async () => {
+  const { boardColumns } = await import("./listHelpers.js");
+  const { compactMoneyMix } = await import("./format.js");
+  const stalled = { state: "timed", category: "stalled" };
+  const rows = [
+    { stage: "Proposal", value: 1000, currency: "USD", in_stage: stalled },
+    { stage: "Proposal", value: "2500.5", currency: "INR", in_stage: { state: "timed", category: "attention" } },
+    { stage: "Proposal", value: 500, currency: "USD", in_stage: { state: "not_recorded", category: null } },
+    { stage: "Proposal", value: null, currency: "EUR", in_stage: stalled },
+    { stage: "Won", value: 900, currency: "USD", in_stage: stalled }, // never stalled
+    ...Array.from({ length: 120 }, () => ({ stage: "Opportunity", value: 10, currency: "AED", in_stage: stalled })),
+  ];
+  const cols = Object.fromEntries(boardColumns(rows, ["Opportunity", "Discovery", "Proposal", "Won", "Lost"]).map((c) => [c.stage, c]));
+  assert.deepEqual([cols.Proposal.count, cols.Proposal.stalled, cols.Proposal.totals], [4, 2, { USD: 1500, INR: 2500.5 }]);
+  assert.equal(compactMoneyMix(cols.Proposal.totals), "$1.5K + ₹2.5K"); // never added across currencies
+  assert.deepEqual([cols.Won.count, cols.Won.stalled, cols.Won.open], [1, 0, false]);
+  assert.deepEqual([cols.Opportunity.count, cols.Opportunity.stalled, cols.Opportunity.totals], [120, 120, { AED: 1200 }]); // 50 drawn first
+  assert.deepEqual([cols.Discovery.count, cols.Discovery.totals], [0, {}]);
+  const list = source("./ListView.jsx");
+  assert.match(list, /const columns = boardColumns\(records, KANBAN_STAGES, OPEN_OPP\);/);
+  assert.match(list, /\{open \? "Open" : "Closed"\} • \{compactMoneyMix\(totals\)\}/);
+  assert.match(list, /\{open && <p className=\{`kanban-stalled\$\{stalled \? " on" : ""\}`\}>\{stalled\.toLocaleString\(\)\} stalled<\/p>\}/);
+  assert.match(list, /className=\{`kanban-card\$\{isStalled\(r\) \? " stalled" : ""\}`\}/);
+  assert.match(list, /const isStalled = \(r\) => OPEN_OPP\.includes\(r\.stage\) && r\.in_stage\?\.state === "timed" && r\.in_stage\.category === "stalled";/);
+  assert.match(list, /<OpportunityInStage clock=\{r\.in_stage\} stage=\{r\.stage\} \/>\s*<\/div>\s*<div className="kanban-card-foot">/); // the age badge
+  assert.match(list, /<Kanban\s+records=\{rows\}/); // the same filtered rows as the List
+  assert.doesNotMatch(list, /compact\(sum\)/);
+  // a drop still opens the stage popups, with their task and file checks
+  assert.match(list, /if \(stage === "Won"\) setModal\(\{ type: "won", record \}\);/);
+  assert.match(list, /else setModal\(\{ type: "stage", collection: "opportunities", record, stage \}\);/);
+  assert.match(source("./styles.css"), /\.kanban-card\.stalled \{\s*border-color: #c23934;/);
+});
+
+test("Opportunities card details: the next open task, the Client POC as the user may see it, Call / Log a call / Email", async () => {
+  const { nextOpenTask, opportunityPoc, telHref, callNoteBody, CALL_OUTCOMES, stageLimitText } = await import("./listHelpers.js");
+  const tasks = [
+    { id: "9", relatedType: "opportunities", relatedId: "5", completed: false, due_date: "2026-11-30T09:00:00", title: "Later" },
+    { id: "7", relatedType: "opportunities", relatedId: "5", completed: true, due_date: "2026-11-01T09:00:00", title: "Done" },
+    { id: "8", relatedType: "opportunities", relatedId: "5", completed: false, due_date: "2026-11-20T09:00:00", title: "Earliest open" },
+    { id: "6", relatedType: "leads", relatedId: "5", completed: false, due_date: "2026-11-02T09:00:00", title: "A lead's" },
+  ];
+  assert.equal(nextOpenTask(tasks, "5").title, "Earliest open");
+  assert.equal(nextOpenTask(tasks, "6"), null);
+  const contacts = [
+    { id: 11, full_name: "Dee Clock", first_name: "Dee", phone: "+91 98765 43210", email: "dee@example.test" },
+    { id: 12, full_name: "Nell Nophone", phone: "", email: "" },
+  ];
+  const dee = opportunityPoc({ primary_contact_id: 11 }, contacts);
+  assert.deepEqual([dee.name, dee.phone, dee.email, dee.missing], ["Dee Clock", "+91 98765 43210", "dee@example.test", ""]);
+  const nell = opportunityPoc({ primary_contact_id: 12 }, contacts);
+  assert.deepEqual([nell.phone, nell.email], ["", ""]);
+  const hidden = opportunityPoc({ primary_contact_id: 99, primary_contact_name: "Someone Else" }, contacts); // not one of theirs
+  assert.deepEqual([hidden.name, hidden.phone, hidden.email, hidden.missing], ["Someone Else", "", "", "The primary contact's phone and email aren't available to you."]);
+  assert.equal(opportunityPoc({ primary_contact_id: null }, contacts).missing, "This opportunity has no primary contact.");
+  assert.equal(telHref("+91 98765-43210"), "tel:+919876543210");
+  assert.deepEqual(CALL_OUTCOMES, ["Connected", "No answer", "Left voicemail", "Wrong number"]);
+  assert.equal(callNoteBody("No answer", "Dee Clock", "  Try Friday "), "Call logged (No answer) with Dee Clock: Try Friday");
+  assert.equal(stageLimitText({ Proposal: [14, 30] }, "Proposal"), "Needs attention from 14 days, stalled from 30");
+  assert.equal(stageLimitText({ Opportunity: [1, 5] }, "Opportunity"), "Needs attention from 1 day, stalled from 5");
+  assert.equal(stageLimitText({ Proposal: [14, 30] }, "Won"), null);
+  const tools = source("./OpportunityTools.jsx");
+  // the phone is masked; the number is read only when Call is pressed (no tel: link, title or attribute holds it)
+  assert.match(tools, /\{poc\.phone \? maskPhone\(poc\.phone\) : "No phone number"\}/);
+  assert.match(tools, /onClick=\{\(\) => \(window\.location\.href = telHref\(poc\.phone\)\)\}/);
+  assert.doesNotMatch(tools, /href=\{`tel:|title=\{[^}]*(phone|email)/);
+  assert.match(tools, /<p>No open task\. Add the next follow-up\.<\/p>/);
+  assert.match(tools, /\{!task && actions\.addTask && \(/);
+  // Log a call and Email open the app's own forms: nothing is saved or sent from the details themselves
+  const list = source("./ListView.jsx");
+  assert.match(list, /logCall: \(contactName\) => \(setDetails\(null\), setModal\(\{ type: "call", collection: "opportunities", record: r, contactName \}\)\)/);
+  assert.match(list, /openEmail\(\{\s*type: "opportunity",\s*field: "opportunity_id",/);
+  const modal = source("./Modal.jsx");
+  assert.match(modal, /if \(!CALL_OUTCOMES\.includes\(v\.call_outcome\)\) throw new Error\("Choose how the call went\."\);/);
+  assert.match(modal, /await run\("note", modal\.collection, record\.id, callNoteBody\(v\.call_outcome, modal\.contactName, v\.call_notes\)\);/);
+  // opened by a resting mouse, keyboard focus or a tap; Esc, a click elsewhere or a scroll close it
+  assert.match(list, /onFocus=\{\(e\) => e\.currentTarget\.matches\(":focus-visible"\) && setDetails\(\{ id: r\.id, by: "focus" \}\)\}/);
+  assert.match(list, /onPointerEnter=\{\(e\) => e\.pointerType === "mouse" && later\(/);
+  assert.match(list, /const away = \(e\) => !card\(\)\?\.contains\(e\.target\) && setDetails\(null\);/);
+  assert.match(source("./App.jsx"), /openTask=\{openTask\}\s*openEmail=\{openEmail\}\s*\/>/);
+});
+
+test("Opportunities: one filter row above List and Kanban, Clear All keeps the view, saved views beside the standard ones", () => {
+  const list = source("./ListView.jsx");
+  const tools = source("./OpportunityTools.jsx");
+  assert.match(list, /\{opps && \(\s*<OpportunityFilterRow/);
+  assert.match(list, /const clearAll = \(\) => \{\s*setFilterValues\(\{\}\);\s*setSearch\(""\);\s*\};/); // the list view (scope) stays
+  assert.match(list, /useEffect\(\(\) => setPicked\(new Set\(\)\), \[filterKey\]\);/); // a filter change clears the ticks
+  assert.match(list, /const \{ pageRows, start, pager \} = usePaged\(rows, `\$\{collection\}\|\$\{viewName\}\|\$\{search\}\|\$\{JSON\.stringify\(active\)\}`\);/);
+  assert.match(list, /const list = collection === "leads" \? base : applyFilters\(base, defs, active\);/); // before paging
+  assert.match(list, /MY VIEWS/);
+  assert.match(list, /base_view: allViews\.some\(\(\[n\]\) => n === viewName\) \? viewName : allViews\[0\]\[0\],/);
+  assert.match(tools, /onClick=\{\(\) => set\("close", month \? "" : "month"\)\}/); // Closing This Month stays dynamic
+  assert.match(tools, /Clear owners/);
+  assert.match(source("./Filters.jsx"), /export \{ applyFilters \};/);
+  const api = source("./api.js");
+  assert.match(api, /savedViews: \(collection\) => apiRequest\(`\/saved-views\?collection=\$\{encodeURIComponent\(collection\)\}`\)/);
+  assert.match(api, /setOpportunityStageLimits: \(limits\) => apiRequest\("\/opportunities\/stage-limits", \{ method: "PUT", body: \{ limits \} \}\)/);
+  assert.match(list, /\{opps && user\.role === "Admin" && limits && \(/); // only the Admin changes the limits
 });
