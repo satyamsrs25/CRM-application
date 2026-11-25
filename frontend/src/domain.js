@@ -38,6 +38,11 @@ const EMAIL_VIEWS = ["invalid_email", "unsubscribed", "email_ok", "no_email"];
 // (permissions.js seesPoolContacts).
 export function leadBoardColumns(view, stageFilter, ownerFilter, { poolContacts = true } = {}) {
   const viewStages = LEAD_VIEW_STAGES[view] || LEAD_STAGES;
+  // Owner may name several people and Unassigned ("2,unassigned"): the pool column shows when Unassigned is one of
+  // them, the stage columns when anyone else is
+  const owners = ownerFilter ? String(ownerFilter).split(",") : [];
+  const poolHidden = owners.length > 0 && !owners.includes(POOL_OWNER);
+  const onlyPool = owners.length > 0 && owners.every((o) => o === POOL_OWNER);
   const pool = {
     stage: UNASSIGNED_COLUMN,
     pool: true,
@@ -47,7 +52,7 @@ export function leadBoardColumns(view, stageFilter, ownerFilter, { poolContacts 
         ? "Not in this list view"
         : stageFilter && stageFilter !== "New"
           ? "Hidden by the Lead Status filter"
-          : ownerFilter && ownerFilter !== POOL_OWNER
+          : poolHidden
             ? "Hidden by the Owner filter"
             : "",
   };
@@ -63,7 +68,7 @@ export function leadBoardColumns(view, stageFilter, ownerFilter, { poolContacts 
         ? "Not in this list view"
         : stageFilter && stageFilter !== stage
           ? "Hidden by the Lead Status filter"
-          : ownerFilter === POOL_OWNER
+          : onlyPool
             ? "Hidden by the Owner filter"
             : "",
   }));

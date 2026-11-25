@@ -640,7 +640,7 @@ export default function Modal({ modal, close, data, run, notify, user }) {
     if (type === "reopen") return `"${name}" is open again at New, with your follow-up task.`;
     if (type === "task") return record ? "Task updated." : "Task created.";
     if (type === "note") return "Note added.";
-    if (type === "call") return "Call logged as a note on the opportunity.";
+    if (type === "call") return `Call logged as a note on the ${modal.collection === "leads" ? "lead" : "opportunity"}.`;
     if (type === "transfer") return `"${name}" was transferred to ${saved?.owner_name || "the new owner"}.`;
     if (type === "cancelDemo")
       return demoChoice === "reschedule"
@@ -1409,8 +1409,9 @@ export default function Modal({ modal, close, data, run, notify, user }) {
           {type === "call" && (
             <>
               <p className="field-hint">
-                Records a call you made{modal.contactName ? ` with ${modal.contactName}` : ""}, as a note on this opportunity. Nothing is saved until you
-                select Save; the stage, owner and tasks don&apos;t change.
+                Records a call you made{modal.contactName ? ` with ${modal.contactName}` : ""}, as a note on this{" "}
+                {modal.collection === "leads" ? "lead" : "opportunity"}. Nothing is saved until you select Save; the stage, owner and tasks don&apos;t
+                change.
               </p>
               <label className="field">
                 <span>

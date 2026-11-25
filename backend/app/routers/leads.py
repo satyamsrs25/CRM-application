@@ -429,9 +429,10 @@ def _skip(lead_id: int, lead: Lead | None, exc: HTTPException) -> dict:
             "reason": "Not found, or you don't have access to it" if hidden else str(exc.detail)}
 
 
-def _summary_notice(db: Session, title: str, lines: list[str], told: set[int], skip: set[int]) -> None:
+def _summary_notice(db: Session, title: str, lines: list[str], told: set[int], skip: set[int], *,
+                    email: bool = True) -> None:
     for user_id in told - skip:
-        notify(db, user_id, title, "\n".join(lines)[:500], link="/leads", category="assignment")
+        notify(db, user_id, title, "\n".join(lines)[:500], link="/leads", category="assignment", email=email)
 
 
 @router.post("/bulk-transfer")
@@ -494,13 +495,14 @@ def bulk_delete(data: schemas.BulkLeads, db: Session = Depends(get_db)):
     if deleted:
         names = ", ".join(d["name"] for d in deleted[:10]) + (f" and {len(deleted) - 10} more" if len(deleted) > 10 else "")
         managers = set(db.scalars(select(User.id).where(User.role.in_(("Manager", "Admin")), User.is_active.is_(True))).all())
+        # deletions are told on the bell only (no email): the Activity Log and Deleted Leads keep the record
         _summary_notice(db, "Leads deleted", [f"{me.full_name} deleted {len(deleted)} lead{'s' if len(deleted) != 1 else ''}: {names}."],
-                        managers, {me.id})
+                        managers, {me.id}, email=False)
         for owner_id, lead_names in by_owner.items():
             if owner_id is None:  # pooled leads: nobody owned them
                 continue
             _summary_notice(db, "Leads deleted", [f"{me.full_name} deleted {len(lead_names)} of your leads: {', '.join(lead_names[:10])}."],
-                            {owner_id}, {me.id, *managers})
+                            {owner_id}, {me.id, *managers}, email=False)
     db.commit()
     return {"deleted": len(deleted), "removed": deleted, "skipped": skipped}
 
@@ -981,8 +983,9 @@ def delete_lead(lead_id: int, db: Session = Depends(get_db)):
     # the Admin and Managers, and the owner when someone else deleted it
     told = db.scalars(select(User).where(or_(User.role.in_(("Admin", "Manager")), User.id == owner_id),
                                           User.is_active.is_(True), User.id != me.id)).all()
-    for user in told:
-        notify(db, user.id, "Lead deleted", f'Lead "{name}" was deleted by {me.full_name}.\n{summary}', link="/leads")
+    for user in told:  # on the bell only (no email); the Assistant's Delete lead comes here too
+        notify(db, user.id, "Lead deleted", f'Lead "{name}" was deleted by {me.full_name}.\n{summary}', link="/leads",
+               email=False)
     db.commit()
     return {"message": f'Lead "{name}" was deleted.'}
 

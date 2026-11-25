@@ -1747,13 +1747,15 @@ test("Leads Kanban: only the latest request of a column is shown", () => {
 test("Leads Kanban: every column pages through the server query, with the List page's filters and page sizes", () => {
   const table = source("./LeadsTable.jsx");
   assert.doesNotMatch(table, /BOARD_CARDS|limit: 100/); // no fixed first 100 cards
-  assert.match(table, /load\(\{ \.\.\.columnQuery\(col\), offset: at \* cardSize, limit: cardSize \}\)/);
+  // (the stage columns also count their stalled leads; the Unassigned column's waiting time is never rated)
+  assert.match(table, /load\(\{ \.\.\.columnQuery\(col\), offset: at \* cardSize, limit: cardSize, \.\.\.\(col\.pool \? \{\} : \{ with_stalled: "true" \}\) \}\)/);
   // the Unassigned column asks for the pool; the stage columns then leave pooled leads out (each lead shown once)
   assert.match(table, /: \{ stage: column\.stage, \.\.\.\(column\.view \? \{ view: column\.view \} : \{\}\), \.\.\.\(poolShown \? \{ assigned: "true" \} : \{\}\) \}/);
   assert.match(table, /if \(!requests\.current\.isLatest\(column, id\)\) return;/);
   assert.match(table, /const fixed = clampPage\(at, r\.total, cardSize\);/);
   // every filter as a button (Region too: the same searchable menu as its column header)
-  assert.match(table, /\{defs\.map\(\(def\) => \(\s+<FilterButton key=\{def\.key\} def=\{def\} values=\{filters\} onChange=\{onFilter\} \/>/);
+  // (Owner, several people, is in the filter row above the board instead: one control)
+  assert.match(table, /\{defs\s*\.filter\(\(def\) => !def\.multi\)\s*\.map\(\(def\) => \(\s+<FilterButton key=\{def\.key\} def=\{def\} values=\{filters\} onChange=\{onFilter\} \/>/);
   assert.match(table, /\{PAGE_SIZES\.map\(\(n\) => \(/);
   assert.match(table, /<span>Cards per column<\/span>/);
   assert.match(table, /<span>Sort by<\/span>/);
@@ -2937,7 +2939,7 @@ test("Leads Region filter: the Region column's arrow, like Status; All Regions, 
   for (const name of ["United States", "Canada", "India", "Jamaica"]) assert.ok(names.includes(name), name);
   // the column header's arrow (the same Th and menu as Status); no separate dropdown beside the search any more
   const table = source("./LeadsTable.jsx");
-  assert.match(table, /filter=\{defs\.find\(\(f\) => f\.key === col\)\}/);
+  assert.match(table, /filter=\{defs\.find\(\(f\) => f\.key === col && !f\.multi\)\}/); // Owner: the filter row's
   assert.doesNotMatch(table, /region-filter|leadRegions|regionChoices|def\.toolbar/);
   assert.doesNotMatch(source("./api.js"), /leadRegions/);
   // sent with every request of the list (List page and each Kanban column), so totals and pages are the server's
@@ -3512,12 +3514,98 @@ test("Opportunities: one filter row above List and Kanban, Clear All keeps the v
   assert.match(list, /const \{ pageRows, start, pager \} = usePaged\(rows, `\$\{collection\}\|\$\{viewName\}\|\$\{search\}\|\$\{JSON\.stringify\(active\)\}`\);/);
   assert.match(list, /const list = collection === "leads" \? base : applyFilters\(base, defs, active\);/); // before paging
   assert.match(list, /MY VIEWS/);
-  assert.match(list, /base_view: allViews\.some\(\(\[n\]\) => n === viewName\) \? viewName : allViews\[0\]\[0\],/);
+  assert.match(list, /base_view: allViews\.some\(\(\[n\]\) => n === viewName\) && viewName !== DELETED_LEADS \? viewName : leads \? "All Open Leads" : allViews\[0\]\[0\],/);
   assert.match(tools, /onClick=\{\(\) => set\("close", month \? "" : "month"\)\}/); // Closing This Month stays dynamic
   assert.match(tools, /Clear owners/);
   assert.match(source("./Filters.jsx"), /export \{ applyFilters \};/);
   const api = source("./api.js");
   assert.match(api, /savedViews: \(collection\) => apiRequest\(`\/saved-views\?collection=\$\{encodeURIComponent\(collection\)\}`\)/);
   assert.match(api, /setOpportunityStageLimits: \(limits\) => apiRequest\("\/opportunities\/stage-limits", \{ method: "PUT", body: \{ limits \} \}\)/);
-  assert.match(list, /\{opps && user\.role === "Admin" && limits && \(/); // only the Admin changes the limits
+  assert.match(list, /\{savable && user\.role === "Admin" && limits && \(/); // only the Admin changes the limits (each list its own)
+});
+
+// ---------- vikram-dashboard-leads-fixes: Average deal, saved-view management, the Leads workflow ----------
+
+test("My Scorecard Average deal: won total in the display currency / won deals; large amounts fit their cell", async () => {
+  const { moneyIn, total } = await import("./currencyConvert.js");
+  const average = (wonValues, won, currency) => (won ? moneyIn({ [currency]: total(wonValues, currency) / won }, currency) : moneyIn({}, currency));
+  assert.equal(average({ INR: 274.26e6 }, 5, "INR"), "₹54.85M"); // the reported card: plausible, and right
+  assert.equal(average({ USD: 1000, INR: 92810 }, 2, "USD"), "$1K"); // converted first ($1,000 + $1,000), never added as is
+  assert.equal(average({}, 0, "INR"), "₹0"); // no won deals: no division
+  const home = source("./SellerHome.jsx");
+  assert.match(home, /<dd>\{score\.won \? moneyIn\(\{ \[currency\]: total\(score\.won_values, currency\) \/ score\.won \}, currency\) : moneyIn\(\{\}, currency\)\}<\/dd>/);
+  const css = source("./styles.css");
+  // three across while each cell has room; on a narrow card they wrap rather than shrink below the amount
+  assert.match(css, /\.home-score \{[^}]*grid-template-columns: repeat\(auto-fit, minmax\(128px, 1fr\)\);/);
+  assert.match(css, /\.home-score > div \{\s*min-width: 0;/);
+  assert.match(css, /\.home-score dd \{[^}]*white-space: nowrap;/);
+  assert.match(css, /\.home-score-outcomes small \{\s*overflow-wrap: anywhere;/);
+});
+
+test("Saved views: Save as View on a standard view, Manage View (Update, Rename, Delete) on your own; nothing auto-saves", () => {
+  const tools = source("./OpportunityTools.jsx");
+  assert.match(tools, /\{savedView \? \(/);
+  assert.match(tools, /\{ label: "Update View", disabled: !changed, onClick: onUpdate \},\s*\{ label: "Rename View", onClick: onRename \},\s*\{ label: "Delete View", danger: true, onClick: onDelete \},/);
+  assert.match(tools, /\{changed && \(\s*<span className="view-unsaved" role="status">\s*Unsaved changes/);
+  const list = source("./ListView.jsx");
+  assert.match(list, /applySaved\(created\); \/\/ chosen at once: Manage View replaces Save as View/);
+  assert.match(list, /api\.updateSavedView\(savedView\.id, \{ collection, filters: currentFilters, search: currentSearch, sort: currentSort \}\)/);
+  assert.match(list, /ordered\(currentFilters\) !== ordered\(savedView\.filters\) \|\| currentSearch !== \(savedView\.search \|\| ""\)/);
+  assert.match(list, /const memoryKey = `salestrack\.savedView\.\$\{user\?\.id\}\.\$\{collection\}`;/); // back after a reload
+  assert.match(list, /setSavedId\(null\); \/\/ back to the standard view it was made from/);
+  assert.match(list, /api\.deleteSavedView\(savedView\.id, collection\)/);
+  const api = source("./api.js");
+  assert.match(api, /updateSavedView: \(id, view\) => apiRequest\(`\/saved-views\/\$\{id\}`, \{ method: "PATCH", body: view \}\)/);
+  assert.match(api, /renameSavedView: \(id, name, collection\) =>/);
+});
+
+test("Leads filter row: Owner (several people and Unassigned), Stalled = In stage: Stalled, counted on the server", async () => {
+  const { leadBoardColumns } = await import("./domain.js");
+  const excluded = (owner) => Object.fromEntries(leadBoardColumns("all", null, owner).map((c) => [c.stage, c.excluded]));
+  assert.equal(excluded("2,unassigned").Unassigned, ""); // the pool column with Unassigned among the owners
+  assert.equal(excluded("2,unassigned").New, "");
+  assert.equal(excluded("2,5").Unassigned, "Hidden by the Owner filter");
+  assert.equal(excluded("unassigned").New, "Hidden by the Owner filter");
+  const list = source("./ListView.jsx");
+  assert.match(list, /const leadGroups = \[\.\.\.ownerChoiceGroups\(data\.users \|\| \[\], user, team\), \{ label: "Unassigned Pool", options: \[\[POOL_OWNER, POOL_LABEL\]\] \}\];/);
+  assert.match(list, /: \[\{ key: "owner", label: "Owner", multi: true, groups: leadGroups, options: leadGroups\.flatMap\(\(g\) => g\.options\) \}\];/);
+  assert.match(list, /\{leads && viewName !== DELETED_LEADS && \(\s*<LeadFilterRow/);
+  const tools = source("./OpportunityTools.jsx");
+  assert.match(tools, /const on = values\.in_stage === "stalled";/); // one In stage value: the toggle and the column arrow agree
+  assert.doesNotMatch(tools.slice(tools.indexOf("export function LeadFilterRow"), tools.indexOf("function useEscape")), /currency|Closing This Month|overdue/i);
+  const table = source("./LeadsTable.jsx");
+  assert.match(table, /limit: size, with_stalled: "true" \}\)/); // the list's count: every page
+  assert.match(table, /shownColumns\.reduce\(\(sum, c\) => sum \+ \(board\?\.\[c\.stage\]\?\.stalled \|\| 0\), 0\)/);
+  assert.match(table, /useEffect\(\(\) => setSelected\(new Set\(\)\), \[view, stage, filterKey, term, kanban\]\);/); // ticks cleared
+});
+
+test("Leads board: stalled borders and counts, and card details that keep pooled contacts hidden", async () => {
+  const { nextOpenTask } = await import("./listHelpers.js");
+  const tasks = [
+    { id: "3", relatedType: "leads", relatedId: "8", completed: false, due_date: "2026-11-30T09:00:00", title: "Later" },
+    { id: "4", relatedType: "leads", relatedId: "8", completed: false, due_date: "2026-11-26T09:00:00", title: "First" },
+    { id: "5", relatedType: "opportunities", relatedId: "8", completed: false, due_date: "2026-11-20T09:00:00", title: "A deal's" },
+  ];
+  assert.equal(nextOpenTask(tasks, "8", "leads").title, "First");
+  assert.equal(nextOpenTask(tasks, "8").title, "A deal's"); // opportunities by default, as before
+  const board = source("./LeadsKanban.jsx");
+  assert.match(board, /const isStalled = \(lead\) => lead\.in_stage\?\.state === "timed" && lead\.in_stage\.category === "stalled";/);
+  assert.match(board, /className=\{`kanban-card\$\{isStalled\(lead\) \? " stalled" : ""\}`\}/);
+  assert.match(board, /\{!pool && !closed && column && column\.stalled != null && \(/);
+  // a pooled lead: no follow-ups; no call, note or email without its contact details; Request Assignment where allowed
+  assert.match(board, /addTask: !pooled && openTask \?/);
+  assert.match(board, /logCall: !hidden && \(!pooled \|\| seesPoolContacts\(user\)\) \?/);
+  assert.match(board, /request: pooled && onRequest \?/);
+  assert.match(source("./LeadsTable.jsx"), /onRequest=\{canRequestPool\(user\) \? \(lead\) => setPoolRequest\(\{ ids: \[lead\.id\], others: 0 \}\) : null\}/);
+  const tools = source("./OpportunityTools.jsx");
+  const details = tools.slice(tools.indexOf("export function LeadCardDetails"));
+  assert.match(details, /\{hidden \? \(\s*<p className="muted">Email, phone and LinkedIn stay hidden until the lead is assigned\.<\/p>/);
+  assert.match(details, /\{!hidden && \(\s*<>/); // Call, Log a call and Email only with the contact details
+  assert.match(details, /\{lead\.phone \? maskPhone\(lead\.phone\) : "No phone number"\}/);
+  assert.doesNotMatch(details, /href=\{`tel:|title=\{[^}]*(phone|email|linkedin)/);
+  assert.match(details, /const task = pooled \? null : nextOpenTask\(tasks, lead\.id, "leads"\);/);
+  // opening details only shows them: the hook sends nothing
+  const hook = tools.slice(tools.indexOf("export function useCardDetails"), tools.indexOf("function usePlacement"));
+  assert.doesNotMatch(hook, /api\.|apiRequest|fetch\(/);
+  assert.match(source("./ListView.jsx"), /onSubmit=\{leads \? api\.setLeadStageLimits : api\.setOpportunityStageLimits\}/);
 });

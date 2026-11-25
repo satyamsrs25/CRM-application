@@ -24,7 +24,8 @@ from app.models import Account, ActivityLog, Contact, Lead, LeadTransfer, StageH
 from app.security import acting_user, can_view, require, sees_pool_contacts, team_ids, visible
 from app.regions import country_name, region_from_text, supported
 from app.serializers import lead_out
-from app.stage_clock import CATEGORIES, Clock, clock_rows, order_by_clock, stage_clocks
+from app.stage_clock import CATEGORIES, clock_rows, lead_clock, order_by_clock, stage_clocks
+from app.stage_limits import StageLimitsIn, limits_out, save_limits
 from app.text_rules import has_letter, text_problem
 from app.services import (activity_condition, email_matches_website, is_personal_email, log_activity, notify,
                           notify_data_owners, now, website_host)
@@ -457,10 +458,21 @@ def open_lead_counts(db: Session = Depends(get_db)):
     return {"counts": {str(owner_id): n for owner_id, n in db.execute(query).all()}}
 
 
+POOL_OWNER = "unassigned"  # the Owner filter's Unassigned (the Unassigned Pool)
+
+
+def owner_choices(owner: str | None) -> list[str]:
+    """The Owner filter: one or several of user ids, 'me' and 'unassigned', comma-separated (any of them)."""
+    choices = [o.strip() for o in (owner or "").split(",") if o.strip()]
+    if len(choices) > 50 or any(not (o.isdigit() or o in ("me", POOL_OWNER)) for o in choices):
+        raise HTTPException(status_code=400, detail="Unknown owner")
+    return choices
+
+
 def list_query(me, view: str, owner: str | None):
     """The leads a list view shows this user, before its other filters (the List page and every Kanban column use the
     same rules)."""
-    pool_only = view == "unassigned" or owner == "unassigned"
+    pool_only = view == "unassigned" or owner_choices(owner) == [POOL_OWNER]
     pool_here = me.sees_team or view in POOL_VIEWS  # does this list include the Unassigned Pool for this user?
     if pool_only:  # the Unassigned Pool: every user can list it; contact details only for those who may assign it
         start = select(Lead).where(Lead.owner_id.is_(None))
@@ -493,7 +505,8 @@ def leads_page(
     view: str = Query("all_open", description=", ".join(LIST_VIEWS)),
     stage: str | None = Query(None, description="Only this Lead Status (e.g. Demo)"),
     source: str | None = Query(None, description="Only this Lead Source (e.g. Upload)"),
-    owner: str | None = Query(None, description="Owner user id, 'me', or 'unassigned' (the Unassigned Pool)"),
+    owner: str | None = Query(None, description="Owner: user ids, 'me' and/or 'unassigned' (the Unassigned Pool), "
+                                                 "comma-separated: any of them"),
     assigned: bool = Query(False, description="Only leads that have an owner (Kanban stage columns: pooled leads "
                                               "are in the Unassigned column only)"),
     created_from: datetime | None = Query(None, description="Created on or after (ISO date/time)"),
@@ -511,6 +524,8 @@ def leads_page(
     direction: str = Query("desc", pattern="^(asc|desc)$"),
     offset: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
+    with_stalled: bool = Query(False, description="Also count the Stalled leads among all the other filters "
+                                                  "(In stage left out): the Stalled toggle's number"),
     db: Session = Depends(get_db),
 ):
     """The Leads list views, loaded page by page from the database (there can be 100,000s of leads),
@@ -522,7 +537,9 @@ def leads_page(
         raise HTTPException(status_code=400, detail="Unknown sort column")
     if in_stage and in_stage not in CATEGORIES:
         raise HTTPException(status_code=400, detail="Unknown In stage filter")
-    clock = Clock()  # one reference time for this response: the filter, the sort and every lead's In stage
+    # one reference time and the effective limits for this response: the filter, the sort, the counts and every
+    # lead's In stage
+    clock = lead_clock(db)
     # pooled leads in this list hide their contact details (and aren't searched or sorted on them) for this user
     limited = not sees_pool_contacts(me)
     query = list_query(me, view, owner)
@@ -534,15 +551,13 @@ def leads_page(
         query = query.where(Lead.stage == stage)
     if source:
         query = query.where(Lead.source == source)
-    if owner:
-        if owner == "me":
-            query = query.where(Lead.owner_id == me.id)
-        elif owner == "unassigned":
-            pass  # already the pool (above)
-        elif owner.isdigit():
-            query = query.where(Lead.owner_id == int(owner))
-        else:
-            raise HTTPException(status_code=400, detail="Unknown owner")
+    owners = owner_choices(owner)
+    if owners and owners != [POOL_OWNER]:  # only the pool: already the pool (above)
+        # any of the chosen owners; the list view's own rule (above) still decides whose leads, and whether the pool,
+        # this user may see, so choosing someone never widens it
+        ids = [me.id if o == "me" else int(o) for o in owners if o != POOL_OWNER]
+        query = query.where(or_(Lead.owner_id.in_(ids), Lead.owner_id.is_(None)) if POOL_OWNER in owners
+                            else Lead.owner_id.in_(ids))
     if activity:
         query = query.where(activity_condition(Lead, activity))
     if created_days:
@@ -558,15 +573,31 @@ def leads_page(
         contact = or_(Lead.email.ilike(like), Lead.phone.ilike(like))
         query = query.where(or_(Lead.name.ilike(like), Lead.company.ilike(like), Lead.title.ilike(like),
                                 Lead.location.ilike(like), and_(Lead.owner_id.is_not(None), contact) if limited else contact))
+    # the Unassigned Pool alone (its Kanban column, Unassigned Leads, Owner: Unassigned): a pooled lead's waiting time
+    # is never rated, so no In stage choice matches any of them and none is stalled. Answered without working out every
+    # lead's clock (that join over the whole pool took minutes with ~50,000 leads).
+    pool_only = view == "unassigned" or owners == [POOL_OWNER]
+    stalled = None
+    if with_stalled:  # every other filter, In stage left out: what the Stalled toggle would show
+        if pool_only:
+            stalled = 0
+        else:
+            rated = clock_rows(clock)
+            stalled = db.scalar(select(func.count()).select_from(
+                query.join(rated, rated.c.id == Lead.id).where(rated.c.category == "stalled").subquery()))
     clocks = None
-    if in_stage or sort == CLOCK_SORT:  # In stage is worked out in the database too, so it filters and sorts before paging
+    if in_stage and pool_only:
+        query = query.where(false())
+    elif in_stage or sort == CLOCK_SORT:  # In stage is worked out in the database too, so it filters and sorts before paging
         clocks = clock_rows(clock)
         query = query.join(clocks, clocks.c.id == Lead.id)
         if in_stage:
             query = query.where(clocks.c.category == in_stage)
     total = db.scalar(select(func.count()).select_from(query.subquery()))
-    if sort == CLOCK_SORT:
+    if sort == CLOCK_SORT and clocks is not None:
         order = order_by_clock(clocks, direction)
+    elif sort == CLOCK_SORT:  # nothing to sort (an In stage choice on the pool alone): any order
+        order = [Lead.created_at.desc()]
     else:
         order = [order_column(sort, direction, limited)]
     if sort == "owner":  # pooled leads (no owner) are kept, at the end
@@ -578,8 +609,24 @@ def leads_page(
                       .order_by(*order, Lead.id.desc()).offset(offset).limit(limit)).all()
     in_stages = {lead_id: schemas.StageClockOut(**value)
                  for lead_id, value in stage_clocks(db, clock, [lead.id for lead in rows]).items()}
-    return {"total": total, "offset": offset, "limit": limit,
+    return {"total": total, "offset": offset, "limit": limit, **({"stalled": stalled} if with_stalled else {}),
             "items": [lead_out(l).model_copy(update={"in_stage": in_stages.get(l.id)}) for l in rows]}
+
+
+# ---------- In stage limits for Lead Statuses (the Admin's own setting, separate from the opportunities') ----------
+
+@router.get("/stage-limits")
+def get_lead_stage_limits(db: Session = Depends(get_db)):
+    """When an open lead needs attention and when it is stalled (days at its Lead Status): the limits the list, its
+    filter and counts, the board and a lead's page use. Everyone reads them. Pooled leads' waiting time is never rated;
+    closed leads have none."""
+    return limits_out(db, "lead")
+
+
+@router.put("/stage-limits")
+def set_lead_stage_limits(data: StageLimitsIn, db: Session = Depends(get_db)):
+    """The Admin changes the Lead Status limits (whole days, 0 <= needs attention < stalled; null: the default)."""
+    return save_limits(db, "lead", data)
 
 
 def order_column(sort: str, direction: str, limited: bool):

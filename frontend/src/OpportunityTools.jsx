@@ -1,15 +1,17 @@
-// Opportunities (List and Kanban): the filter row above both (Owner, Currency, Overdue / Stuck, Closing This Month,
-// Clear All, Save as View), the dialogs for saved views and the Admin's In stage limits, and a board card's details.
-// The filter values are the list's own (useFilters in ListView.jsx), so the column arrows, the summary line, List and
-// Kanban all show and clear the same choices.
+// Opportunities and Leads (List and Kanban): the filter rows above both (Opportunities: Owner, Currency, Overdue /
+// Stuck, Closing This Month; Leads: Owner with Unassigned, Stalled; both: Clear All and the saved-view controls), the
+// dialogs for saved views and the Admin's In stage limits, and a board card's details. The filter values are the list's
+// own (useFilters in ListView.jsx), so the column arrows, the summary line, List and Kanban all show the same choices.
 import React, { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { useDismiss } from "./Header";
 import { maskPhone, shortDate } from "./format";
+import { isPooledLead } from "./domain";
 import {
   matchChoices,
   nextOpenTask,
   opportunityClockSummary,
+  stageClockSummary,
   opportunityPoc,
   previewPlacement,
   stageLimitText,
@@ -20,7 +22,7 @@ import { ActionMenu, Icon } from "./ui";
 
 // Owner: several people at once (any of them), grouped by role; only the people whose opportunities this user can see
 // (def.groups, from listHelpers.ownerChoiceGroups). A search box when the list is long; Clear owners.
-function OwnerPicker({ def, values, onChange }) {
+export function OwnerPicker({ def, values, onChange }) {
   const [open, setOpen] = useState(false);
   const [find, setFind] = useState("");
   const ref = useDismiss(open, setOpen);
@@ -104,7 +106,7 @@ function OwnerPicker({ def, values, onChange }) {
 // The row above the List and the Kanban. Every choice narrows the list further (AND); the count on Overdue / Stuck is
 // what it would show with the other choices as they are. Clear All clears these and the search, never the list view
 // itself (its scope, e.g. My Open Opportunities, stays).
-export function OpportunityFilterRow({ defs, values, onChange, overdueStuck, canClear, onClearAll, onSave, savedView, onRename, onDelete }) {
+export function OpportunityFilterRow({ defs, values, onChange, overdueStuck, canClear, onClearAll, views }) {
   const owner = defs.find((f) => f.key === "owner" && f.multi);
   const currency = defs.find((f) => f.key === "currency");
   const flag = defs.find((f) => f.key === "overdue_stuck");
@@ -157,20 +159,66 @@ export function OpportunityFilterRow({ defs, values, onChange, overdueStuck, can
       <button type="button" className="link opp-clear" disabled={!canClear} onClick={onClearAll}>
         Clear All
       </button>
-      <span className="opp-row-end">
-        <button type="button" className="sf-button small" onClick={onSave} title="Keep these filters, the search and the sort as your own view">
-          Save as View
-        </button>
-        {savedView && (
+      <SavedViewControls {...views} />
+    </div>
+  );
+}
+
+// Save as View on a standard view; on one of your own views, Manage View instead (Update View, Rename View, Delete
+// View) with "Unsaved changes" while the list differs from what was saved. Nothing is saved until one is chosen.
+export function SavedViewControls({ savedView, changed, onSave, onUpdate, onRename, onDelete }) {
+  return (
+    <span className="opp-row-end">
+      {savedView ? (
+        <>
+          {changed && (
+            <span className="view-unsaved" role="status">
+              Unsaved changes
+            </span>
+          )}
           <ActionMenu
             label="Manage View"
             items={[
+              { label: "Update View", disabled: !changed, onClick: onUpdate },
               { label: "Rename View", onClick: onRename },
               { label: "Delete View", danger: true, onClick: onDelete },
             ]}
           />
-        )}
-      </span>
+        </>
+      ) : (
+        <button type="button" className="sf-button small" onClick={onSave} title="Keep these filters, the search and the sort as your own view">
+          Save as View
+        </button>
+      )}
+    </span>
+  );
+}
+
+// The Leads row above the List and the Kanban: Owner (several people, and Unassigned where this list shows the
+// Unassigned Pool), Stalled (In stage: Stalled, the same choice as the In stage arrow, with how many leads it would
+// show), Clear All and the saved-view controls. Status, Source, Region and the dates stay in their column arrows.
+export function LeadFilterRow({ defs, values, onChange, stalled, canClear, onClearAll, views }) {
+  const owner = defs.find((f) => f.key === "owner" && f.multi);
+  const inStage = defs.find((f) => f.key === "in_stage");
+  const on = values.in_stage === "stalled";
+  const toggle = () => {
+    const next = withoutFilter(values, "in_stage");
+    if (!on) next.in_stage = "stalled";
+    onChange(next);
+  };
+  return (
+    <div className="opp-filter-row lead-filter-row" role="group" aria-label="Lead filters">
+      {owner && <OwnerPicker def={owner} values={values} onChange={onChange} />}
+      {inStage && (
+        <button type="button" className={`opp-toggle ${on ? "on" : ""}`} aria-pressed={on} onClick={toggle} title="Open leads past their status's Stalled limit">
+          Stalled <span className="opp-count">{stalled == null ? "…" : stalled.toLocaleString()}</span>
+          <span className="sr-only">{stalled === 1 ? " lead" : " leads"}</span>
+        </button>
+      )}
+      <button type="button" className="link opp-clear" disabled={!canClear} onClick={onClearAll}>
+        Clear All
+      </button>
+      <SavedViewControls {...views} />
     </div>
   );
 }
@@ -253,7 +301,7 @@ export function SavedViewDialog({ mode, view, onClose, onSubmit }) {
 
 // The Admin's In stage limits for the open stages (whole days; Needs attention below Stalled). The list, an opportunity's
 // page, the board and the filters all use what is saved; Won and Lost have none.
-export function StageLimitsDialog({ limits, onClose, onSaved }) {
+export function StageLimitsDialog({ limits, onClose, onSaved, onSubmit = api.setOpportunityStageLimits, note }) {
   const stages = Object.keys(limits.defaults);
   const [values, setValues] = useState(() => Object.fromEntries(stages.map((s) => [s, limits.limits[s].map(String)])));
   const [busy, setBusy] = useState(false);
@@ -274,7 +322,7 @@ export function StageLimitsDialog({ limits, onClose, onSaved }) {
     setBusy(true);
     setError("");
     try {
-      onSaved(await api.setOpportunityStageLimits(Object.fromEntries(stages.map((s) => [s, values[s].map(Number)]))));
+      onSaved(await onSubmit(Object.fromEntries(stages.map((s) => [s, values[s].map(Number)]))));
     } catch (err) {
       setError(err.message);
       setBusy(false);
@@ -292,8 +340,8 @@ export function StageLimitsDialog({ limits, onClose, onSaved }) {
         <form onSubmit={submit} noValidate>
           <div className="modal-body">
             <p className="field-hint">
-              Days in an open stage before an opportunity needs attention and when it is stalled. Every list, page, board and filter uses these; Won and
-              Lost are never rated.
+              {note ||
+                "Days in an open stage before an opportunity needs attention and when it is stalled. Every list, page, board and filter uses these; Won and Lost are never rated."}
             </p>
             <table className="limits-table">
               <thead>
@@ -467,6 +515,189 @@ export function CardDetails({ id, record: r, contacts, tasks, limits, actions })
             Email
           </button>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ---------- a board card's details: opened by a resting mouse, keyboard focus or a tap ----------
+
+const HOVER_OPEN = 350; // ms: a pointer passing over the board doesn't open every card's details
+const HOVER_CLOSE = 250;
+
+// The open card ({ id, by: "hover" | "focus" | "tap" }) and the props for each card and its details button. Esc (the
+// keyboard goes back to the button), a click or tap elsewhere, a scroll of the page or board, or a resize closes it.
+// Opening shows what the board already has: nothing is sent, saved or asked for per card.
+export function useCardDetails() {
+  const [details, setDetails] = useState(null);
+  const cards = useRef({});
+  const timer = useRef(null);
+  useEffect(() => () => clearTimeout(timer.current), []);
+  const later = (fn, ms) => {
+    clearTimeout(timer.current);
+    timer.current = setTimeout(fn, ms);
+  };
+  useEffect(() => {
+    if (!details) return;
+    const card = () => cards.current[details.id];
+    const key = (e) => {
+      if (e.key !== "Escape") return;
+      if (card()?.contains(document.activeElement)) card().querySelector(".kanban-info")?.focus({ preventScroll: true });
+      setDetails(null);
+    };
+    const away = (e) => !card()?.contains(e.target) && setDetails(null);
+    const scroll = (e) => !card()?.querySelector(".card-details")?.contains(e.target) && setDetails(null);
+    const resize = () => setDetails(null);
+    document.addEventListener("keydown", key);
+    document.addEventListener("mousedown", away);
+    document.addEventListener("touchstart", away, { passive: true });
+    window.addEventListener("scroll", scroll, true);
+    window.addEventListener("resize", resize);
+    return () => {
+      document.removeEventListener("keydown", key);
+      document.removeEventListener("mousedown", away);
+      document.removeEventListener("touchstart", away);
+      window.removeEventListener("scroll", scroll, true);
+      window.removeEventListener("resize", resize);
+    };
+  }, [details]);
+  const cardProps = (id) => ({
+    ref: (el) => {
+      if (el) cards.current[id] = el;
+      else delete cards.current[id];
+    },
+    onPointerEnter: (e) => e.pointerType === "mouse" && later(() => setDetails((d) => (d && d.by !== "hover" ? d : { id, by: "hover" })), HOVER_OPEN),
+    onPointerLeave: (e) => e.pointerType === "mouse" && later(() => setDetails((d) => (d?.id === id && d.by === "hover" ? null : d)), HOVER_CLOSE),
+    onBlur: (e) => !e.currentTarget.contains(e.relatedTarget) && setDetails((d) => (d?.id === id && d.by === "focus" ? null : d)),
+  });
+  const infoProps = (id, name) => ({
+    type: "button",
+    className: "kanban-info",
+    "aria-label": `Details: ${name}`,
+    "aria-expanded": details?.id === id,
+    "aria-controls": details?.id === id ? `card-details-${id}` : undefined,
+    onFocus: (e) => e.currentTarget.matches(":focus-visible") && setDetails({ id, by: "focus" }),
+    onClick: () => setDetails((d) => (d?.id === id && d.by !== "hover" ? null : { id, by: "tap" })),
+  });
+  return { openId: details?.id ?? null, close: () => setDetails(null), cardProps, infoProps };
+}
+
+// Beside the card (or under / above it on a narrow screen), always inside the window
+function usePlacement(box, key) {
+  const [pos, setPos] = useState(null);
+  useLayoutEffect(() => {
+    const card = box.current?.closest(".kanban-card");
+    if (!card) return;
+    const a = card.getBoundingClientRect();
+    const size = box.current.getBoundingClientRect();
+    const view = { width: window.innerWidth, height: window.innerHeight };
+    const m = 8;
+    const fit = (top) => Math.round(Math.max(m, Math.min(top, view.height - size.height - m)));
+    const next =
+      a.right + m + size.width <= view.width - m
+        ? { left: Math.round(a.right + m), top: fit(a.top) }
+        : a.left - m - size.width >= m
+          ? { left: Math.round(a.left - m - size.width), top: fit(a.top) }
+          : previewPlacement(a, size, view, { gap: 6, margin: m });
+    setPos((old) => (old && old.left === next.left && old.top === next.top ? old : next));
+  }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
+  return pos || { top: 0, left: 0, visibility: "hidden" };
+}
+
+// A Leads board card's details: the lead and company, its time at its status (rated, with the effective limits; a
+// pooled lead's waiting time is neutral), the earliest open task this user can see, and Call / Log a call / Email. A
+// pooled lead whose contact details this user may not see shows none of them (the server never sent them) and offers
+// Request Assignment where the user may ask for it; follow-ups start once it is assigned.
+export function LeadCardDetails({ id, lead, tasks, limits, actions }) {
+  const box = useRef(null);
+  const style = usePlacement(box, lead.id);
+  const pooled = isPooledLead(lead);
+  const hidden = !!lead.contact_hidden;
+  const s = stageClockSummary(lead.in_stage, lead.stage, pooled);
+  const rated = lead.in_stage?.state === "timed" && !!lead.in_stage.category;
+  const limit = rated ? stageLimitText(limits?.limits, lead.stage) : null;
+  const task = pooled ? null : nextOpenTask(tasks, lead.id, "leads");
+  return (
+    <div ref={box} id={id} className="card-details" role="dialog" aria-label={`Details: ${lead.name}`} title="" style={style}>
+      <header>
+        <a href={`#/leads/${lead.id}`}>{lead.name}</a>
+        <p>{lead.company || "No company"}</p>
+      </header>
+      <section>
+        <h4>In stage</h4>
+        {s && (
+          <p className="card-details-stage">
+            <span>{s.state === "timed" ? s.text : s.badge || s.text}</span>
+            {s.state === "timed" && s.badge && <span className={`stage-badge in-stage ${s.tone}`}>{s.badge}</span>}
+          </p>
+        )}
+        {s && s.state !== "timed" && s.state !== "closed" && <p className="muted">{s.text}</p>}
+        {limit && <p className="muted">{limit}</p>}
+      </section>
+      <section>
+        <h4>Next task</h4>
+        {pooled ? (
+          <p className="muted">In the Unassigned Pool: follow-ups start once it is assigned.</p>
+        ) : task ? (
+          <p>
+            <b>{task.title}</b>
+            <br />
+            <span className={task.isOverdue ? "overdue" : ""}>
+              Due {shortDate(task.due_date)}
+              {task.isOverdue ? " (overdue)" : ""}
+            </span>{" "}
+            · {task.owner || "No owner"}
+          </p>
+        ) : (
+          <p>No open task. Add the next follow-up.</p>
+        )}
+        {!pooled && !task && actions.addTask && (
+          <button type="button" className="sf-button small" onClick={actions.addTask}>
+            Add task
+          </button>
+        )}
+      </section>
+      <section>
+        <h4>Contact</h4>
+        {hidden ? (
+          <p className="muted">Email, phone and LinkedIn stay hidden until the lead is assigned.</p>
+        ) : (
+          <p>
+            <span className={lead.phone ? "" : "muted"}>{lead.phone ? maskPhone(lead.phone) : "No phone number"}</span>
+            {!lead.email && (
+              <>
+                <br />
+                <span className="muted">No email address</span>
+              </>
+            )}
+          </p>
+        )}
+      </section>
+      <div className="card-details-actions">
+        {!hidden && (
+          <>
+            {/* Call only opens the phone app (nothing is recorded); the number is read when Call is pressed */}
+            <button type="button" className="sf-button small" disabled={!lead.phone} onClick={() => (window.location.href = telHref(lead.phone))}>
+              Call
+            </button>
+            {actions.logCall && (
+              <button type="button" className="sf-button small" onClick={actions.logCall}>
+                Log a call
+              </button>
+            )}
+            {actions.email && (
+              <button type="button" className="sf-button small" disabled={!lead.email} onClick={actions.email}>
+                Email
+              </button>
+            )}
+          </>
+        )}
+        {pooled && actions.request && (
+          <button type="button" className="sf-button small" onClick={actions.request}>
+            Request Assignment
+          </button>
+        )}
+        {pooled && !actions.request && hidden && <span className="muted">Open the lead to see what you can do.</span>}
       </div>
     </div>
   );

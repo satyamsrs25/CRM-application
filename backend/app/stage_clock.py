@@ -68,6 +68,7 @@ STAGE_DAYS = {"New": (2, 5), "Nurturing": (7, 14), "Revisit": (14, 30), "Demo": 
 # These are the defaults: the Admin can change them per open stage (opportunity_limits, the app_settings row below).
 OPPORTUNITY_STAGE_DAYS = {"Opportunity": (2, 5), "Discovery": (7, 14), "Proposal": (14, 30)}
 OPPORTUNITY_LIMITS_SETTING = "opportunity_stage_days"  # app_settings: {"Proposal": [10, 20]}; no row = the defaults
+LEAD_LIMITS_SETTING = "lead_stage_days"  # the Admin's Lead Status limits, separate from the opportunities' ones
 MAX_LIMIT_DAYS = 365
 CATEGORIES = ("on_track", "attention", "stalled")
 NEUTRAL_ORDER = ("not_started", "not_recorded", "closed")  # after every timed lead, in this order, either way round
@@ -93,12 +94,13 @@ def to_stored(instant: datetime, zone=None) -> datetime:
 class Clock:
     """The reference time of one response: every cut-off and every lead's elapsed time come from it."""
 
-    def __init__(self, at: datetime | None = None, zone=None):
+    def __init__(self, at: datetime | None = None, zone=None, limits: dict | None = None):
         self.at = (at or reference_time()).astimezone(timezone.utc)
         self.zone = zone
-        # per open status: (needs attention if it started on or before, stalled if on or before), as stored
+        # per open status: (needs attention if it started on or before, stalled if on or before), as stored.
+        # limits: the effective Lead Status limits (lead_clock); the defaults when not given
         self.cutoffs = {stage: tuple(to_stored(self.at - timedelta(days=days), zone) for days in limits)
-                        for stage, limits in STAGE_DAYS.items()}
+                        for stage, limits in (limits or STAGE_DAYS).items()}
 
     def seconds(self, since: datetime) -> int:
         """Whole seconds from since (stored server time) to the reference time (never below 0)."""
@@ -304,9 +306,11 @@ def valid_limit(pair) -> bool:
             and 0 <= pair[0] < pair[1] <= MAX_LIMIT_DAYS)
 
 
-def custom_limits(db: Session) -> dict[str, tuple[int, int]]:
-    """The Admin's own limits (stages left out, or a stored value that isn't valid any more, aren't included)."""
-    row = db.get(AppSetting, OPPORTUNITY_LIMITS_SETTING)
+def custom_limits(db: Session, setting: str = OPPORTUNITY_LIMITS_SETTING,
+                  defaults: dict = OPPORTUNITY_STAGE_DAYS) -> dict[str, tuple[int, int]]:
+    """The Admin's own limits of one kind (stages left out, or a stored value that isn't valid any more, aren't
+    included)."""
+    row = db.get(AppSetting, setting)
     try:
         saved = json.loads(row.value) if row and row.value else {}
     except ValueError:
@@ -314,7 +318,18 @@ def custom_limits(db: Session) -> dict[str, tuple[int, int]]:
     if not isinstance(saved, dict):
         return {}
     return {stage: (pair[0], pair[1]) for stage, pair in saved.items()
-            if stage in OPPORTUNITY_STAGE_DAYS and valid_limit(pair)}
+            if stage in defaults and valid_limit(pair)}
+
+
+def lead_limits(db: Session) -> dict[str, tuple[int, int]]:
+    """The effective (attention, stalled) days of each open Lead Status: the Admin's setting, else the default."""
+    return {**STAGE_DAYS, **custom_limits(db, LEAD_LIMITS_SETTING, STAGE_DAYS)}
+
+
+def lead_clock(db: Session, at: datetime | None = None) -> Clock:
+    """The Leads' clock for one response, with the effective limits (the list, its filter, sort and counts, the
+    board and a lead's page all use this)."""
+    return Clock(at, limits=lead_limits(db))
 
 
 def opportunity_limits(db: Session) -> dict[str, tuple[int, int]]:

@@ -7357,14 +7357,17 @@ p.list-state {
   background: #feded8;
   color: #8e030f;
 }
+/* three across while each cell has room for a large amount ("₹54.85M", "AED 123.45M"); on a narrow card (a phone, a
+   narrow window, a zoomed page) the cells wrap to two or one per row instead of shrinking below their value */
 .home-score {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
   gap: 12px;
   margin: 0;
   padding: 12px 22px 0;
 }
 .home-score > div {
+  min-width: 0;
   padding: 14px;
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -7377,6 +7380,15 @@ p.list-state {
   margin: 4px 0 0;
   font-size: 20px;
   color: #032d60;
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+/* the Won / Lost amounts under their counts: a long amount wraps inside its box, never over the card's edge */
+.home-score-outcomes > div {
+  min-width: 0;
+}
+.home-score-outcomes small {
+  overflow-wrap: anywhere;
 }
 .home-card .team-bars {
   padding: 12px 22px 0;
@@ -8926,4 +8938,15 @@ button.engagement-tile:disabled {
   .limits-table td {
     white-space: normal;
   }
+}
+
+/* saved views: the chosen view differs from what it saved (Manage View > Update View saves it) */
+.view-unsaved {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #fef1d7;
+  color: #8c4b02;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
 }

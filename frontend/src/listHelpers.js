@@ -513,12 +513,12 @@ export function stageLimitText(limits, stage) {
   return `Needs attention from ${pair[0]} day${pair[0] === 1 ? "" : "s"}, stalled from ${pair[1]}`;
 }
 
-// A card's next step: the earliest open task on this opportunity among the tasks this user can see (the Tasks list the
-// app has already loaded): soonest due first
-export function nextOpenTask(tasks, opportunityId) {
+// A card's next step: the earliest open task on this opportunity (or lead: relatedType "leads") among the tasks this
+// user can see (the Tasks list the app has already loaded): soonest due first
+export function nextOpenTask(tasks, recordId, relatedType = "opportunities") {
   return (
     tasks
-      .filter((t) => t.relatedType === "opportunities" && String(t.relatedId) === String(opportunityId) && !t.completed)
+      .filter((t) => t.relatedType === relatedType && String(t.relatedId) === String(recordId) && !t.completed)
       .sort((a, b) => String(a.due_date).localeCompare(String(b.due_date)) || Number(a.id) - Number(b.id))[0] || null
   );
 }
