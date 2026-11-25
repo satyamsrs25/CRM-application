@@ -458,12 +458,18 @@ def list_campaigns(db: Session = Depends(get_db)):
 
 
 @router.get("/{campaign_id}")
-def get_one(campaign_id: int, status: str | None = Query(None), offset: int = Query(0, ge=0),
-            limit: int = Query(100, ge=1, le=500), db: Session = Depends(get_db)):
+def get_one(campaign_id: int, status: str | None = Query(None),
+            engagement: str | None = Query(None, description="Recipients in an engagement group: "
+                                                             + ", ".join(tracking.ENGAGEMENT_GROUPS)),
+            offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500), db: Session = Depends(get_db)):
     campaign = get_campaign(db, campaign_id)
     query = select(CampaignRecipient).where(CampaignRecipient.campaign_id == campaign.id)
     if status:
         query = query.where(CampaignRecipient.status == status)
+    if engagement:  # with the Status filter too, before the total and the page
+        if engagement not in tracking.ENGAGEMENT_GROUPS:
+            raise HTTPException(status_code=400, detail="Unknown engagement group")
+        query = query.where(*tracking.ENGAGEMENT_GROUPS[engagement](CampaignRecipient))
     total = db.scalar(select(func.count()).select_from(query.subquery()))
     rows = db.scalars(query.order_by(CampaignRecipient.id).offset(offset).limit(limit)).all()
     counts = counts_of(db, [campaign.id])[campaign.id]

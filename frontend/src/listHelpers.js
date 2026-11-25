@@ -1,5 +1,6 @@
 // Plain helpers for the list pages: paging text, applied-filter chips, selection wording and the actions offered for
 // ticked leads. No React here, so the node test runner checks them directly (domain.test.js).
+import { OPPORTUNITY_OPEN_STAGES } from "./domain.js";
 
 // Date ranges offered by the column filters. "past" fits created dates, "future" fits close and due dates.
 export const PAST_RANGES = [
@@ -85,9 +86,15 @@ export function dateFilterOffered(def, values) {
 
 const number = (n) => Number(n).toLocaleString("en-US");
 
-// "Lead Source: Upload", "Created: Last 7 days", "Account: contains "acme"" (the text under a list title)
+// "Lead Source: Upload", "Created: Last 7 days", "Account: contains "acme"" (the text under a list title). An on/off
+// filter (def.toggle) is just its name; several people (def.multi) are named, or counted past two.
 export function filterText(def, values) {
   const v = values[def.key];
+  if (def.toggle) return def.label;
+  if (def.multi) {
+    const names = String(v).split(",").map((id) => def.options.find(([o]) => o === id)?.[1] || id);
+    return `${def.label}: ${names.length > 2 ? `${names.length} selected` : names.join(", ")}`;
+  }
   const text =
     def.type === "text"
       ? `contains "${v}"`
@@ -215,6 +222,11 @@ export function inStageBadge(clock, stage, pooled = false) {
     const rating = IN_STAGE_RATING[clock.category];
     return { text, tone: IN_STAGE_TONE[clock.category] || "neutral", label: `In ${stage} for ${words}${rating ? `: ${rating}` : ""}` };
   }
+  if (clock.state === "unassigned") {
+    // waiting in the Unassigned Pool since the lead was created: neutral, never rated like a status
+    const { text, words } = elapsedText(clock.seconds);
+    return { text: `Unassigned for ${text}`, tone: "neutral", label: `Unassigned for ${words}: in the Unassigned Pool since it was created (not rated)` };
+  }
   if (clock.state === "not_started")
     return {
       text: "Not started",
@@ -252,6 +264,13 @@ export function stageClockSummary(clock, stage, pooled = false) {
     };
   }
   if (clock.state === "closed") return { state: "closed", text: `Not timed: ${stage} is a closed status`, tone: "closed" };
+  if (clock.state === "unassigned")
+    return {
+      state: "unassigned",
+      badge: inStageBadge(clock, stage).text,
+      tone: "neutral",
+      text: "Waiting in the Unassigned Pool since it was created. The stage clock starts when a Salesperson gets the lead.",
+    };
   const text =
     clock.state === "not_started"
       ? pooled
@@ -259,6 +278,27 @@ export function stageClockSummary(clock, stage, pooled = false) {
         : "The clock starts when a Salesperson gets the lead."
       : "The history doesn't show when a Salesperson got this lead or when this status started.";
   return { state: clock.state, badge: inStageBadge(clock, stage, pooled).text, tone: "neutral", text };
+}
+
+// Opportunities: the same kind of time in the current stage (backend stage_clock.opportunity_clocks), rated by the
+// server for the open stages (On track, Needs attention, Stalled: the Leads colours). Won and Lost keep counting,
+// neutral ("Won for 3 days"). short: the list's badge; duration: under the current stage in the path (open only).
+export function opportunityClockSummary(clock, stage) {
+  if (!clock) return null;
+  if (clock.state === "timed") {
+    const { text, words } = elapsedText(clock.seconds);
+    const closed = stage === "Won" || stage === "Lost";
+    const rating = closed ? null : IN_STAGE_RATING[clock.category] || null;
+    return {
+      state: "timed",
+      short: text,
+      duration: closed ? undefined : text,
+      text: closed ? `${stage} for ${words}` : `In ${stage} for ${words}`,
+      badge: rating,
+      tone: rating ? IN_STAGE_TONE[clock.category] : "neutral",
+    };
+  }
+  return { state: "not_recorded", short: "Not recorded", badge: "Not recorded", tone: "neutral", text: "The stage history doesn't show when it reached this stage." };
 }
 
 // How the ticked rows relate to the page on screen. "Select all" ticks only the rows on this page, and ticks stay
@@ -372,3 +412,132 @@ export function previewPlacement(anchor, size, viewport, { gap = 4, margin = 8 }
         : Math.max(margin, viewport.height - size.height - margin);
   return { top: Math.round(top), left: Math.round(left) };
 }
+
+// ---------- filtering a fully loaded list (Opportunities, Accounts, Contacts, Tasks; Filters.jsx re-exports it) ----------
+
+const filterDate = (value) => (!value ? null : String(value).length === 10 ? new Date(`${value}T12:00:00`) : new Date(value));
+
+// Every active filter must match (AND). def.multi: any of the chosen values (several owners); def.test: its own rule
+// (Overdue / Stuck); dates: the choice's range now ("This month" is worked out each time). Filters without get() or
+// test() run on the server (Leads). now: for tests.
+export function applyFilters(rows, defs, values, now = new Date()) {
+  const active = defs.filter((f) => values[f.key] && (f.get || f.test));
+  if (!active.length) return rows;
+  const tests = active.map((f) => {
+    if (f.test) return (r) => f.test(r, values[f.key], now);
+    if (f.type === "text") {
+      const needle = String(values[f.key]).trim().toLowerCase();
+      return (r) => String(f.get(r) ?? "").toLowerCase().includes(needle);
+    }
+    if (f.type === "date") {
+      const [start, end] = dateRangeBounds(values[f.key], values[`${f.key}_from`], values[`${f.key}_to`], now);
+      return (r) => {
+        const d = filterDate(f.get(r));
+        return !!d && (!start || d >= start) && (!end || d < end);
+      };
+    }
+    if (f.multi) {
+      const chosen = new Set(String(values[f.key]).split(","));
+      return (r) => chosen.has(String(f.get(r) ?? ""));
+    }
+    return (r) => String(f.get(r) ?? "") === values[f.key];
+  });
+  return rows.filter((r) => tests.every((t) => t(r)));
+}
+
+// ---------- Opportunities: the filter row, the board and a card's details ----------
+
+// yyyy-mm-dd of a day in the computer's local time: close dates are calendar days, as the Close Date filter reads them
+export const localDay = (d = new Date()) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+// Overdue: an open opportunity whose close date is before today (due today isn't overdue; Close Date "Before today").
+// Stuck: an open opportunity the server rates Stalled (the shared In stage clock and its limits). Won and Lost: neither.
+export function opportunityFlags(r, now = new Date()) {
+  const open = OPPORTUNITY_OPEN_STAGES.includes(r.stage);
+  const close = String(r.expected_close_date || "").slice(0, 10);
+  return {
+    overdue: open && !!close && close < localDay(now),
+    stuck: open && r.in_stage?.state === "timed" && r.in_stage.category === "stalled",
+  };
+}
+export const overdueOrStuck = (r, now = new Date()) => {
+  const f = opportunityFlags(r, now);
+  return f.overdue || f.stuck;
+};
+
+// The number beside an on/off filter: the records it would show with every other active filter (its own left out),
+// each record once however many reasons it has
+export function toggleCount(rows, defs, values, key, now = new Date()) {
+  const def = defs.find((f) => f.key === key);
+  if (!def?.test) return 0;
+  return applyFilters(rows, defs, withoutFilter(values, key), now).filter((r) => def.test(r, "1", now)).length;
+}
+
+// Owner choices on the Opportunities filter row: only people whose opportunities this user can see. Without View team
+// records (or on a "My ..." view) that is the user alone; otherwise every user, grouped Managers / Salespeople / Admins.
+const OWNER_GROUPS = [["Manager", "Managers"], ["Salesperson", "Salespeople"], ["Admin", "Admins"]];
+export function ownerChoiceGroups(users, me, team) {
+  if (!team) return [{ label: "You", options: [[String(me.id), "Me"]] }];
+  const name = (u) => `${u.id === me.id ? `${u.full_name} (me)` : u.full_name}${u.is_active === false ? " (inactive)" : ""}`;
+  return OWNER_GROUPS.map(([role, label]) => ({
+    label,
+    options: users
+      .filter((u) => u.role === role)
+      .sort((a, b) => (a.id !== me.id) - (b.id !== me.id) || (a.is_active === false) - (b.is_active === false) || a.full_name.localeCompare(b.full_name))
+      .map((u) => [String(u.id), name(u)]),
+  })).filter((g) => g.options.length);
+}
+
+// The board's columns over the whole filtered list (every card, drawn or not): how many, how many open ones are
+// stalled, and the amount per currency. Amounts in different currencies are never added together.
+export function boardColumns(rows, stages, openStages = OPPORTUNITY_OPEN_STAGES) {
+  return stages.map((stage) => {
+    const items = rows.filter((r) => r.stage === stage);
+    const open = openStages.includes(stage);
+    const totals = {};
+    for (const r of items) {
+      const value = Number(r.value);
+      if (r.value == null || r.value === "" || !Number.isFinite(value)) continue;
+      totals[r.currency || "USD"] = (totals[r.currency || "USD"] || 0) + value;
+    }
+    const stalled = open ? items.filter((r) => r.in_stage?.state === "timed" && r.in_stage.category === "stalled").length : 0;
+    return { stage, open, items, count: items.length, stalled, totals };
+  });
+}
+
+// "Needs attention from 14 days, stalled from 30" (an open stage's effective limits); null for Won and Lost
+export function stageLimitText(limits, stage) {
+  const pair = limits?.[stage];
+  if (!pair) return null;
+  return `Needs attention from ${pair[0]} day${pair[0] === 1 ? "" : "s"}, stalled from ${pair[1]}`;
+}
+
+// A card's next step: the earliest open task on this opportunity among the tasks this user can see (the Tasks list the
+// app has already loaded): soonest due first
+export function nextOpenTask(tasks, opportunityId) {
+  return (
+    tasks
+      .filter((t) => t.relatedType === "opportunities" && String(t.relatedId) === String(opportunityId) && !t.completed)
+      .sort((a, b) => String(a.due_date).localeCompare(String(b.due_date)) || Number(a.id) - Number(b.id))[0] || null
+  );
+}
+
+// The opportunity's Client POC as this user may see it: its primary contact, from the contacts they can open (the same
+// rule as the opportunity's page). Only what they can see is returned; missing says what isn't there and why.
+export function opportunityPoc(record, contacts) {
+  if (record.primary_contact_id == null) return { name: "", phone: "", email: "", contact: null, missing: "This opportunity has no primary contact." };
+  const contact = contacts.find((c) => Number(c.id) === Number(record.primary_contact_id));
+  if (!contact)
+    return { name: record.primary_contact_name || "", phone: "", email: "", contact: null, missing: "The primary contact's phone and email aren't available to you." };
+  const name = contact.full_name || [contact.first_name, contact.last_name].filter(Boolean).join(" ");
+  return { name, phone: contact.phone || "", email: contact.email || "", contact, missing: "" };
+}
+
+// What Call dials: the number with only its digits and a leading + (worked out when Call is pressed, never kept on the page)
+export const telHref = (phone) => `tel:${String(phone || "").replace(/[^\d+]/g, "")}`;
+
+// Log a call: what the note on the opportunity says
+export const CALL_OUTCOMES = ["Connected", "No answer", "Left voicemail", "Wrong number"];
+export const callNoteBody = (outcome, contactName, notes) =>
+  `Call logged (${outcome})${contactName ? ` with ${contactName}` : ""}: ${String(notes).trim()}`;

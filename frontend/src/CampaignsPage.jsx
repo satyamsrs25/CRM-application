@@ -11,6 +11,7 @@ import { can } from "./permissions";
 import { Th } from "./Filters";
 import { CampaignDraftAssistant } from "./EmailDraftAssistant";
 import { Icon, ObjectIcon } from "./ui";
+import { useDismiss } from "./Header";
 import { reachNote, rateText, signalText, TRACKING_FACTS } from "./campaignTracking";
 
 const n = (x) => Number(x || 0).toLocaleString();
@@ -621,55 +622,73 @@ export function TrackingSettings({ onClose, notify }) {
   );
 }
 
-// One campaign's engagement: recipients with signals (unique) and signals (repeated), apart from sending
-function Engagement({ tracking: e }) {
+// The engagement cards: recipients (not signals) in each group, from the server (tracking.groups). A card filters the
+// recipient table to those people; the groups can overlap (a click without a detected open is possible)
+export const ENGAGEMENT_CARDS = [
+  ["opened", "Unique Opens", "track_opens"],
+  ["clicked", "Unique Clicks", "track_clicks"],
+  ["no_open", "No Open Detected", "track_opens"],
+];
+export const ENGAGEMENT_GROUP_TEXT = {
+  opened: "with an open detected",
+  clicked: "with a click detected",
+  no_open: "with no open detected",
+  opens_not_tracked: "sent without open tracking",
+};
+
+// One campaign's engagement: who opened, who clicked, who has no open detected; signal totals and links below them
+function Engagement({ tracking: e, group, onGroup }) {
+  const groups = e.groups || {};
+  const sub = {
+    opened: `of ${n(e.sent_with_open_tracking)} sent with open tracking · ${rateText(e.open_signal_rate_pct)}`,
+    clicked: `of ${n(e.sent_with_click_tracking)} sent with click tracking · ${rateText(e.click_signal_rate_pct)}`,
+    no_open: `of ${n(e.sent_with_open_tracking)} sent with open tracking`,
+  };
   return (
     <section className="card engagement-card" aria-labelledby="engagement-title">
       <header className="card-header">
         <h2 id="engagement-title">Engagement</h2>
-        <span className="muted">open and click signals</span>
+        <span className="muted">recipients with detected activity</span>
+        {!e.allowed_now && <span className="muted engagement-off">Tracking is off now</span>}
+        <EngagementHelp e={e} />
       </header>
-      <div className="engagement-tiles">
-        <div className="engagement-tile">
-          <span>Open signals</span>
-          {e.track_opens ? (
-            <>
-              <b>{rateText(e.open_signal_rate_pct)}</b>
-              <small>
-                {n(e.recipients_with_open_signal)} of {n(e.sent_with_open_tracking)} recipients · {n(e.open_signals)} signal
-                {e.open_signals === 1 ? "" : "s"} in total
-              </small>
-            </>
-          ) : (
-            <b className="muted">Not tracked</b>
-          )}
-        </div>
-        <div className="engagement-tile">
-          <span>Click signals</span>
-          {e.track_clicks ? (
-            <>
-              <b>{rateText(e.click_signal_rate_pct)}</b>
-              <small>
-                {n(e.recipients_with_click_signal)} of {n(e.sent_with_click_tracking)} recipients · {n(e.click_signals)} signal
-                {e.click_signals === 1 ? "" : "s"} in total
-              </small>
-            </>
-          ) : (
-            <b className="muted">Not tracked</b>
-          )}
-        </div>
-        <div className="engagement-tile">
-          <span>Possibly automated</span>
-          <b>{n(e.possibly_automated.open + e.possibly_automated.click)}</b>
-          <small>
-            {n(e.possibly_automated.open)} open · {n(e.possibly_automated.click)} click signals (a cautious guess: most can&apos;t be told apart)
-          </small>
-        </div>
+      <div className="engagement-tiles" role="group" aria-label="Show recipients by engagement">
+        {ENGAGEMENT_CARDS.map(([key, label, tracked]) => (
+          <button
+            key={key}
+            type="button"
+            className="engagement-tile"
+            aria-pressed={group === key}
+            disabled={!e[tracked]}
+            onClick={() => onGroup(group === key ? "" : key)}
+            title={e[tracked] ? `Show the recipients ${ENGAGEMENT_GROUP_TEXT[key]}` : undefined}
+          >
+            <span>{label}</span>
+            {e[tracked] ? (
+              <>
+                <b>{n(groups[key])}</b>
+                <small>{sub[key]}</small>
+              </>
+            ) : (
+              <b className="muted">Not tracked</b>
+            )}
+          </button>
+        ))}
       </div>
-      <p className="engagement-definition">
-        Rate = recipients with at least one signal ÷ emails sent with that tracking ({n(e.sent)} sent in all). A recipient
-        counts once in the rate however many signals they have.
-      </p>
+      <div className="engagement-filters">
+        <button type="button" className="sf-button small" aria-pressed={!group} disabled={!group} onClick={() => onGroup("")}>
+          All Recipients
+        </button>
+        {groups.opens_not_tracked > 0 && (
+          <button type="button" className="link" aria-pressed={group === "opens_not_tracked"} onClick={() => onGroup("opens_not_tracked")}>
+            Opens not tracked ({n(groups.opens_not_tracked)})
+          </button>
+        )}
+        <small className="muted">
+          Signals in total: {n(e.open_signals)} open · {n(e.click_signals)} click · possibly automated:{" "}
+          {n(e.possibly_automated.open)} open, {n(e.possibly_automated.click)} click (a cautious guess)
+        </small>
+      </div>
       {e.links.length > 0 && (
         <div className="table-scroll">
           <table className="sf-table engagement-links">
@@ -692,15 +711,43 @@ function Engagement({ tracking: e }) {
           </table>
         </div>
       )}
-      <ul className="tracking-facts compact">
-        <li>{TRACKING_FACTS[1]}</li>
-        <li>{TRACKING_FACTS[2]} Sending status (above) is separate: a signal never means delivered.</li>
-        <li>
-          Times are shown in your time zone. Each signal is kept {e.retention_days} days.
-          {!e.allowed_now && " Tracking is turned off now (the Admin's setting): no new signals are recorded."}
-        </li>
-      </ul>
     </section>
+  );
+}
+
+// What the engagement cards mean, only when asked for (the Help button beside the card's title)
+function EngagementHelp({ e }) {
+  const [open, setOpen] = useState(false);
+  const ref = useDismiss(open, setOpen);
+  return (
+    <span className="engagement-help" ref={ref}>
+      <button
+        type="button"
+        className="icon-btn"
+        aria-label="About engagement"
+        aria-expanded={open}
+        aria-controls="engagement-help"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <Icon name="help" size={16} />
+      </button>
+      {open && (
+        <div id="engagement-help" className="engagement-help-pop" role="dialog" aria-label="About engagement">
+          <ul>
+            <li>
+              Each card counts people, once however many signals they have, among the emails sent with that tracking ({n(e.sent)} sent
+              in all). The groups can overlap: a click can come without a detected open.
+            </li>
+            <li>Detected activity doesn&apos;t prove anyone read the email. {TRACKING_FACTS[1]}</li>
+            <li>{TRACKING_FACTS[2]} Sending status is separate: a signal never means delivered.</li>
+            <li>
+              Times are shown in your time zone. Each signal is kept {e.retention_days} days.
+              {!e.allowed_now && " Tracking is turned off now (the Admin's setting): no new signals are recorded."}
+            </li>
+          </ul>
+        </div>
+      )}
+    </span>
   );
 }
 
@@ -755,6 +802,7 @@ const RECIPIENT_GROUPS = [
 function CampaignDetail({ id, user, notify }) {
   const [campaign, setCampaign] = useState(null);
   const [status, setStatus] = useState("");
+  const [group, setGroup] = useState(""); // an engagement card's recipients (filtered on the server, with Status)
   const [page, setPage] = useState(0);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
@@ -762,13 +810,13 @@ function CampaignDetail({ id, user, notify }) {
   useEffect(() => {
     let stale = false;
     api
-      .campaign(id, { status, offset: page * 100, limit: 100 })
+      .campaign(id, { status, engagement: group, offset: page * 100, limit: 100 })
       .then((c) => !stale && (setCampaign(c), setError("")))
       .catch((err) => !stale && setError(err.message));
     return () => {
       stale = true;
     };
-  }, [id, status, page, tick]);
+  }, [id, status, group, page, tick]);
   // refresh while it's sending
   useEffect(() => {
     if (!["Sending", "Scheduled"].includes(campaign?.status)) return;
@@ -880,17 +928,23 @@ function CampaignDetail({ id, user, notify }) {
         )}
       </section>
 
-      {c.tracking && <Engagement tracking={c.tracking} />}
+      {c.tracking && <Engagement tracking={c.tracking} group={group} onGroup={(g) => (setGroup(g), setPage(0))} />}
 
       <section className="card campaign-recipients-card">
         <header className="card-header">
           <h2>Recipients</h2>
           <span className="muted">
             {status ? `${n(c.recipients.total)} ${EMAIL_STATUS[status] || status}` : `${n(c.recipients.total)} ${c.recipients.total === 1 ? "person" : "people"}`}
+            {group && ` ${ENGAGEMENT_GROUP_TEXT[group]}`}
           </span>
           {status && (
             <button type="button" className="link" onClick={() => (setStatus(""), setPage(0))}>
               Show all
+            </button>
+          )}
+          {group && (
+            <button type="button" className="link" onClick={() => (setGroup(""), setPage(0))}>
+              All Recipients
             </button>
           )}
         </header>

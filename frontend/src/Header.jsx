@@ -64,8 +64,8 @@ const routeFor = {
   Task: "tasks",
 };
 
-// Closes a popover when clicking outside it or pressing Escape
-function useDismiss(open, setOpen) {
+// Closes a popover when clicking outside it or pressing Escape (also the campaign engagement Help)
+export function useDismiss(open, setOpen) {
   const ref = useRef(null);
   useEffect(() => {
     if (!open) return;

@@ -304,3 +304,50 @@ def test_signals_are_cautiously_hinted_kept_for_a_limited_time_and_never_change_
     assert tracking.retention_days() == 30
     monkeypatch.setenv("TRACKING_RETENTION_DAYS", "100000")
     assert tracking.retention_days() == 730
+
+
+# ---------- the engagement cards: recipients, filtering the whole recipient list ----------
+
+def test_the_engagement_cards_count_recipients_and_filter_the_whole_list(client, sent):
+    from datetime import datetime, timezone
+    from test_unassigned_pool import add_user
+    allow(client)
+    campaign_id, ids = tracked_campaign(client, n=6)
+    run_round()
+    db = db_session()
+    try:
+        rec = {r.lead_id: r for r in db.query(CampaignRecipient).filter_by(campaign_id=campaign_id)}
+        both, click_only, nothing, untracked, failed, queued = (rec[i] for i in ids)
+        at = datetime(2026, 11, 20, 15, 0, tzinfo=timezone.utc)
+        both.first_open_at = both.last_open_at = both.first_click_at = both.last_click_at = at
+        both.open_events, both.click_events = 3, 1  # three open signals: still one recipient
+        click_only.first_click_at = click_only.last_click_at = at  # a click without a detected open (images blocked)
+        click_only.click_events = 1
+        untracked.opens_tracked = untracked.clicks_tracked = False  # sent after tracking was turned off
+        failed.status, failed.sent_at = "Failed", None  # tracked, but never sent: never "No Open Detected"
+        queued.status, queued.sent_at = "Queued", None
+        db.commit()
+        names = {r.id: (r.name, r.email) for r in rec.values()}
+        groups = {"opened": [both.id], "clicked": [both.id, click_only.id], "no_open": [click_only.id, nothing.id],
+                  "opens_not_tracked": [untracked.id]}
+    finally:
+        db.close()
+    detail = client.get(f"/api/campaigns/{campaign_id}").json()
+    assert detail["tracking"]["groups"] == {"opened": 1, "clicked": 2, "no_open": 2, "opens_not_tracked": 1}
+    assert detail["tracking"]["open_signals"] == 3  # the signal totals are still there, apart from the cards
+    for key, want in groups.items():
+        got = client.get(f"/api/campaigns/{campaign_id}", params={"engagement": key}).json()["recipients"]
+        assert got["total"] == len(want) and sorted(r["id"] for r in got["items"]) == sorted(want), key
+        assert all((r["name"], r["email"]) == names[r["id"]] for r in got["items"])  # who they are
+    # with the Status filter, before paging
+    sent_no_open = client.get(f"/api/campaigns/{campaign_id}", params={"engagement": "no_open", "status": "Sent"}).json()
+    assert sent_no_open["recipients"]["total"] == 2
+    failed_no_open = client.get(f"/api/campaigns/{campaign_id}", params={"engagement": "no_open", "status": "Failed"}).json()
+    assert failed_no_open["recipients"]["total"] == 0
+    pages = [client.get(f"/api/campaigns/{campaign_id}", params={"engagement": "clicked", "limit": 1, "offset": o})
+             .json()["recipients"] for o in (0, 1)]
+    assert [p["total"] for p in pages] == [2, 2] and sorted(p["items"][0]["id"] for p in pages) == sorted(groups["clicked"])
+    assert client.get(f"/api/campaigns/{campaign_id}", params={"engagement": "read"}).status_code == 400
+    # the same access as before: someone who can't see the campaign doesn't get its people either
+    leo = add_user("Leo Das", "leo@crm.test", "Salesperson")
+    assert login_as(client, leo).get(f"/api/campaigns/{campaign_id}", params={"engagement": "opened"}).status_code == 404

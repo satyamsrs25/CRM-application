@@ -10,7 +10,7 @@ import { regionName } from "./phone";
 import { ActionMenu, Card, Icon, ObjectIcon, PathBar, PhoneReveal, StageBadge } from "./ui";
 import { AssignLeadDialog, RequestTransferDialog, TransferRequestList } from "./TransferRequests";
 import { api } from "./api";
-import { stageClockSummary } from "./listHelpers";
+import { opportunityClockSummary, stageClockSummary } from "./listHelpers";
 
 import { ATTACHMENT_UPLOAD_STAGES, isPooledLead, LEAD_FLOW, LEAD_OPTIONAL_STAGES, OPPORTUNITY_FLOW } from "./domain";
 
@@ -272,8 +272,9 @@ export default function RecordPage({ collection, item, data, user, openLead, ope
   const tasks = data.tasks.filter((t) => t.relatedId === item.id && t.relatedType === collection);
   // New Task: anyone who can open the record, except on a pooled lead (nobody to do it yet; the backend says the same)
   const canAddTask = !pooled;
-  // In stage (leads): the Leads list's clock from the server (item.in_stage), the same start, time and rating
-  const stageClock = lead ? stageClockSummary(item.in_stage, item.stage, pooled) : null;
+  // In stage: the list's clock from the server (item.in_stage), the same start and time; leads also get the rating
+  // (and the notice), opportunities stay neutral (no limits agreed for them)
+  const stageClock = lead ? stageClockSummary(item.in_stage, item.stage, pooled) : opportunityClockSummary(item.in_stage, item.stage);
   const edit = () => (lead ? openLead(item) : setModal({ type: "opportunity", record: item }));
   // the pencils on the Details tab follow the same rule as Actions > Edit (none for a view-only user)
   const editField = canEdit ? edit : undefined;

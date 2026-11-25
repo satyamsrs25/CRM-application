@@ -7,6 +7,7 @@
 -- =====================================================
 
 -- Drop in reverse order so the script can be re-run (CASCADE also drops the home page views)
+DROP TABLE IF EXISTS saved_views CASCADE;
 DROP TABLE IF EXISTS assistant_files CASCADE;
 DROP TABLE IF EXISTS assistant_conversations CASCADE;
 DROP TABLE IF EXISTS opportunity_attachments CASCADE;
@@ -560,3 +561,17 @@ CREATE TABLE assistant_files (
   created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX idx_assistant_files_user ON assistant_files (user_id);
+-- Saved list views (Opportunities > Save as View): each user's own; filters are stored as choices ("This month")
+CREATE TABLE saved_views (
+  id         SERIAL PRIMARY KEY,
+  user_id    INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  collection VARCHAR(20) NOT NULL,
+  name       VARCHAR(60) NOT NULL,
+  base_view  VARCHAR(60) NOT NULL,
+  filters    TEXT NOT NULL,
+  search     VARCHAR(100),
+  sort       TEXT,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE UNIQUE INDEX idx_saved_views_name ON saved_views (user_id, collection, lower(name));
