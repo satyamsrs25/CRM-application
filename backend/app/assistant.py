@@ -38,11 +38,12 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app import schemas
-from app.assistant_reports import PERIODS, assignment_report, crm_report
+from app.assistant_reports import PERIODS, assignment_report, crm_report, deleted_leads_report
 from app.constants import (CURRENCIES, LEAD_FLOW, LEAD_SOURCE_DETAIL_MAX, LEAD_SOURCES, LEAD_STAGES, OPPORTUNITY_FLOW,
                            OPPORTUNITY_STAGES, REVISIT_REASONS, UNQUALIFIED_REASONS)
 from app.models import Lead, User
 from app.routers import accounts, activity, home, leads, opportunities, tasks
+from app.routers.deleted_leads import RESTORED_NOTE
 from app.security import acting_user
 from app.services import BUSINESS_TIMEZONE, demo_input, log_activity
 
@@ -162,6 +163,12 @@ TOOLS = [
               "assigned_by_me": {"type": "boolean", "description": "Only assignments the signed-in user made "
                                  "('how many did I assign', or 'how many did you assign' asked about the user's own work)"},
               "assigned_by_name": {"type": "string", "description": "Only assignments made by this user"}}),
+    _tool("deleted_leads_report", "Deleted and restored leads (Leads > Deleted Leads): which leads were RESTORED "
+          "(back to the Unassigned Pool), by whom and when, and which deleted leads are still waiting in Deleted Leads "
+          "(restorable for 90 days, with the days left), in IST days. Use it for every question about deleted or "
+          "restored leads ('which leads were restored today', 'who restored Ana', 'what is in Deleted Leads').", {
+              "period": {"type": "string", "enum": PERIODS, "description": "Default all_time; 'today' is today in IST"},
+              "date_from": DATE, "date_to": DATE}),
     _tool("list_accounts", "List accounts (companies) the user can see.", {"search": S}),
     _tool("get_account", "One account with its contacts and opportunities.", {"account_id": I}, ["account_id"]),
     _tool("list_contacts", "List contacts (people at accounts).", {"search": S, "account_id": I}),
@@ -301,7 +308,8 @@ def required_message(missing: list[str]) -> str:
 # ---------- what each role is offered (the API still checks every call) ----------
 
 READ_TOOLS = {"search", "list_leads", "get_lead", "list_opportunities", "get_opportunity", "list_tasks", "list_users",
-              "pipeline_summary", "crm_report", "assignment_report", "list_accounts", "get_account", "list_contacts"}
+              "pipeline_summary", "crm_report", "assignment_report", "deleted_leads_report", "list_accounts", "get_account",
+              "list_contacts"}
 SALES_TOOLS = {"create_lead", "update_lead", "move_lead_stage", "reschedule_demo", "convert_lead", "move_opportunity_stage",
                "mark_lead_lost", "cancel_demo", "mark_opportunity_won", "mark_opportunity_lost", "mark_lead_unqualified",
                "reopen_lead"}
@@ -450,6 +458,9 @@ def run_tool(db: Session, name: str, args: dict) -> tuple[dict, dict | None]:
     if name == "get_lead":
         out = _plain(leads.get_lead(lead_id=a["lead_id"], db=db))
         out["tasks"] = [_task_row(t) for t in out.get("tasks", []) if t.get("status") == "Open"]
+        restores = [n for n in out.get("notes", []) if str(n.get("body", "")).startswith(RESTORED_NOTE)]
+        if restores:  # deleted, then restored from Leads > Deleted Leads (newest first)
+            out["restored_from_deleted_leads"] = [{"note": n.get("body"), "at": n.get("created_at")} for n in restores]
         return out, _link("Lead", out)
     if name == "list_opportunities":
         rows = opportunities.list_opportunities(stage=a.get("stage"), owner_id=_user_id(db, a.get("owner_name")),
@@ -478,6 +489,9 @@ def run_tool(db: Session, name: str, args: dict) -> tuple[dict, dict | None]:
         return assignment_report(db, period=a.get("period"), date_from=a.get("date_from"), date_to=a.get("date_to"),
                                  assigned_to=a.get("assigned_to_name"), assigned_by=a.get("assigned_by_name"),
                                  assigned_by_me=bool(a.get("assigned_by_me"))), None
+    if name == "deleted_leads_report":
+        return deleted_leads_report(db, period=a.get("period"), date_from=a.get("date_from"),
+                                    date_to=a.get("date_to")), None
     if name == "list_accounts":
         rows = [_account_row(_plain(r)) for r in accounts.list_accounts(search=a.get("search"), owner_id=None, db=db)]
         return {"count": len(rows), "accounts": rows[:MAX_LIST], "more": max(0, len(rows) - MAX_LIST)}, None
@@ -758,6 +772,10 @@ def system_prompt() -> str:
         "many did you assign' about the user's own work: assigned_by_me=true. If the user asks what the Assistant "
         "itself did, say it can't assign pooled leads (assistant_assigned is 0). Give the count with its date, "
         "time zone, who assigned and to whom, and the scope.\n"
+        "- Deleted or restored leads (Leads > Deleted Leads): always use deleted_leads_report. A restored lead is a "
+        "normal lead again, back in the Unassigned Pool (it may have been assigned since); get_lead shows "
+        "restored_from_deleted_leads for it. Deleted leads can be restored for 90 days; you can't restore them: say "
+        "the Admin or a Manager does it in Leads > Deleted Leads.\n"
         "- Never turn a missing answer into 0: if a tool returns an error, or no tool covers the question, say you "
         "can't tell. Answer 0 only when a tool returned 0 for exactly that question.\n"
         "- The CRM never emails leads or customers automatically; only the salesperson sends emails, from Send Email.\n"

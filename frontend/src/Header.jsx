@@ -3,6 +3,7 @@ import { api } from "./api";
 import { BrandMark } from "./Login";
 import { can, canManageAccess } from "./permissions";
 import { Avatar, Icon, ObjectIcon } from "./ui";
+import { notificationTime, notificationTimeFull, shortNotification } from "./notificationText";
 
 export const TABS = [
   ["home", "Home", "/", "home"],
@@ -142,16 +143,6 @@ function GlobalSearch() {
 }
 
 const POLL_MS = 15000;
-// "5 min ago", "3 h ago", "Yesterday", then the date
-function when(value) {
-  if (!value) return "";
-  const minutes = Math.round((Date.now() - new Date(value).getTime()) / 60000);
-  if (minutes < 1) return "Just now";
-  if (minutes < 60) return `${minutes} min ago`;
-  if (minutes < 24 * 60) return `${Math.round(minutes / 60)} h ago`;
-  if (minutes < 48 * 60) return "Yesterday";
-  return new Date(value).toLocaleDateString("en-US", { month: "short", day: "numeric" });
-}
 const iconFor = (n) =>
   n.kind === "reminder" ? "task" : n.title.startsWith("Lead") ? "lead" : n.title.startsWith("Opportunity") ? "opportunity" : "task";
 
@@ -212,6 +203,7 @@ function Bell({ data, open, setOpen, notify }) {
       key={n.id}
       className={`notification ${n.kind === "reminder" ? "reminder" : ""} ${n.is_read ? "read" : "unread"}`}
       onClick={() => go(n)}
+      title={n.message || undefined}
     >
       <ObjectIcon type={iconFor(n)} size={24} />
       <span>
@@ -219,8 +211,10 @@ function Bell({ data, open, setOpen, notify }) {
           {n.title}
           {!n.is_read && <i className="new-dot" aria-label="new" />}
         </b>
-        <small>{n.message}</small>
-        <small className="when">{when(n.created_at)}</small>
+        <small className="notification-text">{shortNotification(n.message)}</small>
+        <small className="when" title={notificationTimeFull(n.created_at)}>
+          {notificationTime(n.created_at)}
+        </small>
       </span>
     </button>
   );
@@ -273,7 +267,7 @@ function Bell({ data, open, setOpen, notify }) {
                 <span>
                   <small>{n.kind === "reminder" ? "Reminder" : "Update"}</small>
                   <b>{n.title}</b>
-                  <span>{n.message?.split("\n")[0]}</span>
+                  <span>{shortNotification(n.message).split("\n")[0]}</span>
                 </span>
               </button>
               <button className="popup-close" aria-label="Dismiss" onClick={() => setPopups((p) => p.filter((x) => x.id !== n.id))}>

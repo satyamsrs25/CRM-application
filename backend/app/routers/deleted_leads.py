@@ -28,6 +28,7 @@ router = APIRouter(prefix="/api/deleted-leads", tags=["Deleted Leads"])
 
 SKIP_COLUMNS = {"id", "owner_id", "assigned_at"}  # a restored lead goes to the Unassigned Pool
 KEEP_DAYS = 90  # a deleted lead can be restored for this many days, then it is deleted for good
+RESTORED_NOTE = "Restored from Deleted Leads by "  # starts the note a restore adds (the AI Assistant finds restores by it)
 
 
 def purge_expired(db: Session) -> int:
@@ -144,7 +145,7 @@ def restore(data: RestoreIn, db: Session = Depends(get_db)):
             db.add(Note(lead_id=lead.id, body=note["body"], created_by_id=author if db.get(User, author) else me.id,
                         created_at=datetime.fromisoformat(note["created_at"]) if note.get("created_at") else None))
         db.add(Note(lead_id=lead.id, created_by_id=me.id,
-                    body=f"Restored from Deleted Leads by {me.full_name} to the Unassigned Pool "
+                    body=f"{RESTORED_NOTE}{me.full_name} to the Unassigned Pool "
                          f"(deleted {row.deleted_at:%d %b %Y} by {row.deleted_by.full_name if row.deleted_by else 'someone'})."))
         log_activity(db, me.id, "Lead restored", row.name, "Back in the Unassigned Pool")
         db.delete(row)

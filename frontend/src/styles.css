@@ -354,6 +354,12 @@ p {
 .notification small {
   white-space: pre-line; /* step notifications have one detail per line */
 }
+.notification .notification-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3; /* short: what it is about; the full message is in the tooltip and the email */
+  overflow: hidden;
+}
 .user-pop {
   width: 260px;
 }
@@ -7137,6 +7143,34 @@ p.list-state {
   font-weight: 600;
   cursor: pointer;
 }
+/* Home > Dashboard: the currency every amount is shown in (a pill like the period's) */
+.home-currency {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 40px;
+  padding: 0 6px 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--white);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+.home-currency span {
+  color: var(--text-weak);
+  font-size: 13px;
+}
+.home-currency select {
+  height: 32px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.home-currency select:focus-visible,
 .home-period-row select:focus-visible {
   outline: 2px solid var(--brand);
   border-radius: 6px;

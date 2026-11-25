@@ -584,8 +584,9 @@ def notify(db: Session, user_id: int, title: str, message: str, *, task_id: int 
     bell=False: saved as already read (no badge), the email still follows the settings.
     why: the email's last line, saying why this person gets it.
     """
+    # stamped by the API's clock (TZ), the zone server_instant sends it with, whatever the database's own time zone
     db.add(Notification(user_id=user_id, task_id=task_id, title=title, message=message[:500], link=link,
-                        kind=kind, is_read=not bell))
+                        kind=kind, is_read=not bell, created_at=now()))
     user = db.get(User, user_id)
     category = category or ("reminder" if kind == "reminder" else "stage")
     if user and user.email and getattr(user, EMAIL_SETTING[category], True):

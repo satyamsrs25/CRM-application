@@ -331,3 +331,80 @@ def assignment_report(db: Session, *, period: str | None = None, date_from: str 
         "source": "Each lead's Transfer History. A lead deleted since then is not counted (its history is deleted "
                   "with it); nothing is estimated.",
     }
+
+
+DELETED_ROWS = 25
+
+
+def deleted_leads_report(db: Session, *, period: str | None = None, date_from: str | None = None,
+                         date_to: str | None = None, today: date | None = None) -> dict:
+    """Leads > Deleted Leads for the AI Assistant: the leads restored in a period (each restore adds a note starting
+    with RESTORED_NOTE, by the person who restored it) and, for the Admin and Managers, the deleted leads still waiting
+    in Deleted Leads (restorable for KEEP_DAYS days). Scope as on the screens: the Admin everyone's; a Manager their
+    own, their team's and pooled leads; a Salesperson only restored leads they now own (Deleted Leads is not theirs)."""
+    from app.models import DeletedLead, Note
+    from app.routers.deleted_leads import KEEP_DAYS, RESTORED_NOTE, _visible
+    from app.security import team_ids
+    from app.services import now
+
+    me = acting_user()
+    start, end, window = assignment_window(period, date_from, date_to, today)
+    if start is None:
+        window["from"] = "the first recorded restore or deletion"
+    names = dict(db.execute(select(User.id, User.full_name)).all())
+    person = lambda uid: names.get(uid, "someone")  # noqa: E731
+    manages = me.is_admin or me.role == "Manager"
+
+    def between(query, column):
+        if start is not None:
+            query = query.where(column >= start)
+        if end is not None:
+            query = query.where(column < end)
+        return query
+
+    query = between(select(Note, Lead).join(Lead, Lead.id == Note.lead_id)
+                    .where(Note.body.like(f"{RESTORED_NOTE}%")), Note.created_at)
+    if not me.is_admin:
+        if me.role == "Manager":
+            people = team_ids(db, me.id) | {me.id}
+            query = query.where(or_(Lead.owner_id.in_(people), Lead.owner_id.is_(None), Note.created_by_id.in_(people)))
+        else:
+            query = query.where(Lead.owner_id == me.id)
+    restored = db.execute(query.order_by(Note.created_at.desc(), Note.id.desc())).all()
+    out = {
+        "what": "Leads restored from Leads > Deleted Leads (a restored lead goes back to the Unassigned Pool with its "
+                "fields and notes, and may have been assigned since), and the deleted leads that can still be restored.",
+        **window,
+        "scope": "everyone's" if me.is_admin else ("your own, your team's and pooled leads" if me.role == "Manager"
+                                                   else "only restored leads you now own"),
+        "restored_count": len(restored),
+        "restored_by": dict(sorted({person(n.created_by_id): sum(1 for m, _ in restored if m.created_by_id == n.created_by_id)
+                                    for n, _ in restored}.items(), key=lambda kv: (-kv[1], kv[0]))),
+        "restored": [{"lead_id": lead.id, "lead": lead.name, "company": lead.company, "stage": lead.stage,
+                      "restored_by": person(note.created_by_id),
+                      "restored_at": ist_text(server_to_ist(note.created_at)) if note.created_at else None,
+                      "owner_now": lead.owner.full_name if lead.owner else "Unassigned Pool"}
+                     for note, lead in restored[:DELETED_ROWS]],
+        "more_restored": max(0, len(restored) - DELETED_ROWS),
+    }
+    if not manages:
+        out["deleted_leads"] = "Only the Admin and Managers can see Leads > Deleted Leads."
+        return out
+    waiting = between(_visible(db, me).where(DeletedLead.deleted_at >= now() - timedelta(days=KEEP_DAYS)),
+                      DeletedLead.deleted_at)
+    rows = db.scalars(waiting.order_by(DeletedLead.deleted_at.desc(), DeletedLead.id.desc())).all()
+    out.update({
+        "in_deleted_leads_count": len(rows),
+        "keep_days": KEEP_DAYS,
+        "in_deleted_leads": [{"lead": r.name, "company": r.company, "email": r.email, "stage": r.stage,
+                              "owner_when_deleted": r.owner_name or "Unassigned Pool",
+                              "deleted_by": person(r.deleted_by_id),
+                              "deleted_at": ist_text(server_to_ist(r.deleted_at)) if r.deleted_at else None,
+                              "days_left_to_restore": max(0, KEEP_DAYS - (now().date() - r.deleted_at.date()).days)
+                              if r.deleted_at else None}
+                             for r in rows[:DELETED_ROWS]],
+        "more_in_deleted_leads": max(0, len(rows) - DELETED_ROWS),
+        "how_to_restore": "Leads > Deleted Leads: tick the leads and select Restore (the Admin or a Manager). "
+                          "The Assistant can't restore leads.",
+    })
+    return out
