@@ -87,7 +87,7 @@ def test_email_follows_each_persons_settings(client, outbox):
     setup_users({RAVI: {"reports_to_id": PRIYA, "email_stage_updates": True}, PRIYA: {"email_stage_updates": True}})
     assert new_lead(client).status_code == 201
     assert sorted((m["to"][0], m["subject"]) for m in outbox) == [
-        ("priya@crm.test", "[SalesTrack] Lead created for your team"), ("ravi@crm.test", "[SalesTrack] Lead created")]
+        ("priya@crm.test", "[SalesTrack] Lead Created for Your Team"), ("ravi@crm.test", "[SalesTrack] Lead Created")]
     manager_mail = next(m for m in outbox if m["to"] == ["priya@crm.test"])
     assert "Ravi Kumar reports to you" in manager_mail["body"] and "you are the owner" not in manager_mail["body"]
     # Priya turns stage emails off: her bell still shows it, no email

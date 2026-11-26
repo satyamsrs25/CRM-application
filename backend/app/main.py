@@ -332,7 +332,7 @@ def email_health():
 def send_test_email(data: schemas.TestEmail):
     """Admin: sends one email right away and reports the mail server's answer. Use it to check SMTP settings."""
     require_admin("send test emails")
-    error = mailer.send([data.to], "[SalesTrack] Test email",
+    error = mailer.send([data.to], "[SalesTrack] Test Email",
                         "This is a test email from SalesTrack CRM.\n\nIf you can read this, notification emails work.")
     if error:
         raise HTTPException(status_code=502, detail=f"Email not sent: {error}")

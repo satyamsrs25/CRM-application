@@ -150,7 +150,7 @@ def test_managers_and_admins_are_told_about_transfers(client, monkeypatch):
     admin_bell = login_as(client, 3).get("/api/notifications").json()
     assert admin_bell[0]["title"] == "Lead transferred"
     assert "from Ravi Kumar to Priya Sharma by Ravi Kumar" in admin_bell[0]["message"] and "Region change" in admin_bell[0]["message"]
-    assert any(to == ["asha@crm.test"] and "Lead transferred" in subject for to, subject, _ in sent)  # emailed too
+    assert any(to == ["asha@crm.test"] and "Lead Transferred" in subject for to, subject, _ in sent)  # emailed too
     # the Admin moves it on: the Manager (previous owner) is told once, not twice
     login_as(client, 3).post(f"/api/leads/{lead['id']}/transfer", json={"to_user_id": 2})
     priya = [n["title"] for n in login_as(client, 1).get("/api/notifications", params={"unread_only": False}).json()]

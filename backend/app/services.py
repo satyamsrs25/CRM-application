@@ -591,13 +591,19 @@ def notify(db: Session, user_id: int, title: str, message: str, *, task_id: int 
     user = db.get(User, user_id)
     category = category or ("reminder" if kind == "reminder" else "stage")
     if email and user and user.email and getattr(user, EMAIL_SETTING[category], True):
+<<<<<<< Updated upstream
         first = user.full_name.split()[0]
+=======
+        # standard capitals in the email (title-case subject, people's names); the bell keeps the text as it is
+        first = mailer.person_name(user.full_name.split()[0])
+        text = mailer.tidy_text(message)
+>>>>>>> Stashed changes
         mailer.queue(
             db,
             user.email,
-            f"[SalesTrack] {title}",
-            f"Hi {first},\n\n{message}\n\nOpen in SalesTrack: {mailer.app_link(link)}\n\n{why}",
-            html=mailer.notification_html(first, message, mailer.app_link(link), why),
+            mailer.title_case(f"[SalesTrack] {title}"),
+            f"Hi {first},\n\n{text}\n\n{mailer.BUTTON_LABEL}: {mailer.app_link(link)}\n\n{why}",
+            html=mailer.notification_html(first, text, mailer.app_link(link), why),
         )
 
 

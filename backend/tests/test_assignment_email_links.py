@@ -1,4 +1,4 @@
-"""Issue 1: the "Open in SalesTrack" button of a lead assignment email opens that lead.
+"""Issue 1: the "View URL" button of a lead assignment email opens that lead.
 
 What the backend owns in that journey: the email is sent only after the assignment is saved (the new owner is in the
 database when the email leaves), its button is APP_URL + "/#/leads/<id>" (the address the email recipient opens; no
@@ -14,6 +14,7 @@ from app import mailer
 from app.models import Lead
 from conftest import login_as
 from test_unassigned_pool import ASHA, PRIYA, RAVI, REASON, db, lead_row, pool_rows, pooled_ids, team, upload  # noqa: F401
+from app.mailer import title_case
 
 PUBLIC = "https://crm.example.test"  # a synthetic public address of the app
 
@@ -34,14 +35,14 @@ def mails(monkeypatch):
 
 
 def button(mail):
-    """The href of the email's Open in SalesTrack button (the HTML version) and the link in its plain text."""
-    [href] = re.findall(r'<a href="([^"]+)"[^>]*>Open in SalesTrack</a>', mail["html"])
-    [text] = re.findall(r"Open in SalesTrack: (\S+)", mail["body"])
+    """The href of the email's View URL button (the HTML version) and the link in its plain text."""
+    [href] = re.findall(r'<a href="([^"]+)"[^>]*>View URL</a>', mail["html"])
+    [text] = re.findall(r"View URL: (\S+)", mail["body"])
     return href, text
 
 
 def to(mails, address, subject="Lead assigned to you"):
-    return [m for m in mails if m["to"] == [address] and m["subject"] == f"[SalesTrack] {subject}"]
+    return [m for m in mails if m["to"] == [address] and m["subject"] == title_case(f"[SalesTrack] {subject}")]
 
 
 def test_a_direct_assignment_email_opens_the_lead_for_its_new_owner_only(client, team, mails):

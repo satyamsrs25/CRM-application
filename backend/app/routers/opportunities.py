@@ -15,6 +15,7 @@ from starlette.datastructures import UploadFile
 from app import schemas
 from app.constants import DEFAULT_CURRENCY, OPPORTUNITY_FLOW, OPPORTUNITY_OPEN_STAGES, OPPORTUNITY_STAGES, STAGE_PROBABILITY
 from app.database import get_db
+from app.idle_reminders import idle_ids
 from app.security import (acting_user, acting_user_id, check_owner_change, owner_for_new,
                           require_edit, require_view, visible)
 from app.models import Account, Contact, Lead, Opportunity, OpportunityAttachment, User
@@ -79,8 +80,9 @@ def list_opportunities(
     rows = db.scalars(query.order_by(Opportunity.id.desc())).unique().all()
     # In stage (one query for them all, one reference time): sorted in the browser with the rest of the list
     clocks = opportunity_clocks(db, Clock(), [o.id for o in rows])
+    idle = idle_ids(db, Opportunity, [o.id for o in rows])  # No Activity (3+ Days) list view
     return [opportunity_out(o).model_copy(update={"in_stage": schemas.StageClockOut(**clocks[o.id])
-                                                  if o.id in clocks else None}) for o in rows]
+                                                  if o.id in clocks else None, "idle": o.id in idle}) for o in rows]
 
 
 @router.get("/duplicate-check")

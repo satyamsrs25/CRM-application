@@ -1,6 +1,7 @@
 import "./analyticsCharts.test.js"; // Home > Analytics
 import "./notificationText.test.js"; // the bell: short text and the right "time ago" everywhere
 import "./currencyConvert.test.js"; // Home > Dashboard: one currency for every amount
+import "./idleView.test.js"; // Leads and Opportunities > No Activity (3+ Days)
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
