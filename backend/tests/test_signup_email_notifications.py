@@ -142,7 +142,7 @@ def test_lead_created_notifies_owner_on_bell_and_email(client, outbox):
     assert len(bell) == 1 and bell[0]["title"] == "Lead created" and bell[0]["link"] == f"/leads/{lead['id']}"
     assert len(outbox) == 1  # one email per step (the follow-up task is inside it)
     mail = outbox[0]
-    assert mail["to"] == ["ravi@crm.test"] and mail["subject"] == "[SalesTrack] Lead created"
+    assert mail["to"] == ["ravi@crm.test"] and mail["subject"] == "[SalesTrack] Lead Created"
     assert "Next follow-up: Make first contact - Maria Lopez" in mail["body"]
 
 
@@ -160,25 +160,28 @@ def test_every_step_sends_one_notification_and_email(client, outbox):
     assert client.post(f"/api/opportunities/{opp['id']}/won", json={"task": TASK, "completed_stages": ["Discovery", "Proposal"], "notify_customer": False, "note": "Synthetic test note"}).status_code == 200
 
     subjects = [m["subject"].removeprefix("[SalesTrack] ") for m in outbox]
-    assert subjects == ["Lead created", "Lead moved to Nurturing", "Lead moved to Demo",
-                        "Opportunity created", "Opportunity moved to Proposal", "Opportunity won"]
+    titles = ["Lead created", "Lead moved to Nurturing", "Lead moved to Demo",
+              "Opportunity created", "Opportunity moved to Proposal", "Opportunity won"]
+    # emails: title-case subjects; the bell keeps the titles as they are
+    assert subjects == ["Lead Created", "Lead Moved to Nurturing", "Lead Moved to Demo",
+                        "Opportunity Created", "Opportunity Moved to Proposal", "Opportunity Won"]
     assert all(m["to"] == ["ravi@crm.test"] for m in outbox)
     assert "Demo date:" in outbox[2]["body"] and "Amount: $25,000.00" in outbox[3]["body"]
     assert "Final amount: USD 25,000.00" in outbox[5]["body"]  # the deal's own currency
     bell = [n["title"] for n in client.get("/api/notifications", params={"user_id": 2}).json()]
-    assert sorted(bell) == sorted(subjects)
+    assert sorted(bell) == sorted(titles)
 
 
 def test_lost_steps_notify_owner(client, outbox):
     client.put("/api/auth/me", json={"email_stage_updates": True})  # stage emails are off by default
     lead = new_lead(client)
     client.post(f"/api/leads/{lead['id']}/lost", json={"lost_reason": "No budget", "lost_notes": "Next year", "notify_customer": False})
-    assert outbox[-1]["subject"] == "[SalesTrack] Lead lost"
+    assert outbox[-1]["subject"] == "[SalesTrack] Lead Lost"
     assert "Reason: No budget" in outbox[-1]["body"] and "Notes: Next year" in outbox[-1]["body"]
     other = new_lead(client, last_name="Diaz")
     opp = client.post(f"/api/leads/{other['id']}/convert", json={"task": TASK, "completed_stages": ["New", "Nurturing", "Demo"], "expected_value": 1000, "note": "Synthetic test note"}).json()["opportunity"]
     client.post(f"/api/opportunities/{opp['id']}/lost", json={"lost_reason": "Competitor", "notify_customer": False, "lost_notes": "Synthetic test note"})
-    assert outbox[-1]["subject"] == "[SalesTrack] Opportunity lost" and "Reason: Competitor" in outbox[-1]["body"]
+    assert outbox[-1]["subject"] == "[SalesTrack] Opportunity Lost" and "Reason: Competitor" in outbox[-1]["body"]
 
 
 def test_assignment_notifies_new_owner(client, outbox):
@@ -195,7 +198,7 @@ def test_assignment_notifies_new_owner(client, outbox):
     assert f"Lead: {lead['name']}" in lines and f"Company: {lead['company']}" in lines and "Assigned by: Asha Rao" in lines
     assert f"Email: {lead['email']}" in lines
     mail = next(m for m in outbox if m["to"] == ["ravi@crm.test"])
-    assert "<table" in mail["html"] and f"{lead['email']}</td>" in mail["html"] and "Open in SalesTrack</a>" in mail["html"]
+    assert "<table" in mail["html"] and f"{lead['email']}</td>" in mail["html"] and "View URL</a>" in mail["html"]
     assert "Lead: " in mail["body"]  # the plain-text version is still there
     # setting the owner it already has sends nothing
     before = len(client.get("/api/notifications", params={"user_id": 2, "unread_only": False}).json())
@@ -214,15 +217,15 @@ def test_reminder_and_overdue_checks(client, outbox):
     db.commit()
     outbox.clear()
 
-    assert scheduler.run_checks(db) == {"reminders": 1, "overdue": 1}
+    assert scheduler.run_checks(db) == {"reminders": 1, "overdue": 1, "no_activity": 0}
     # both are reminders on the bell (they stay until the task is done)
     bell = client.get("/api/notifications").json()
     assert sorted(n["title"] for n in bell) == ["Task overdue", "Task reminder"] and {n["kind"] for n in bell} == {"reminder"}
     titles = [n["title"] for n in client.get("/api/notifications", params={"user_id": 2, "unread_only": False}).json()]
     assert {"Task reminder", "Task overdue"} <= set(titles)
-    assert {m["subject"] for m in outbox} == {"[SalesTrack] Task reminder", "[SalesTrack] Task overdue"}
+    assert {m["subject"] for m in outbox} == {"[SalesTrack] Task Reminder", "[SalesTrack] Task Overdue"}
     # second run on the same day: nothing new
-    assert scheduler.run_checks(db) == {"reminders": 0, "overdue": 0}
+    assert scheduler.run_checks(db) == {"reminders": 0, "overdue": 0, "no_activity": 0}
     # a new reminder time sends a new reminder
     client.put(f"/api/tasks/{task['id']}", json={"reminder_at": datetime.now().replace(microsecond=0).isoformat()})
     assert scheduler.run_checks(db)["reminders"] == 1
@@ -264,7 +267,7 @@ def test_demo_reminder_is_sent_before_the_demo(client, outbox):
     db = db_session()
     assert scheduler.run_checks(db)["reminders"] == 1
     db.close()
-    assert outbox[-1]["subject"] == "[SalesTrack] Task reminder" and "Conduct demo - Maria Lopez" in outbox[-1]["body"]
+    assert outbox[-1]["subject"] == "[SalesTrack] Task Reminder" and "Conduct demo - Maria Lopez" in outbox[-1]["body"]
 
 
 def test_email_health_and_test_email(client, outbox, monkeypatch):

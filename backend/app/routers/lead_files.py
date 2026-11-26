@@ -20,6 +20,7 @@ from app import schemas
 from app.constants import (CURRENCIES, DEFAULT_CURRENCY, LEAD_OPEN_STAGES, LEAD_SOURCE_DETAIL_MAX, LEAD_SOURCES,
                            LEAD_STAGES, LEAD_START)
 from app.database import get_db
+from app.idle_reminders import cutoff_now, idle_condition
 from app.models import Account, ActivityLog, Contact, Lead, LeadTransfer, StageHistory, User
 from app.security import acting_user, can_view, require, sees_pool_contacts, team_ids, visible
 from app.regions import country_name, region_from_text, supported
@@ -423,6 +424,8 @@ LIST_VIEWS = {
     "no_email": lambda q, me: q.where(Lead.email.is_(None)),
     # the Unassigned Pool: leads nobody owns yet (every user can list it; see pool_query)
     "unassigned": lambda q, me: q.where(Lead.owner_id.is_(None)),
+    # open leads with no update or activity for 3+ days (the daily No Activity summary links here)
+    "idle": lambda q, me: q.where(idle_condition(Lead, cutoff_now())),
 }
 # The Unassigned Pool is open to every user (contact details hidden from those who can only request a lead). Someone
 # who sees only their own leads gets the pool too in these lists (All Open Leads, All Leads, Uploaded Leads and

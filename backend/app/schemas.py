@@ -1049,6 +1049,7 @@ class OpportunityOut(Out):
     created_at: datetime | None
     updated_at: datetime | None
     in_stage: StageClockOut | None = None  # the Opportunities list and the opportunity's page (stage_clock.py)
+    idle: bool = False  # Opportunities list: no update or activity for 3+ days (idle_reminders.py)
 
     @field_serializer("expected_value", "final_value")
     def _money(self, value):

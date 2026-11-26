@@ -123,16 +123,19 @@ def list_users(include_inactive: bool = False, db: Session = Depends(get_db)):
 def account_email(db: Session, user: User, password: str, *, new: bool) -> None:
     """Welcome email (new user) or password-reset email, sent from the CRM mailbox after the save."""
     link = mailer.app_link("/")
+    name = mailer.person_name(user.full_name)
     if new:
         subject = "[SalesTrack] Your account is ready"
-        intro = f"Hi {user.full_name},\n\nAn account was created for you in SalesTrack CRM as {user.role}."
+        intro = f"An account was created for you in SalesTrack CRM as {user.role}."
     else:
         subject = "[SalesTrack] Your password was reset"
-        intro = f"Hi {user.full_name},\n\nYour SalesTrack CRM password was reset by your Admin."
-    body = (f"{intro}\n\nLog in at: {link}\nUsername: {user.email}\nTemporary password: {password}\n\n"
-            "Please change this password after you log in: click your profile picture (top right) > Change Password.\n\n"
-            "This is an automatic email. Please don't reply to it.")
-    mailer.queue(db, user.email, subject, body)
+        intro = "Your SalesTrack CRM password was reset by your Admin."
+    details = (f"Username: {user.email}\nTemporary password: {password}\n\n"
+               "Please change this password after you log in: click your profile picture (top right) > Change Password.")
+    why = "This is an automatic email. Please don't reply to it."
+    body = f"Hi {name},\n\n{intro}\n\n{mailer.BUTTON_LABEL}: {link}\n{details}\n\n{why}"
+    mailer.queue(db, user.email, mailer.title_case(subject), body,
+                 html=mailer.notification_html(name, f"{intro}\n\n{details}", link, why))
 
 
 def active_admins(db: Session) -> int:

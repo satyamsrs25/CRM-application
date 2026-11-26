@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app import schemas
 from app.database import get_db
 from app.models import Account, Contact, Lead, Note, Notification, Opportunity, Task
+from app.scheduler import DEMO_TASKS
 from app.serializers import note_out
 from app.security import acting_user, acting_user_id, require_view, visible
 from app.services import get_or_404, touch_lead
@@ -60,6 +61,7 @@ def add_note(data: schemas.NoteCreate, db: Session = Depends(get_db)):
 #   update    stage changes, assignments...: pop up when they arrive; stay in the bell list for BELL_DAYS
 #             (read or not); the red badge counts only the unread ones
 #   reminder  task / demo / close-date reminders and overdue tasks: stay on the bell until the task is done
+#             (a demo's reminders leave the bell once the demo time has passed: scheduler.DEMO_TASKS)
 BELL_DAYS = 30
 BELL_MAX_UPDATES = 50
 
@@ -72,7 +74,8 @@ def bell_items(db: Session, user_id: int) -> list[Notification]:
     reminders = db.scalars(
         select(Notification).outerjoin(Task, Notification.task_id == Task.id).where(
             Notification.user_id == user_id, Notification.kind == "reminder",
-            or_(Task.status == "Open", Notification.task_id.is_(None) & (Notification.created_at >= since)))
+            or_(Task.status == "Open", Notification.task_id.is_(None) & (Notification.created_at >= since)),
+            or_(Task.id.is_(None), Task.title.not_in(DEMO_TASKS), Task.due_date >= datetime.now()))
         .order_by(Notification.id.desc())
     ).all()
     latest, seen = [], set()

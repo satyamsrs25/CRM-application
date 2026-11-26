@@ -326,7 +326,7 @@ def test_new_user_and_password_reset_are_emailed(client, outbox):
     login_as(client, 3)
     client.post("/api/users", json={"full_name": "Samhit E", "email": "samhit@company.com", "password": "Start2026"})
     mail = outbox[-1]
-    assert mail["to"] == ["samhit@company.com"] and mail["subject"] == "[SalesTrack] Your account is ready"
+    assert mail["to"] == ["samhit@company.com"] and mail["subject"] == "[SalesTrack] Your Account Is Ready"
     assert "Username: samhit@company.com" in mail["body"] and "Temporary password: Start2026" in mail["body"]
     assert "as Salesperson" in mail["body"]
     client.put("/api/users/2/password", json={"password": "Reset2026"})
@@ -372,14 +372,14 @@ def test_email_settings(client, outbox):
     assert {n["title"] for n in client.get("/api/notifications").json()} >= {"Lead created", "Lead moved to Nurturing"}
     # assignments are still emailed
     lead(login_as(client, 1), owner_id=2)
-    assert [m["subject"] for m in outbox if m["to"] == ["ravi@crm.test"]] == ["[SalesTrack] Lead assigned to you"]
+    assert [m["subject"] for m in outbox if m["to"] == ["ravi@crm.test"]] == ["[SalesTrack] Lead Assigned to You"]
     # turn stage emails on, assignments off
     login_as(client, 2)
     saved = client.put("/api/auth/me", json={"email_stage_updates": True, "email_assignments": False}).json()
     assert (saved["email_stage_updates"], saved["email_assignments"], saved["full_name"]) == (True, False, "Ravi Kumar")
     outbox.clear()
     client.put(f"/api/leads/{record['id']}/stage", json={"task": TASK, "completed_stages": ["New", "Nurturing"], "stage": "Demo", "demo_date": "2026-12-01T10:00:00", "note": "Synthetic test note"})
-    assert [m["subject"] for m in outbox if m["to"] == ["ravi@crm.test"]] == ["[SalesTrack] Lead moved to Demo"]
+    assert [m["subject"] for m in outbox if m["to"] == ["ravi@crm.test"]] == ["[SalesTrack] Lead Moved to Demo"]
     outbox.clear()
     lead(login_as(client, 1), owner_id=2)
     assert not [m for m in outbox if m["to"] == ["ravi@crm.test"]]

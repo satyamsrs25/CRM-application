@@ -76,6 +76,8 @@ const LEAD_VIEWS = {
   "Unsubscribed Leads": "unsubscribed",
   "Working Emails": "email_ok",
   "No Email": "no_email",
+  // open leads with no update or activity for 3+ days (the daily No Activity summary links here)
+  "No Activity (3+ Days)": "idle",
 };
 
 const DELETED_LEADS = "Deleted Leads";
@@ -100,6 +102,7 @@ function views(collection, user) {
       ["Unsubscribed Leads", (r) => !!r.unsubscribed_at],
       ["Working Emails", (r) => !!r.email && !r.email_invalid_at && !r.unsubscribed_at],
       ["No Email", (r) => !r.email],
+      ["No Activity (3+ Days)", () => true],
       // the Admin and Managers restore deleted leads to the Unassigned Pool (DeletedLeads.jsx)
       ...(user.role === "Admin" || user.role === "Manager" ? [[DELETED_LEADS, () => false]] : []),
     ],
@@ -112,6 +115,8 @@ function views(collection, user) {
       ["Open Opportunities", (r) => OPEN_OPP.includes(r.stage)],
       ["Won Opportunities", (r) => r.stage === "Won"],
       ["Lost Opportunities", (r) => r.stage === "Lost"],
+      // open deals with no update or activity for 3+ days (the daily No Activity summary links here)
+      ["No Activity (3+ Days)", (r) => !!r.idle],
     ],
     accounts: [
       ["All Accounts", () => true],

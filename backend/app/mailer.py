@@ -215,6 +215,62 @@ def _deliver(messages: list[tuple[str, str, str, str, str | None]]) -> None:
         send([to], subject, body, sender_name=sender_name, html=html)
 
 
+# ---------- standard capital letters in automatic emails ----------
+# Subjects in title case ("[SalesTrack] Lead Assigned to You"), people's names with capitals ("vikram sake" ->
+# "Vikram Sake") and every line starting with a capital. Words that already have a capital (IBM, iPhone, McKay) and
+# anything that isn't a word (emails, links, numbers) are left as they are. Campaign emails are the sender's own words
+# and are not changed.
+BUTTON_LABEL = "View URL"  # the link button in automatic emails
+SMALL_WORDS = {"a", "an", "and", "as", "at", "but", "by", "for", "in", "nor", "of", "off", "on", "or", "per", "so",
+               "the", "to", "up", "via", "vs", "yet"}
+PERSON_LABELS = {"Lead", "Contact", "Owner", "Name", "Salesperson", "Manager", "Assigned by", "Assigned to",
+                 "Requested by", "Approved by", "Rejected by", "Deleted by", "Restored by", "Created by", "Changed by",
+                 "Transferred by", "Transferred to", "Previous owner", "New owner", "Username"}
+_WORD = re.compile(r"^[a-z][a-z']*$")
+
+
+def title_case(text: str) -> str:
+    """An email subject in title case: "Lead assigned to you" -> "Lead Assigned to You"."""
+    words = text.split(" ")
+    real = [i for i, w in enumerate(words) if w[:1].isalpha()]
+    out = []
+    for i, word in enumerate(words):
+        if not _WORD.match(word) or (word in SMALL_WORDS and real and i not in (real[0], real[-1])):
+            out.append(word)
+        else:
+            out.append(word[0].upper() + word[1:])
+    return " ".join(out)
+
+
+def person_name(name: str | None) -> str:
+    """A person's name with standard capitals: "vikram sake" / "VIKRAM SAKE" -> "Vikram Sake", "o'brien" ->
+    "O'Brien". Mixed-case names (McKay, DeSouza) and short all-caps parts (initials such as "RK") stay as typed."""
+    if not name:
+        return name or ""
+
+    def fix(part: str) -> str:
+        if part.islower() or (part.isupper() and len(part) > 2):
+            return re.sub(r"(^|[-'])([a-z])", lambda m: m.group(1) + m.group(2).upper(), part.lower())
+        return part
+    return " ".join(fix(word) for word in name.split(" "))
+
+
+def tidy_line(line: str) -> str:
+    """One line of an automatic email: a person's name after "Lead:", "Owner:"... gets capitals, and a line that
+    starts with a lowercase word starts with a capital (not when it starts with an email address or a link)."""
+    first = line.split(" ", 1)[0]
+    if _WORD.match(first.rstrip(":")) and "@" not in first and "://" not in first:
+        line = line[0].upper() + line[1:]
+    detail = re.match(r"^([A-Z][A-Za-z ]{0,28}): (.+)$", line)
+    if detail and detail.group(1) in PERSON_LABELS and "@" not in detail.group(2):
+        return f"{detail.group(1)}: {person_name(detail.group(2))}"
+    return line
+
+
+def tidy_text(text: str) -> str:
+    return "\n".join(tidy_line(line) for line in text.split("\n"))
+
+
 # ---------- notification emails: the same text, laid out (Outlook joins the lines of plain-text emails) ----------
 
 _DETAIL = re.compile(r"^([A-Z][A-Za-z /]{0,28}): (.+)$")  # "Company: Acme" -> a row of the details table
@@ -222,7 +278,7 @@ _DETAIL = re.compile(r"^([A-Z][A-Za-z /]{0,28}): (.+)$")  # "Company: Acme" -> a
 
 def notification_html(first_name: str, message: str, link_url: str | None, why: str) -> str:
     """The HTML version of a notification email: each line of the message on its own line, "Label: value" lines as a
-    details table, "- " lines as a list, and an Open in SalesTrack button."""
+    details table, "- " lines as a list, and a View URL button (BUTTON_LABEL)."""
     esc = html_text.escape
     parts, rows, items = [], [], []
 
@@ -258,7 +314,7 @@ def notification_html(first_name: str, message: str, link_url: str | None, why: 
             parts.append(f'<p style="margin:0 0 10px">{esc(line)}</p>')
     flush()
     button = (f'<p style="margin:18px 0"><a href="{esc(link_url)}" style="background:#0176d3;color:#ffffff;'
-              f'padding:9px 18px;border-radius:6px;text-decoration:none;font-weight:600">Open in SalesTrack</a></p>'
+              f'padding:9px 18px;border-radius:6px;text-decoration:none;font-weight:600">{BUTTON_LABEL}</a></p>'
               if link_url else "")
     return ('<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;line-height:1.5;color:#181818">'
             f'<p style="margin:0 0 12px">Hi {esc(first_name)},</p>{"".join(parts)}{button}'

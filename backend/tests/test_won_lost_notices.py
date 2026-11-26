@@ -65,7 +65,7 @@ def test_opportunity_won_tells_the_owner_once(client, outbox, actor):
     assert "Note: Synthetic: contract signed" in message
     if actor != RAVI:
         assert notices(actor, "Opportunity won") == []  # the Admin / Manager who did it isn't told
-    assert [m["subject"] for m in outbox if m["to"] == ["ravi@crm.test"]] == ["[SalesTrack] Opportunity won"]
+    assert [m["subject"] for m in outbox if m["to"] == ["ravi@crm.test"]] == ["[SalesTrack] Opportunity Won"]
     # the same transition again is refused and tells nobody
     assert won(login_as(client, actor), opp["id"]).status_code in (400, 409)
     assert len(notices(RAVI, "Opportunity won")) == 1
@@ -115,7 +115,7 @@ def test_opportunity_lost_tells_the_owner_with_the_reason(client, outbox, email_
     assert "is now at Lost" in message and "Reason: Price" in message and "Notes: Synthetic: chose a cheaper option" in message
     assert link == f"/opportunities/{opp['id']}"
     assert notices(PRIYA, "Opportunity lost") == []
-    assert [m["subject"] for m in outbox] == (["[SalesTrack] Opportunity lost"] if email_on else [])
+    assert [m["subject"] for m in outbox] == (["[SalesTrack] Opportunity Lost"] if email_on else [])
     assert login_as(client, PRIYA).post(f"/api/opportunities/{opp['id']}/lost", json=LOST).status_code in (400, 409)
     assert len(notices(RAVI, "Opportunity lost")) == 1
 
@@ -139,7 +139,7 @@ def test_lead_lost_tells_the_owner(client, outbox):
     assert "Lia Lostlead" in message and "is now at Lost" in message and "Lost at stage: New" in message
     assert "Reason: Price" in message and link == f"/leads/{lead['id']}"
     assert notices(ASHA, "Lead lost") == []
-    assert [m["subject"] for m in outbox] == ["[SalesTrack] Lead lost"]
+    assert [m["subject"] for m in outbox] == ["[SalesTrack] Lead Lost"]
     assert login_as(client, ASHA).post(f"/api/leads/{lead['id']}/lost", json=LOST).status_code in (400, 409)
     assert len(notices(RAVI, "Lead lost")) == 1
 

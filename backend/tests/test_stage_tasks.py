@@ -125,7 +125,7 @@ def test_the_assignee_follows_the_task_rules(client, sent):
                                            json=body | {"task": HANDOVER | {"owner_id": ASHA}}))
     [task] = mine(moved)
     assert (task["title"], task["owner_id"]) == (HANDOVER["title"], ASHA)
-    assert any(m["subject"] == "[SalesTrack] Task assigned to you" and m["to"] == ["asha@crm.test"] for m in sent)
+    assert any(m["subject"] == "[SalesTrack] Task Assigned to You" and m["to"] == ["asha@crm.test"] for m in sent)
     # by default the task goes to the record's owner, also when a Manager makes the change
     back = ok(client.put(f"/api/leads/{lead['id']}/stage", json={"stage": "New", "note": NOTE, "task": HANDOVER}))
     assert [t["owner_id"] for t in mine(back)] == [RAVI]
